@@ -1,0 +1,16 @@
+# Codex workspace configuration for the unit testing orchestration workflow.
+# This file is part of the required workflow assets.
+personality = "friendly"
+
+[features]
+multi_agent = true
+codex_hooks = true
+
+[agents]
+max_depth = 1
+max_threads = 6
+job_max_runtime_seconds = 1800
+
+# Hooks are optional telemetry only for this workflow.
+# Official phase timings and workflow duration must come from run-state wall-clock timestamps,
+# not from hook output.
