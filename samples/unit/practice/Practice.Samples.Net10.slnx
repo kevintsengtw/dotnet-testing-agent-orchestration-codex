@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Practice.Core.Net10/Practice.Core.Net10.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Practice.Core.Net10.Tests/Practice.Core.Net10.Tests.csproj" />
+  </Folder>
+</Solution>

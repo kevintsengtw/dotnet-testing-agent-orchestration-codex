@@ -15,6 +15,7 @@
     - [步驟 3：確認完整 `.codex/` 目錄結構](#步驟-3確認完整-codex-目錄結構)
     - [步驟 4：驗證安裝](#步驟-4驗證安裝)
   - [快速開始](#快速開始)
+  - [練習專案](#練習專案)
   - [與 Claude 版的差異](#與-claude-版的差異)
   - [文件](#文件)
 
@@ -155,6 +156,25 @@ dotnet-testing-xunit-project-setup/
 ```
 
 工作流程會：分析 `OrderService` → 載入對應 Skills 撰寫測試 → 建置執行（含修正迴圈）→ 審查並回報；最後呈現固定格式的結果報告（測試總覽、Reviewer 結論、各階段耗時等）。
+
+---
+
+## 練習專案
+
+本 repo 內含 `samples/unit/practice/`，提供可直接套用工作流程的單元測試練習素材：
+
+- `src/Practice.Core.Net8`、`Practice.Core.Net10`（及 `Practice.Core`）：待測的範例類別，涵蓋純邏輯、`TimeProvider`、`IFileSystem`、FluentValidation、介面 mock、legacy 靜態依賴等情境
+- `tests/*.Tests`：對應的測試專案 scaffold（csproj），供工作流程寫入產生的測試
+- `*.slnx`：方案檔
+
+> 各測試專案僅含 csproj scaffold，不含預先產生的測試碼——測試由工作流程產生。
+
+範例：
+
+```text
+呼叫 $dotnet-testing-orchestrator-unit，為 samples/unit/practice/src/Practice.Core.Net8 的
+SubscriptionService 撰寫單元測試。
+```
 
 ---
 
