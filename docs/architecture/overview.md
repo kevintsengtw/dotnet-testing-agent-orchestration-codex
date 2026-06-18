@@ -103,12 +103,12 @@ flowchart TD
     P1 --> Check{方法數 > 5\n或情境數 > 20？}
 
     Check -- 否 --> P2[Phase 2：Writer\n單一 Writer 撰寫所有測試]
-    Check -- 是 --> P2A[Phase 2a：Writer 1\n負責前半部方法]
-    Check -- 是 --> P2B[Phase 2b：Writer 2\n負責後半部方法]
-    P2A & P2B --> P2Merge[合併兩個 Writer 產出]
+    Check -- 是 --> P2A[Phase 2a：Writer 1（主要組）\n依 setup 親和分到的方法\n獨立測試類別]
+    Check -- 是 --> P2B[Phase 2b：Writer 2（分割組）\n依 setup 親和分到的方法\n另一獨立測試類別]
+    P2A & P2B --> P2Gate[Orchestrator 彙整\nwriter-result/testFilePaths\nartifact gate]
 
     P2 --> P3[Phase 3：Executor\ndotnet build\ndotnet test]
-    P2Merge --> P3
+    P2Gate --> P3
 
     P3 --> ExecCheck{全部通過？}
     ExecCheck -- 否，修正並重試\n最多 3 輪 --> P3
@@ -121,6 +121,8 @@ flowchart TD
 
     P5 --> End([完成])
 ```
+
+> 上圖為**單目標**流程。**多目標**（一次指定多個被測類別）時：Analyzer **平行**（逐 target）、Writer **平行且各 target 仍可 per-class 分割**（dispatch 單位是「Writer assignment」非 target，故 N 個 target 可同時跑 > N 個 Writer）、Executor **循序**（同專案 build 不可並行）、Reviewer **平行**。詳見 [unit-orchestrator.md §9](unit-orchestrator.md)。
 
 ---
 
@@ -164,9 +166,10 @@ sequenceDiagram
     RV-->>Skill: 評分 + issues + 改善建議
     Skill->>State: 記錄 Reviewer 起訖時間與結果
 
-    Skill->>Skill: Phase 5：清理 executor-result/ 暫存
     Skill->>Main: 整合結果 + 各階段耗時（取自 run-state.json）
     Main->>Dev: 呈現結果
+    Note over Skill: 結果呈現後才執行 Phase 5 後置清理
+    Skill->>Skill: Phase 5：清理 executor-result/（run-state.json 與 analysis/ 本 run 不刪）
 ```
 
 ---
@@ -179,7 +182,13 @@ sequenceDiagram
 | Dispatch 機制     | Codex 原生 SpawnAgent         | 由上游 Claude 版的 Agent tool 經 migrate-to-codex 轉換而來，改用 Codex 原生多代理調度          |
 | 耗時量測          | run-state.json wall-clock     | wall-clock 時間戳是唯一真實來源；hooks 僅為可選 telemetry，官方耗時不依賴 narration            |
 | Token 統計        | 不提供                        | Codex native subagent 的全流程 token 無可靠 truth source（實證確認），回報數字會誤導            |
-| 大型類別處理      | Writer 分割策略               | 方法數 > 5 或情境數 > 20 時，拆分為最多 2 個平行 Writer，避免單一 Subagent 因上下文過長導致品質下降 |
-| 技能載入方式      | 動態載入技術型 Agent Skills   | Analyzer 依分析結果決定 Writer 需要哪些技能，按需載入，避免無謂的 context 佔用                  |
-| 交接機制          | JSON 檔案（.orchestrator/）   | Subagent 間透過交接 JSON 傳遞結構化資料，而非在 prompt 中嵌入完整內容，保持每個 Subagent 的 prompt 精簡 |
-| 清理策略          | 保留 analysis/，刪除 executor-result/ | analysis.json 供 review 時當證據；executor-result/ 為暫存資料，每次流程結束後清理（皆不進版控）  |
+| 大型類別處理      | Writer 分割：**setup 親和優先** | 方法數 > 5 或情境數 > 20 時拆為最多 2 個平行 Writer（**per-class/per-target 上限 2，非整個 workflow 全域**；多目標時 dispatch 單位是 assignment，三 target 可同時 > 3 Writer，實跑曾 5 Writer 並起）。**分組以「共用 setup 親和」為主、scenario 數平衡為次**（Codex 強化；非純貪心） |
+| 分割多檔一致性    | **跨檔 fixture 一致契約**（Codex 強化）| 解決上游 Claude 版的 split 多檔 fixture 漂移：時間錨具名常數、AutoFixture 遞迴行為、欄位/變數命名、SUT 建構模式逐檔一致 |
+| 建構子防禦覆蓋    | **建構子 null-guard 測試**（Codex 強化）| Analyzer 偵測 `constructorGuards[]`，Writer 為每個 guarded 依賴寫 `ArgumentNullException` 測試，集中單一檔；不改 production code |
+| 可測試性邊界      | production-code 邊界政策      | 需 seam（IFileSystem/clock）即標 `requiresUserApproval`、不硬測；裸 `DateTime.*` 比照裸 `File.IO` 標 testabilityIssue |
+| 階段內耗時量測    | run-state instrumentation（Codex 強化）| 逐 assignment `dispatchAcceptedAt`/`produceSpanMs`、`phaseDurations`、`profilingSummary`、`redispatchEvents`；量不到填 `null`+`notes` 不造假 |
+| 階段間主動釋放    | phase boundary **固定動作** | 每個 phase 交接（Analyzer→Writer、Writer→Executor、Executor→Reviewer）主動 close 已完成 agents，釋放 thread slots；**runtime 不支援 close 時停手回報，不得改為限制/序列化 Writer 並行** |
+| thread-ceiling 處理 | bounded re-dispatch（**僅撞限時**）| **只在** agent thread limit / capacity ceiling 或 artifact missing 等 bounded 條件出現時補派，**每 phase 最多 2 次**（`restartCount=0`，自癒）；不重啟整個流程 |
+| 技能載入方式      | 動態載入技術型 Agent Skills   | Analyzer **依屬性**（依賴型別/targetType/門檻，非類別名）決定 Writer 需要哪些技能，按需載入 |
+| 交接機制          | JSON 檔案（.orchestrator/）   | Subagent 間透過交接 JSON 傳遞結構化資料，而非在 prompt 中嵌入完整內容 |
+| 清理策略          | 保留 analysis/ 與 run-state.json，刪除 executor-result/ | analysis.json + run-state 供 review 當證據；executor-result/ Phase 5 清；run-state 於下次 Phase 0 清（皆不進版控）  |

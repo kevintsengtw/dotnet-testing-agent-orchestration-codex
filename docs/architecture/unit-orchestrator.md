@@ -1,202 +1,187 @@
 # 單元測試 Orchestrator 架構說明
 
+> 本文件依**實際 `.codex/skills/dotnet-testing-orchestrator-unit/SKILL.md` 與 `.codex/agents/*.toml` 契約**撰寫，描述 Codex 版實際行為（含相對上游 Claude 版的 Codex-specific 強化）。
+
 ## 1. 概覽
 
-| 項目                    | 說明                                                      |
-| ----------------------- | --------------------------------------------------------- |
-| 適用場景                | xUnit 單一類別單元測試（Service / Validator / Legacy）    |
+| 項目 | 說明 |
+|---|---|
+| 適用場景 | xUnit 單一/多類別單元測試（Service / Validator / Legacy） |
 | Orchestrator Skill 路徑 | `.codex/skills/dotnet-testing-orchestrator-unit/SKILL.md` |
-| 觸發方式                | `$dotnet-testing-orchestrator-unit`                       |
-| Dispatch 機制           | Codex 原生 SpawnAgent                                     |
+| 觸發方式 | `$dotnet-testing-orchestrator-unit` |
+| Dispatch 機制 | Codex 原生 SpawnAgent |
 
-Orchestrator 本身是一個**指揮中心**，負責調度四個 Subagent，不直接撰寫任何測試程式碼。整個流程從 Phase 0 前置清理開始，依序經過 Analyzer → Writer → Executor → Reviewer 四個核心階段，最終以 Phase 5 後置清理收尾。
+Orchestrator 是**指揮中心**，調度四個 Subagent，自身不撰寫測試。流程：Phase 0 前置清理 → Analyzer → Writer → Executor → Reviewer → Phase 5 後置清理。全程維護 `run-state.json`。
 
 ---
 
 ## 2. 元件組成
 
-| 元件         | 類型     | 路徑                                              |
-| ------------ | -------- | ------------------------------------------------- |
-| Orchestrator | Skill    | `.codex/skills/dotnet-testing-orchestrator-unit/` |
-| Analyzer     | Subagent | `.codex/agents/dotnet-testing-analyzer.toml`      |
-| Writer       | Subagent | `.codex/agents/dotnet-testing-writer.toml`        |
-| Executor     | Subagent | `.codex/agents/dotnet-testing-executor.toml`      |
-| Reviewer     | Subagent | `.codex/agents/dotnet-testing-reviewer.toml`      |
+| 元件 | 類型 | 路徑 |
+|---|---|---|
+| Orchestrator | Skill | `.codex/skills/dotnet-testing-orchestrator-unit/` |
+| Analyzer | Subagent | `.codex/agents/dotnet-testing-analyzer.toml` |
+| Writer | Subagent | `.codex/agents/dotnet-testing-writer.toml` |
+| Executor | Subagent | `.codex/agents/dotnet-testing-executor.toml` |
+| Reviewer | Subagent | `.codex/agents/dotnet-testing-reviewer.toml` |
 
-各 Subagent 的輸入規格定義在各自 `.toml` 定義檔的「輸入契約（Input Contract）」段落中。Orchestrator 只需按契約傳入對應參數即可，無需了解 Subagent 的內部實作。
-
----
-
-## 3. 使用的 Agent Skills
-
-Writer Subagent 依照 Analyzer 的分析報告，動態載入所需的技術型 Agent Skills。以下為完整的 Skills 分類清單：
-
-| 分類      | Agent Skills                                                  |
-| --------- | ------------------------------------------------------------ |
-| 核心框架  | `dotnet-testing-xunit-project-setup`、`dotnet-testing-unit-test-fundamentals` |
-| Mock 框架 | `dotnet-testing-nsubstitute-mocking`                         |
-| 測試資料  | `dotnet-testing-autofixture-basics`、`dotnet-testing-bogus-fake-data` |
-| 時間抽象  | `dotnet-testing-datetime-testing-timeprovider`              |
-| 檔案系統  | `dotnet-testing-filesystem-testing-abstractions`            |
-| 驗證器    | `dotnet-testing-fluentvalidation-testing`                   |
-| 斷言      | `dotnet-testing-awesome-assertions-guide`                   |
-
-> 技術型 Agent Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需直接複製到 `.codex/skills/` 後才可供 Writer 載入。
+Orchestrator 在 SpawnAgent 時**只傳交接檔案路徑 + 摘要數字**，不嵌入完整 JSON；各 Subagent 的 Step 0 自行讀取上游交接檔案。
 
 ---
 
-## 4. 工作流程細節
+## 3. Phase 1 Analyzer
 
-### Phase 0：前置清理
+Analyzer 讀原始碼，識別目標類型與依賴，產出 `analysis.json`。
 
-Orchestrator 在啟動 Analyzer 之前，先檢查測試專案目錄下是否存在殘留的 `.orchestrator/` 暫存目錄，並初始化本次執行的 `run-state.json`：
+**三種目標類型：**
 
-- **有殘留**：委託 Executor 以 `task: "cleanup"` 模式清理後，再進入階段 1。
-- **無殘留**：直接進入階段 1。
+| 類型 | 特徵 | 處理 |
+|---|---|---|
+| Service | 有可注入依賴（Repository / TimeProvider / IFileSystem / 介面）| 正常 mock 流程 |
+| Validator | `AbstractValidator<T>` | `forbidWriterSplit: true`，永不分割 |
+| Legacy | 靜態依賴、裸靜態呼叫，難以隔離 | Characterization Test；需 seam 時走 production-code 邊界 |
 
-### Phase 1 Analyzer
-
-Analyzer 讀取被測試目標的原始碼，識別類別類型與依賴，產出結構化的分析 JSON 報告（交接檔案）。
-
-**三種目標類別類型：**
-
-| 類型                 | 特徵                                                          | 特殊處理                                |
-| -------------------- | ------------------------------------------------------------- | --------------------------------------- |
-| Service（服務類別）  | 有外部依賴（Repository、DbContext、HttpClient 等），需要 Mock | 正常流程                                |
-| Validator（驗證器）  | 繼承 `AbstractValidator<T>`，使用 FluentValidation            | 永遠不分割（`forbidWriterSplit: true`） |
-| Legacy（遺留程式碼） | 靜態依賴、難以測試的設計（靜態方法、直接 `new` 相依物件）     | 需要特殊包裝策略                        |
-
-**Analyzer 輸出摘要（回傳給 Orchestrator 的欄位）：**
+**Analyzer 輸出（回傳摘要 + 寫入 analysis.json）：**
 
 - `className`、`targetType`、`methodCount`、`scenarioCount`、`methodScenarioCounts`
-- `requiredTechniques`、`skillMap`
-- `analysisFilePath`：實際寫入的交接檔案路徑
-- `projectContext`：目標框架版本（`net8.0` / `net9.0` / `net10.0`）
+- `requiredTechniques`、`skillMap`、`projectContext`（targetFramework）、`analysisFilePath`
+- **`constructorGuards[]`**：偵測到建構子中以 `?? throw new ArgumentNullException(nameof(x))` 形式 guard 的注入依賴（Codex 強化，供 Writer 寫建構子 null-guard 測試）
+- **`directIoOperations[]` / `testabilityIssues[]`**：偵測到**裸靜態**依賴時填入——靜態方法、裸 `DateTime.Now`/`UtcNow`/`DateTimeOffset.*`、裸 `File.*`/`Directory.*`。裸 `DateTime` 與裸 `File.IO` **同類處理**（皆 production-code 可測試性缺口）
 
-Orchestrator 收到摘要後，驗證交接檔案是否確實存在，再 SpawnAgent 啟動 Writer。
+> **skill 選擇按「屬性」非「類別名」**：依注入依賴型別（`IFileSystem` → filesystem skill、注入的 `TimeProvider` → datetime skill）、targetType、門檻決定，不對特定 sample 類別特判。`datetime-testing-timeprovider` **只**對「注入的 `TimeProvider`」載入；裸 `DateTime.*` 不載該技能、改標 testabilityIssue。
 
-### Phase 2 Writer
-
-Writer 在 Step 0 讀取 Analyzer 的交接 JSON，按需載入對應的 Agent Skills，然後撰寫完整的測試程式碼。
-
-**測試命名慣例：**
-
-採用中文三段式格式：`方法名_情境描述_預期結果`
-
-範例：`CreateAsync_商品名稱已存在_應擲回DuplicateNameException`
-
-**Writer 分割策略：**
-
-| 條件                                        | 行為                              |
-| ------------------------------------------- | --------------------------------- |
-| `methodCount > 5` 或 `scenarioCount > 20`   | 觸發分割，同時啟動兩個平行 Writer |
-| `forbidWriterSplit: true`（Validator 類別） | 永遠不分割，強制單一 Writer       |
-| 其他情況                                    | 單一 Writer 處理全部方法          |
-
-**分割方式（貪心演算法）：**
-
-1. 將 `methodScenarioCounts` 中的方法按 scenario 數量降序排列。
-2. 依序將每個方法分配到目前 scenario 總數較少的那一組，目標是兩組 scenario 數量盡量接近。
-3. 同一方法的所有測試案例絕不跨組拆分。
-4. Writer 1 輸出至 `{TestDir}/Services/{ClassName}Tests.cs`，Writer 2 輸出至 `{TestDir}/Services/{ClassName}_{MethodName}Tests.cs`。
-
-**斷言規範：**
-
-- 必須使用 AwesomeAssertions（`result.Should().Be(...)`）。
-- 禁止使用 xUnit 內建的 `Assert.Equal` 等斷言方法。
-
-**多 Writer 風格統一要求（分割時）：**
-
-- `using` 排列順序、AutoFixture 初始化方式、FakeTimeProvider 欄位命名與初始時間設定，所有 Writer 必須完全一致。
-
-### Phase 3 Executor
-
-Executor 負責建置並執行測試，同時處理編譯錯誤修正。
-
-**建置策略：**
-
-- 優先建置測試專案的 `.csproj`（含所有間接依賴的 csproj 一起建置）。
-- 建置成功後執行 `dotnet test`。
-
-**錯誤修正迴圈：**
-
-- 最多修正 3 輪，超過則回報失敗並帶入 Reviewer 階段標示問題。
-- 常見修正項目：缺少 `using` 宣告、NuGet 套件版本不符、型別名稱不存在或拼寫錯誤。
-
-**Executor 輸出摘要：**
-
-- `totalTests`、`passedTests`、`failedTests`、`fixRounds`、`executorResultFilePath`
-
-### Phase 4 Reviewer
-
-Reviewer 讀取測試程式碼與三個交接檔案（Analyzer / Writer / Executor 的結果），進行品質審查。
-
-**審查項目：**
-
-| 審查面向    | 具體檢查內容                                                         |
-| ----------- | -------------------------------------------------------------------- |
-| 命名規範    | 是否符合中文三段式格式（`方法名_情境描述_預期結果`）                 |
-| 斷言風格    | 是否使用 AwesomeAssertions，禁止 `Assert.Equal` 等 xUnit 內建斷言    |
-| 測試隔離    | 每個測試方法是否只驗證一個行為                                       |
-| Mock 設定   | NSubstitute 的 Substitute 設定是否正確，是否有多餘的 Received() 驗證 |
-| AutoFixture | 初始化方式是否一致（`IFixture` 欄位、OmitOnRecursionBehavior）       |
-| 覆蓋率      | 是否遺漏重要的邊界情境（null 輸入、空集合、例外路徑等）              |
-
-**修正流程：**
-
-Reviewer 回傳結果後，Orchestrator 呈現完整報告（`overallScore`、`issues`、`missingTestCases`），並**等待使用者指示**再決定是否啟動修改流程。修改流程為三階段：Writer（修改模式）→ Executor → Reviewer（re-review 模式）。
-
-### Phase 5：後置清理
-
-四階段全部完成並向使用者呈現結果後，Orchestrator 清理 Executor 的暫存結果目錄並收尾 `run-state.json`：
-
-```bash
-rm -rf "{testProjectDir}/.orchestrator/executor-result/"
-```
-
-> `.orchestrator/analysis/` 與 `run-state.json` 在當次 review 時可作為證據；它們是 byproduct，**不進版控**，review 完即可丟。下一次執行時，Phase 0 前置清理會處理殘留。
+Orchestrator 收摘要後**驗證交接檔案確實存在**，才 SpawnAgent Writer。
 
 ---
 
-## 5. 支援的測試技術棧
+## 4. Phase 2 Writer
+
+Writer 在 Step 0 讀 analysis.json，按 `requiredTechniques` 載入 Agent Skills，撰寫測試。
+
+**測試命名**：中文三段式 `方法名_情境描述_預期結果`。
+**斷言**：必用 AwesomeAssertions（`.Should()`），禁 `Assert.Equal` 等 xUnit 內建斷言。
+
+### 4.1 大型類別 Writer 分割策略
+
+**觸發條件**（須同時滿足）：`methodCount > 5` 或 `scenarioCount > 20`，**且** `forbidWriterSplit` 不為 `true`。觸發後啟動**最多 2 個平行 Writer**（agent 數固定為 2，不因平衡而增減）。
+
+**分組規則（setup 親和優先，非純貪心）：**
+
+1. **setup 親和優先**：先依 dependency / requiredTechniques / suggestedTestScenarios 判斷每個方法需要的 SUT / mock / TimeProvider / AutoFixture / 資料建構設定，**將共用同一套 setup 的方法盡量分到同一組**；`methodScenarioCounts` 僅作**次要**平衡。
+2. **不為了 scenario 數平均而拆散共用 setup 的方法**；同一方法的所有測試案例絕不跨組。
+3. **建構子 null-guard 測試集中單一檔**：若有 `constructorGuards[]`，`Constructor` 測試完整放入單一 assignment（預設 Writer 1 / 主要組），不分散、不重複。
+
+**輸出檔案命名：**
+
+- Writer 1（主要組）：`{ClassName}Tests.cs`
+- Writer 2（分割組）：1～2 方法 → `{ClassName}_{代表方法}Tests.cs`；3+ 方法 → 語意化群組名 `{ClassName}_{Group}Tests.cs`
+
+### 4.2 跨檔 fixture 一致契約（Codex 強化，分割時所有 Writer 必守）
+
+這是 Codex 版針對「split 多檔 fixture 漂移」的強化（上游 Claude 版有此問題）。風格統一指令要求 split 出的多檔**逐檔一致**：
+
+- **時間錨**：用**具名常數**（如 `private static readonly DateTimeOffset InitialNow = ...`），所有 split 檔同名同值；禁一檔 inline、一檔具名
+- **AutoFixture 遞迴行為**：所有 Writer 一致（先移除 `ThrowingRecursionBehavior` 再加 `OmitOnRecursionBehavior`）；禁一檔只加 Omit、另一檔做完整清理
+- **欄位/區域變數命名**：`_fixture`/`_timeProvider`/`_sut`、per-test 時間變數（兩檔都 `now` 或都 `currentTime`）逐檔一致
+- **SUT 建構模式一致**；**未使用的 fixture 禁止宣告**（不留 dead field/using）
+
+> 以上完整一致性由 **Writer / Orchestrator 契約**強制（Writer 風格統一指令 + Orchestrator artifact gate）。Reviewer 目前的明文 checklist 涵蓋部分項目（見 §6），尚未逐條列出全部 fixture 一致面向；如需 Reviewer 端完整顯式把關，須先補強 `dotnet-testing-reviewer.toml`。
+
+### 4.3 建構子 null-guard 覆蓋（Codex 強化）
+
+若 analysis 有 `constructorGuards[]`，負責 `Constructor` 的 Writer 必須**為每個 guarded 依賴**寫一個 null-guard 測試：`new XxxService(...該依賴傳 null...)` 應 `Throw<ArgumentNullException>().WithParameterName("<dep>")`。guard 本就存在於 production，**不需修改 production code**。
+
+### 4.4 Writer Artifact 完整性 Gate
+
+Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writer-result.json` 驗欄位齊全（`testFilePaths`、`testCaseCount`、`testClasses[].methodsCovered`、`skillsLoaded` 等）+ 方法範圍檢查（method-scope 不得溢寫全類別；split assignment 的 `methodsCovered` 可回溯；ctor 測試只能在單一檔）。缺欄/不一致 → 不進 Executor，可 **bounded re-dispatch Writer 最多 2 次**（只補缺漏，**不重啟整個 workflow**），仍不行則判 blocker。
+
+### 4.5 階段間主動釋放 agent（Codex 強化）
+
+Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **主動關閉已完成 Writer agents**，釋放後續 phase 的 runtime thread slots（Analyzer→Writer、Executor→Reviewer 同樣處理）。此舉是 thread-ceiling 的單點優化，只釋放已完成 agent，不改測試/分割/correctness。
+
+---
+
+## 5. Phase 3 Executor
+
+建置 + 執行 + **bounded 修正迴圈（最多 3 輪）**。常見修正：補 `using`、**新增缺少的必要測試套件 / 移除錯誤套件**、型別/命名衝突。**禁升級或降級既有套件版本**來修 build——若根因是既有套件版本過舊或相容性不足，回報 **blocker**（版本管理屬專案維護者）。**禁** restart 整個流程 / 拼湊·偽造 artifact / 塌回內聯 / 假綠（測試沒真跑成功不得宣稱通過）。
+
+輸出：`totalTests`、`passedTests`、`failedTests`、`fixRounds`、`executorResultFilePath`。
+> 驗收以 `buildResult` + `fixHistory` 為準；不得因舊 build 輸出的 `dotnet test --no-build` 假綠。
+
+---
+
+## 6. Phase 4 Reviewer
+
+讀測試碼 + 三個交接檔（analysis/writer-result/executor-result），品質審查。Reviewer 有完整審查 / re-review 兩模式。**reviewer.toml 目前明文 checklist** 涵蓋：命名（中文三段式）、斷言風格（AwesomeAssertions、例外斷言、lambda、物件斷言）、`using` 排序、`_timeProvider` 設定、測試隔離、Mock 設定、覆蓋完整性（含邊界）。
+
+> 註：§4.2 的完整跨檔 fixture 一致面向（`InitialNow` 具名常數、AutoFixture 遞迴行為、`_fixture`/`_sut` 命名、SUT 建構模式、per-test 時間變數命名）目前主要由 **Writer 風格統一指令 + Orchestrator artifact gate** 保證；reviewer.toml 尚未逐條顯式列出全部。若要 Reviewer 端完整把關，須補強該 toml。
+
+**修改流程（post-review approval gate）**：Reviewer 回傳後 Orchestrator 呈現完整報告（`overallScore` / `issues` / `missingTestCases`）並**等待使用者明確指示**才啟動修改流程（Writer 修改 → Executor → Reviewer re-review）。**禁止自動觸發、禁止預先授權**。
+
+---
+
+## 7. Production-code 邊界（Codex 與 Claude 共有政策）
+
+本 workflow 預設**只寫/驗測試，不主動改 production code**：
+
+- 若完整隔離測試需要 seam（加 `IFileSystem` / `IReportWriter` / clock seam、改 constructor signature / public API、加 production 套件）→ Orchestrator 標 **`requiresUserApproval`**，未經同意不得 dispatch 改 production code 的工作。
+- **裸 `DateTime.Now/UtcNow` 比照裸 `File.IO`**：屬可測試性缺口，標 `testabilityIssues`，不硬測、不用 FakeTimeProvider 假裝可控（FakeTimeProvider 只能控注入的 TimeProvider）。
+- Legacy 用 Characterization Test，禁硬編機器路徑（`C:\`、`/Users/`）作 I/O、禁硬編天數。
+- final report 誠實標 `blocked` / `characterization-only` / `requiresUserApproval`，不把缺 seam 包裝成完整 isolated test。
+
+---
+
+## 8. 交接檔案與 run-state instrumentation
+
+| 交接檔 | 寫入者 | 路徑 |
+|---|---|---|
+| `{ClassName}.analysis.json` | Analyzer | `.orchestrator/analysis/` |
+| Writer artifact（逐 assignment 唯一）| Writer | `.orchestrator/writer-result/`；**每個 Writer assignment 各自一份可獨立 poll 的 canonical artifact**，路徑須能回溯該 assignment 與其 `testFilePath`（split 時非單一 `{ClassName}.writer-result.json`）|
+| `*.executor-result.json` | Executor | `.orchestrator/executor-result/` |
+| `{ClassName}.reviewer-result.json` | Reviewer | `.orchestrator/reviewer-result/` |
+| `run-state.json` | Orchestrator | `.orchestrator/` |
+
+**`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），且含 Codex 強化的階段內 instrumentation：
+
+- `phases.{analyzer,writer,executor,reviewer}.assignments[]`：逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `dispatchAcceptLatencyMs` / `produceSpanMs`（每筆獨立量測；無法獨立觀察時填 `null`+`timingNote`，**禁複製 phase 邊界充數**）
+- `phaseDurations.{phase}.durationMs`（+ `criticalPathAssignmentId`）
+- `redispatchEvents[]`（撞 agent thread-limit 補派事件：`occurredAt` / `cause` / `redispatchWaitMs`）、`boundedRedispatchCount`、`restartCount`、`executorFixRounds`
+- `profilingSummary`：`bottleneck`、`bottleneckBreakdown`（`dispatchAcceptLatencyMs` / `produceSpanMs` / `redispatchWaitMs`）、`writerCriticalPath`（min/median/max `produceSpanMs`）、`rootCauseCandidate`、`timingSource`、`deferredOptimization`
+- 量不到的細項一律填 `null` + `notes`（缺值語義說明），**不得省略欄位或改用短名**
+
+> **Token 用量不提供**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source（實證確認），不回報以免誤導。
+
+---
+
+## 9. 多目標並行策略
+
+| 階段 | 執行方式 | 原因 |
+|---|---|---|
+| Analyzer | 平行（逐 target）| 互不依賴 |
+| Writer | 平行（逐 target，且各 target 仍可 per-class 分割）| 獨立撰寫；dispatch 單位是「Writer assignment」非 target，故三目標可產生 > 3 個 Writer |
+| Executor | 循序 | 同專案 `dotnet build` 不可並行 |
+| Reviewer | 平行（逐 target）| 獨立審查 |
+
+- 並行 SpawnAgent 數受 `.codex/config.toml` `[agents] max_threads` 限制。
+- **thread-ceiling 自癒**：分割使並行 Writer 變多時可能逼近 agent thread limit；遇到時做 **bounded re-dispatch**（關閉已完成 agents 後補派，`restartCount=0`），`run-state.redispatchEvents` 記錄該事件。配合 §4.5 階段間主動釋放降低撞限機率。
+
+---
+
+## 10. Phase 0 / Phase 5 清理
+
+- **Phase 0**：啟動 Analyzer 前，若有殘留 `.orchestrator/` 委託 Executor `cleanup` 清理，並初始化 `run-state.json`。
+- **Phase 5**：四階段完成並呈現結果後清理 `.orchestrator/executor-result/`。**`run-state.json` 與 `analysis/` 在本次 run 內不刪**（供 review 當證據），於**下一次 run 的 Phase 0** 殘留清理時一併處理。
+- 生成測試碼 + `.orchestrator/` 皆為 byproduct，**不進版控**。
+
+---
+
+## 11. 支援的測試技術棧
 
 ```text
-xUnit 2.9+
-NSubstitute 5.x
-AutoFixture 4.x
-AwesomeAssertions（基於 FluentAssertions）
-Bogus
+xUnit 2.9+ / NSubstitute 5.x / AutoFixture 4.x
+AwesomeAssertions（基於 FluentAssertions）/ Bogus
 Microsoft.Extensions.TimeProvider.Testing（FakeTimeProvider）
 TestableIO.System.IO.Abstractions.TestingHelpers（MockFileSystem）
 ```
 
----
-
-## 6. 交接檔案機制
-
-Subagent 之間透過 JSON 交接檔案傳遞分析結果，避免在 prompt 中嵌入大量內容：
-
-| 交接檔案                           | 寫入者       | 路徑格式                                          |
-| ---------------------------------- | ------------ | ------------------------------------------------- |
-| `{ClassName}.analysis.json`        | Analyzer     | `{testProjectDir}/.orchestrator/analysis/`        |
-| `{ClassName}.writer-result.json`   | Writer       | `{testProjectDir}/.orchestrator/`                 |
-| `{ClassName}.executor-result.json` | Executor     | `{testProjectDir}/.orchestrator/executor-result/` |
-| `{ClassName}.reviewer-result.json` | Reviewer     | `{testProjectDir}/.orchestrator/reviewer-result/` |
-| `run-state.json`                   | Orchestrator | `{testProjectDir}/.orchestrator/`                 |
-
-Orchestrator 在 SpawnAgent 各 Subagent 時只傳入交接檔案路徑與摘要數字，不嵌入完整 JSON 內容。每個 Subagent 的 Step 0 會自行讀取上游交接檔案取得完整資訊。`run-state.json` 由 Orchestrator 維護，記錄各階段 wall-clock 時間與結果，為官方耗時的唯一真實來源。
-
----
-
-## 7. 多目標並行策略
-
-使用者可一次指定多個被測試類別，Orchestrator 採用以下並行策略：
-
-| 階段             | 執行方式 | 原因                               |
-| ---------------- | -------- | ---------------------------------- |
-| Phase 1 Analyzer | 平行     | 每個目標互不依賴                   |
-| Phase 2 Writer   | 平行     | 每個目標獨立撰寫                   |
-| Phase 3 Executor | 循序     | 同一專案的 `dotnet build` 不可並行 |
-| Phase 4 Reviewer | 平行     | 每份測試獨立審查                   |
-
-> 並行的 SpawnAgent 數量受 `.codex/config.toml` 的 `[agents] max_threads` 限制。
+> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需直接複製到 `.codex/skills/`。
