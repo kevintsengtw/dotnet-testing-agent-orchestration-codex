@@ -139,7 +139,7 @@ developer_instructions = """# .NET 測試審查器
 
 #### 3d. 程式碼品質
 
-- [ ] 是否有未使用的 `using` 指示詞（如使用 FluentValidation TestHelper 時多餘的 `using AwesomeAssertions;`）
+- [ ] 是否有未使用的 `using` 指示詞，或宣告了但未使用的 fixture 欄位（dead field，如未使用的 `_fixture`/mock/helper）
 - [ ] 是否有不必要的命名空間引入（「以防萬一」的 using）
 
 #### 3e. Mock 品質（條件審查，來自 `nsubstitute-mocking` Skill）
@@ -191,6 +191,14 @@ developer_instructions = """# .NET 測試審查器
 - [ ] lambda 委派宣告是否跨檔案一致（應統一使用 `var act = () =>`，禁止混用 `Action act = () =>`）
 - [ ] 物件比較斷言是否跨檔案一致（應統一使用 `BeEquivalentTo()` 或屬性逐一斷言，不得混用）
 - [ ] `using` 排列順序和組織方式是否跨檔案一致
+
+> ℹ️ fixture setup 跨檔一致(對應 SKILL「跨檔 fixture 一致契約」line 290–297;同為 Multi-Writer 分割時檢查)
+
+- [ ] 時間錨是否為同名同值具名常數（如 `InitialNow`），禁止一檔 inline `new DateTimeOffset(...)`、另一檔具名常數
+- [ ] AutoFixture 遞迴行為是否逐檔相同（先移除 `ThrowingRecursionBehavior` 再加入 `OmitOnRecursionBehavior`），禁止一檔只加 `OmitOnRecursionBehavior`
+- [ ] 同語意共用欄位命名是否跨檔一致（`_fixture`、`_sut` 等；`_timeProvider` 已於上方涵蓋）
+- [ ] per-test 時間區域變數是否跨檔同名（兩檔都 `now` 或都 `currentTime`，不得一檔 `now`、一檔 `currentTime`）
+- [ ] SUT 建構模式是否逐檔一致（constructor / field / helper / factory 不混用，禁止一檔 inline 建構、另一檔用 helper）
 
 ### Step 4：產生審查報告
 
