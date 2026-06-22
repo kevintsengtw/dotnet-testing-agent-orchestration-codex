@@ -26,7 +26,10 @@
 | 測試類型 | Orchestrator Skill | 狀態 |
 |---|---|---|
 | Unit Testing | `dotnet-testing-orchestrator-unit` | ✅ 已釋出 |
-| Integration / Aspire / TUnit | — | 🚧 後續釋出 |
+| TUnit Testing | `dotnet-testing-orchestrator-tunit` | ✅ 已釋出 |
+| Integration / Aspire | — | 🚧 後續釋出 |
+
+> **TUnit 工作流程**:同樣 1 Skill + 4 Subagent,但執行模型為 **`dotnet run`**(Source Generator / Microsoft.Testing.Platform,非 `dotnet test`),產出 `OutputType=Exe`、不含 `Microsoft.NET.Test.Sdk`;支援 `[Test]`/`[Arguments]`/`[MethodDataSource]`、`.slnx` 版本感知選擇、xUnit→TUnit 遷移、Validator(`forbidWriterSplit`)。呼叫 `$dotnet-testing-orchestrator-tunit`;練習素材見 `samples/tunit/practice_tunit/`,細節見 `docs/guides/tunit-testing.md`。
 
 ---
 

@@ -4,6 +4,30 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v0.0.3] - 2026-06-22
+
+Codex 版第二個工作流程預覽:**TUnit 測試 Agent Orchestration**(由 `dotnet-testing-agent-orchestration-claude` 經 migrate-to-codex 轉換,並經 Claude-vs-Codex 對照驗證)。
+
+### 新增
+- **`dotnet-testing-orchestrator-tunit` Skill**:TUnit 測試指揮中心,1 Skill + 4 Subagent(`dotnet-testing-advanced-tunit-{analyzer,writer,executor,reviewer}`),Codex 原生 SpawnAgent dispatch
+- **4 個 tunit Codex 原生 subagent**(`.codex/agents/dotnet-testing-advanced-tunit-*.toml`)
+- **tunit 練習 sample**(`samples/tunit/practice_tunit/`),含 `LibraryMemberValidator` fixture
+- **per-type 文件**:`docs/architecture/tunit-orchestrator.md`、`docs/guides/tunit-testing.md`
+
+### 特性(TUnit 專屬)
+- **執行模型 = `dotnet run`**(Microsoft.Testing.Platform / Source Generator,`engineMode=SourceGenerated`),**絕不用 `dotnet test`**;產出 `OutputType=Exe`、不含 `Microsoft.NET.Test.Sdk`
+- TUnit 屬性 `[Test]`/`[Arguments]`/`[MethodDataSource]`/`[Before(Test)]`,測試方法 `async Task`
+- **`.slnx` 版本感知選擇**(net8 / net9 / net10)
+- **xUnit→TUnit 遷移**軸(`[Fact]`→`[Test]`、`[Theory]`+`[InlineData]`→`[Arguments]`、`[MemberData]`→`[MethodDataSource]`、`IDisposable`→`[After(Test)]`,零 xUnit 殘留)
+- Matrix:TUnit 0.6.123 無 `[MatrixDataSource]` → 以 nested-loop `[MethodDataSource]` 模擬
+- Validator(`AbstractValidator<T>`)`forbidWriterSplit` 永不分割 + FluentValidation TestHelper
+- 沿用 unit 的 Codex 強化:`run-state.json` timing、Writer artifact gate + bounded re-dispatch、phase-boundary agent release、post-review approval gate、production-code 邊界、token de-scoped
+
+### 驗證(Claude-vs-Codex 對照,exp-01~06)
+- 基本 / Writer 分割 / xUnit→TUnit 遷移 / net10 框架變體+.slnx / 資料驅動+Matrix / Validator 六軸全部 **PASS**
+- 每個 Codex run 由 reviewer 親跑 `dotnet run` 驗證為真、**零假綠**;完整度與 Claude 基準 **parity**;**零 Codex 專屬硬性 fix**
+- 6 軸停損判定:Codex tunit **good-enough**(與基準實質等價)
+
 ## [v0.0.2] - 2026-06-19
 
 Reviewer 跨檔 fixture 一致檢查補強(工作流程契約變更)。

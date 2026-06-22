@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Practice.TUnit.Net8.Core/Practice.TUnit.Net8.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Practice.TUnit.Net8.Core.Tests/Practice.TUnit.Net8.Core.Tests.csproj" />
+  </Folder>
+</Solution>
