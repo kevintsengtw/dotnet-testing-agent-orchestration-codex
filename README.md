@@ -27,9 +27,12 @@
 |---|---|---|
 | Unit Testing | `dotnet-testing-orchestrator-unit` | ✅ 已釋出 |
 | TUnit Testing | `dotnet-testing-orchestrator-tunit` | ✅ 已釋出 |
-| Integration / Aspire | — | 🚧 後續釋出 |
+| Integration Testing | `dotnet-testing-orchestrator-integration` | ✅ 已釋出 |
+| Aspire | — | 🚧 後續釋出 |
 
 > **TUnit 工作流程**:同樣 1 Skill + 4 Subagent,但執行模型為 **`dotnet run`**(Source Generator / Microsoft.Testing.Platform,非 `dotnet test`),產出 `OutputType=Exe`、不含 `Microsoft.NET.Test.Sdk`;支援 `[Test]`/`[Arguments]`/`[MethodDataSource]`、`.slnx` 版本感知選擇、xUnit→TUnit 遷移、Validator(`forbidWriterSplit`)。呼叫 `$dotnet-testing-orchestrator-tunit`;練習素材見 `samples/tunit/practice_tunit/`,細節見 `docs/guides/tunit-testing.md`。
+
+> **整合測試工作流程**:同樣 1 Skill + 4 Subagent,執行模型為 **`dotnet test`**(xUnit,含 `Microsoft.NET.Test.Sdk`、無 `OutputType=Exe`)+ **Docker / Testcontainers**;以 **HTTP endpoint 為粒度**,透過 `WebApplicationFactory<Program>` 發真實 HTTP 請求,HTTP 斷言用 **AwesomeAssertions.Web**(`Be200Ok`/`Be404NotFound` 等),錯誤格式驗 `ProblemDetails`/`ValidationProblemDetails`,容器化資料庫(PostgreSQL/SQL Server/MongoDB/Redis)搭配 Respawn 資料隔離。**需 Docker 環境**。呼叫 `$dotnet-testing-orchestrator-integration`;練習素材見 `samples/integration/practice_integration/`,細節見 `docs/guides/integration-testing.md`。
 
 ---
 

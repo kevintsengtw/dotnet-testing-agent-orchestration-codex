@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Practice.Integration.WebApi.Net10/Practice.Integration.WebApi.Net10.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Practice.Integration.WebApi.Net10.Tests/Practice.Integration.WebApi.Net10.Tests.csproj" />
+  </Folder>
+</Solution>
