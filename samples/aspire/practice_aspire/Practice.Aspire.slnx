@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Practice.Aspire.AppHost/Practice.Aspire.AppHost.csproj" />
+    <Project Path="src/Practice.Aspire.WebApi/Practice.Aspire.WebApi.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Practice.Aspire.AppHost.Tests/Practice.Aspire.AppHost.Tests.csproj" />
+  </Folder>
+</Solution>

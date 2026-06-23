@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Sdk Name="Aspire.AppHost.Sdk" Version="9.0.0" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAspireHost>true</IsAspireHost>
+    <UserSecretsId>practice-aspire-apphost</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Aspire Hosting 核心套件 -->
+    <PackageReference Include="Aspire.Hosting.AppHost" Version="9.0.0" />
+    <!-- Redis 容器支援 -->
+    <PackageReference Include="Aspire.Hosting.Redis" Version="9.0.0" />
+    <!-- SQL Server 容器支援 -->
+    <PackageReference Include="Aspire.Hosting.SqlServer" Version="9.0.0" />
+  </ItemGroup>
+
+  <!-- 引用要編排的專案 -->
+  <ItemGroup>
+    <ProjectReference Include="..\Practice.Aspire.WebApi\Practice.Aspire.WebApi.csproj" />
+  </ItemGroup>
+
+</Project>

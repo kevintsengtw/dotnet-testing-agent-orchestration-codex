@@ -1,0 +1,24 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.1.2">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAspireHost>true</IsAspireHost>
+    <UserSecretsId>practice-aspire-net10-apphost</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Redis 容器支援 -->
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.1.2" />
+    <!-- SQL Server 容器支援 -->
+    <PackageReference Include="Aspire.Hosting.SqlServer" Version="13.1.2" />
+  </ItemGroup>
+
+  <!-- 引用要編排的專案 -->
+  <ItemGroup>
+    <ProjectReference Include="..\Practice.Aspire.Net10.WebApi\Practice.Aspire.Net10.WebApi.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -4,6 +4,33 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v0.0.5] - 2026-06-23
+
+Codex 版第四個(也是最後一個)工作流程預覽:**.NET Aspire 整合測試 Agent Orchestration**(由 `dotnet-testing-agent-orchestration-claude` 經 migrate-to-codex 轉換,並經 Claude-vs-Codex 對照驗證)。四種測試工作流程(unit / integration / aspire / tunit)至此功能齊備。
+
+### 新增
+- **`dotnet-testing-orchestrator-aspire` Skill**:.NET Aspire 整合測試指揮中心,1 Skill + 4 Subagent(`dotnet-testing-advanced-aspire-{analyzer,writer,executor,reviewer}`),Codex 原生 SpawnAgent dispatch
+- **4 個 aspire Codex 原生 subagent**(`.codex/agents/dotnet-testing-advanced-aspire-*.toml`)
+- **aspire 練習 sample**(`samples/aspire/practice_aspire/`),含 `BookingsController`(SQL Server + Redis)+ FluentValidation,net8(Aspire 8.2.2)/ net9(Aspire 9.0)/ net10(Aspire 13.1.2)三版變體
+- **per-type 文件**:`docs/architecture/aspire-orchestrator.md`、`docs/guides/aspire-testing.md`
+
+### 特性(Aspire 專屬)
+- **執行模型 = AppHost / `DistributedApplicationTestingBuilder`**(Aspire.Hosting.Testing,**非** `WebApplicationFactory`)+ xUnit **`dotnet test --blame-hang-timeout`**(8.x/9.x=`10m`、13.x=`15m`;**絕不用** `dotnet run`、**不可用** `--timeout`);csproj 含 `Microsoft.NET.Test.Sdk`+`xunit`+`Aspire.Hosting.Testing`、**無** `OutputType=Exe`
+- **環境雙檢**:Executor Step 0 `docker info`(**Docker 為硬前置,無 InMemory 退路**)+ Step 0.5 `dotnet workload list`(含 `Aspire.AppHost.Sdk` 9.0+ NuGet **免 workload 例外**)
+- **`app.CreateHttpClient("name")` 名稱對齊** AppHost `AddProject("name")`;容器由 Aspire AppHost 宣告式管理(**非**程式化 Testcontainers);DB 連線用 `App.GetConnectionStringAsync("resourceName")`
+- **Analyzer 以 AppHost Resource graph 為核心**:`resources[]` / `projectReferences[]` / `dependencyGraph` / `containerLifetime` / `dataVolumes`;`aspireVersion` 雙格式擷取(8.x 分離 SDK 以 `Aspire.Hosting.AppHost` 套件為準、13.x Project-SDK 以 SDK 屬性為準);`requiredSkills` 固定 `["aspire-testing"]`
+- **Writer 單一技術技能 `aspire-testing`**(不載 unit 20 技能 / tunit / integration 4 技能);AspireAppFixture(`IAsyncLifetime`)+ CollectionDefinition + `ContainerLifetime.Session` + Respawn
+- **多目標並行度**:Analyzer / Writer / Reviewer 平行,**Executor 循序**(AppHost 啟動不可並行互搶)
+- **Production 窄例外**(Executor 唯一可改 production 三類、須標記):Health Checks 缺失(`/health` 404)、容器重啟超時(`ContainerLifetime.Session`)、Redis TLS(Aspire 13.1+ → `WithoutHttpsCertificate()`);其餘走 `requiresUserApproval` 批准閘門
+- **使用者最終輸出**「結果整合與呈現」8 項(測試檔連結 / 執行摘要 / Docker+Aspire 環境 / 品質摘要 / 改善建議 / Skills / 修正紀錄 / 各階段耗時+Timing Evidence)+ 環境vs品質區分,對齊 unit/tunit/integration 兄弟
+- 沿用 unit/tunit/integration 的 Codex 強化:`run-state.json` timing、Writer artifact gate + bounded re-dispatch、phase-boundary agent release、Reviewer 強制執行、post-review approval gate、production-code 邊界、Phase 5 保留 artifacts、token de-scoped
+
+### 驗證(Claude-vs-Codex 對照,exp-01~03 三版矩陣)
+- net9(exp-01)/ net10·Aspire 13.x(exp-02)/ net8·Aspire 8.2.2(exp-03)三 TFM 版本全部 **PASS**;另含轉換驗收 net9 18/18
+- 每個 Codex run 由 reviewer **親跑 `dotnet test --blame-hang-timeout` 驗證為真**(21 / 24 / 25 全綠)、**零假綠**、零 restart/redispatch;完整度與 Claude 基準 parity(差 1~4 案例,9/9 端點覆蓋齊);**零 Codex 專屬硬性 fix**(僅 bounded NU1605 套件對齊)
+- **關鍵發現**:Claude 與 Codex 在**獨立**的 net10 run 各自收斂到**同一 Redis TLS + `ContainerLifetime.Session` 窄例外**,net8/net9 兩版皆 0 production 改動 → 實證 production 窄例外授權正確;stale Docker named volume 為三版共通環境前置
+- 6 軸停損判定:Codex aspire **good-enough**(與基準實質等價)
+
 ## [v0.0.4] - 2026-06-22
 
 Codex 版第三個工作流程預覽:**整合測試 Agent Orchestration**(由 `dotnet-testing-agent-orchestration-claude` 經 migrate-to-codex 轉換,並經 Claude-vs-Codex 對照驗證)。
