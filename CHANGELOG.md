@@ -4,6 +4,18 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.0.1] - 2026-06-24
+
+修正:Estimated Token Usage 估算器**位置調整 + 改為零相依自含**,與「安裝只部署 `.codex/`」產品模型對齊。
+
+### 變更
+- **`scripts/estimate-token-usage.mjs` → `.codex/scripts/estimate-token-usage.mjs`**:v1.0.0 時估算器置於 repo root `scripts/` 並隨 `package.json` 鏡射到 public root,但安裝腳本只部署 `.codex/`,導致照安裝腳本安裝的消費者**拿不到估算器**。移入 `.codex/scripts/` 後隨 `.codex/` 一起出貨
+- **4 個 orchestrator SKILL** 的估算器引用路徑(8 處)、aspire-analyzer 提及、`install-dotnet-testing-agents.py`(新增 step 3b 複製 `.codex/scripts/`)、`sync-to-public.yml`(改同步 `.codex/scripts/`、清除 public root 殘留、不再發佈 `package.json`/`package-lock.json`)、README / token-usage 指南 / architecture 文件路徑一併更新
+- **估算器改為零相依、自含**:**移除 `gpt-tokenizer` / `js-tiktoken` 外部 tokenizer**,一律用內建 `chars-heuristic`(`字元數 / 3.6`)估算;**刪除 `package.json` / `package-lock.json`**(估算器不再需要任何 npm 相依,有 Node.js 即可 `node` 執行)。理由:此功能定位為「相對成本比較的 optional telemetry、非 billing」,粗估即可,換零相依 + 隨 `.codex/` 乾淨出貨;消除「裝不裝 tokenizer」的曖昧與 `o200k_base` 是否符 Codex 的 proxy 疑慮
+- 輸出標記隨之更新:`estimator.method = "chars-heuristic"` + `charsPerToken`(取代舊 `tokenizer`/`fallback`);`confidence` 上限為 `medium`(chars 粗估永不 `high`);`ESTIMATOR_VERSION` → 2。四工作流程經情境驗證確認從新路徑正常產生估算;estimator 邏輯(phase/assignment 聚合、shared-artifact 去重、unavailable 降級)不變
+- **已知偏差新增一條**:`chars-heuristic` 非真實 BPE,粗估,中文等非拉丁文字偏差較大(已列入 `knownMissing` 與指南)
+- **停止發佈一鍵安裝腳本到 public**:`scripts/install-dotnet-testing-agents.py` + `scripts/README.md` 內容停在 unit-only 年代(腳本 `EXPECTED_AGENTS=4` 對不上現況 16、README 過時)、且 public README 安裝走手動步驟未引用此腳本(孤兒);改為 lab-internal,`sync-to-public.yml` 不再發佈並清除 public 殘留(lab 端常數同步修正為 16 agents / 5 內建 skill)
+
 ## [v1.0.0] - 2026-06-23
 
 **正式版里程碑**:四種測試工作流程(unit / tunit / integration / aspire)的 Codex 版轉換全部完成(v0.0.2~v0.0.5),並完成 **Estimated Token Usage(估算式 token 用量)** 跨四工作流程整合。依版本規則(四工作流程齊備)升至 `v1.0.0`。

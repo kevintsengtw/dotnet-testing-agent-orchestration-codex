@@ -168,7 +168,7 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 
 **`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），含 `workflow: "aspire"` 與逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `produceSpanMs`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`、`redispatchEvents[]` / `boundedRedispatchCount` / `restartCount` / `executorFixRounds`。正式 phase timing 必須讀實體檔計算，不得從對話敘述 / hook additionalContext / 人工推估 / token report 推導。結果呈現輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
 
-> **Estimated Token Usage**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source，本 workflow 不回報正式 token usage。四階段完成後可執行 `node scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 `Estimated Token Usage` optional telemetry。此估算只供 visible-context 相對成本比較，不可用於 billing、runtime truth 或 correctness gate。
+> **Estimated Token Usage**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source，本 workflow 不回報正式 token usage。四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 `Estimated Token Usage` optional telemetry。此估算只供 visible-context 相對成本比較，不可用於 billing、runtime truth 或 correctness gate。
 
 ---
 
@@ -206,7 +206,7 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 6. **使用的 Skills 組合**：Writer 載入的 skills，固定應含 `aspire-testing`，不得混入 unit / TUnit / 一般 integration skills。
 7. **Executor 修正紀錄**：`fixRounds`、`fixHistory`、`addedPackages`，並標記是否套用 Aspire production 窄例外（僅限 Health Checks、`ContainerLifetime.Session`、Redis TLS），沒有則明確寫「無」。
 8. **各階段耗時摘要 + Timing Evidence**：讀 `run-state.json`，輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
-9. **Estimated Token Usage**：optional telemetry。四階段與 timing evidence 完成後執行 `node scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，輸出「### Estimated Token Usage」表格；estimator 失敗 / run-state 缺失 / artifact 不足 / summary 為 `unavailable` 時改輸出 unavailable 表格，但不得讓 workflow 失敗，且不得作為 correctness gate。
+9. **Estimated Token Usage**：optional telemetry。四階段與 timing evidence 完成後執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，輸出「### Estimated Token Usage」表格；estimator 失敗 / run-state 缺失 / artifact 不足 / summary 為 `unavailable` 時改輸出 unavailable 表格，但不得讓 workflow 失敗，且不得作為 correctness gate。
 
 > **環境問題 vs 測試品質問題**：必須區分「環境問題（Docker daemon / Aspire workload / 容器啟動 / stale named volume / 網路）」與「測試品質問題」。Docker 未啟動、Aspire workload 缺失、容器健康檢查或啟動逾時、stale volume、網路問題，**不得**包裝成 Writer 品質缺陷。
 

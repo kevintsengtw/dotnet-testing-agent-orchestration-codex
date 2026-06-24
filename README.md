@@ -67,7 +67,7 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 | Codex | 支援原生 SpawnAgent / multi-agent | 執行 1+4 工作流程 |
 | .NET SDK | 8.0 / 9.0 / 10.0 | 被測試專案的目標框架 |
 | Docker | 任一近期版本 | **integration / aspire 工作流程必需**（啟動真實容器；unit / tunit 不需要）。aspire 另以 `Aspire.AppHost.Sdk` NuGet 提供,免安裝 Aspire workload |
-| Node.js | 任一近期 LTS | **僅 Estimated Token Usage 需要**（執行 `scripts/estimate-token-usage.mjs`）。`npm install` 取得 `gpt-tokenizer` 可得較準估算;未安裝則自動降級為 `chars/3.6` 估算。不影響四階段測試流程本身 |
+| Node.js | 任一近期 LTS | **僅 Estimated Token Usage 需要**（執行 `.codex/scripts/estimate-token-usage.mjs`）。估算器**零相依、無需 `npm install`**;不影響四階段測試流程本身 |
 
 ---
 
@@ -209,7 +209,7 @@ SubscriptionService 撰寫單元測試。
 
 ## 與 Claude 版的差異
 
-- **Token 用量統計：估算版（非 billing）** — Codex native SpawnAgent subagent 的全流程**真實** token 無可靠 truth source（實證確認），故不回報正式用量。改提供 **`Estimated Token Usage`**：四階段完成後執行 `node scripts/estimate-token-usage.mjs --test-project <測試專案>`，以 `gpt-tokenizer` 對各 subagent 的 **visible context**（讀取的 source/skill/交接檔、寫出的測試與 artifact、spawn payload、agent 定義）做估算,產出 `.orchestrator/token-usage-estimate.json`。**僅供相對成本比較,明確排除 hidden framing / internal reasoning / cached input / provider billing,不可用於計費或任何 correctness gate**;estimator 缺檔/失敗時優雅降級為 unavailable，不阻塞工作流程。細節見 [docs/guides/token-usage-estimation.md](docs/guides/token-usage-estimation.md)。
+- **Token 用量統計：估算版（非 billing）** — Codex native SpawnAgent subagent 的全流程**真實** token 無可靠 truth source（實證確認），故不回報正式用量。改提供 **`Estimated Token Usage`**：四階段完成後執行 `node .codex/scripts/estimate-token-usage.mjs --test-project <測試專案>`，以**零相依的內建 `chars-heuristic`**（`字元數 / 3.6` 粗估,不引入任何外部 tokenizer 套件）對各 subagent 的 **visible context**（讀取的 source/skill/交接檔、寫出的測試與 artifact、spawn payload、agent 定義）做估算,產出 `.orchestrator/token-usage-estimate.json`。**僅供相對成本比較,明確排除 hidden framing / internal reasoning / cached input / provider billing,不可用於計費或任何 correctness gate**;`confidence` 上限即 `medium`,estimator 缺檔/失敗時優雅降級為 unavailable，不阻塞工作流程。細節見 [docs/guides/token-usage-estimation.md](docs/guides/token-usage-estimation.md)。
 - **Dispatch 機制**：Codex 原生 SpawnAgent（非 Claude Agent tool）；額外產出 `run-state.json` 可稽核狀態檔。
 - **產出非決定性**：同一輸入下，測試數/分割分組/skill 選擇有 run-to-run 波動——Codex 多 subagent dispatch 的本質，屬已知限制。
 

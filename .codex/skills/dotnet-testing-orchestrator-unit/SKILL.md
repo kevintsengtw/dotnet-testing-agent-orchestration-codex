@@ -441,7 +441,7 @@ Codex hooks 僅屬 optional telemetry，不可假設有 Claude Code 式 subagent
    - **不得批次補 stamp**：平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
    - **不得複製 phase boundary**：phase 層級的 `dispatchAcceptedAt`、`artifactReadyAt`、`completedAt` 若存在，只能作為 phase 摘要；不得複製到 `assignments[]` 充當逐 assignment timing。
    - **重派 assignment 例外**：bounded re-dispatch 成功時，只更新被重派 assignment 的新 `agentId`、新 `dispatchAcceptedAt` 與新 `dispatchAcceptLatencyMs`；未重派 assignment 的時間戳不得被覆寫。
-   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
 3. **artifact ready 邊界**：每個 assignment 的 canonical artifact 於磁碟存在且可讀取的當下，使用 Write 更新該 assignment 的 `artifactReadyAt` 與 `artifact` 路徑。多 assignment phase 必須逐 assignment 以各自 canonical artifact path 獨立 poll、獨立 stamp；不得在 phase 收斂後用同一個 `artifactReadyAt` 覆蓋所有 assignment。
    - Writer split 時，每筆 Writer assignment 必須有自己的 `writerResultFilePath` / `testFilePath` 對應關係。Orchestrator 必須對每筆 writer-result JSON 或該筆明確宣告的 canonical artifact 逐檔 poll；哪一檔先可讀，就只 stamp 哪一筆 assignment。
    - Reviewer parallel 時，每筆 Reviewer assignment 必須對應自己的 `reviewResultFilePath`；不得用最後一個 reviewer artifact ready 時間補到所有 reviewer assignment。
@@ -777,7 +777,7 @@ Instrumentation 啟用後，必須輸出 profiling summary 表；拿不到的欄
 `Profiling Summary` 後必須輸出 optional telemetry 區塊。四階段全部完成且 final report 前，執行：
 
 ```bash
-node scripts/estimate-token-usage.mjs --test-project {testProjectDir}
+node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}
 ```
 
 估算器成功產生 `{testProjectDir}/.orchestrator/token-usage-estimate.json` 時，讀取該 JSON 的 `summary` 與 `phases`，輸出：

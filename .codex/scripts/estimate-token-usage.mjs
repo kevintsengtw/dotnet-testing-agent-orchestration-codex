@@ -4,9 +4,9 @@ import path from "node:path";
 import process from "node:process";
 
 const ESTIMATOR_NAME = "visible-context-token-estimator";
-const ESTIMATOR_VERSION = 1;
-const FALLBACK_NAME = "chars/3.6";
-const TOKENIZER_NAME = "o200k_base";
+const ESTIMATOR_VERSION = 2;
+const ESTIMATE_METHOD = "chars-heuristic";
+const CHARS_PER_TOKEN = 3.6;
 const OVERHEAD_FACTORS = {
   analyzer: 1.15,
   writer: 1.2,
@@ -18,6 +18,7 @@ const KNOWN_MISSING = [
   "internal reasoning tokens",
   "cached input token accounting",
   "actual provider billing usage",
+  "chars-heuristic（非真實 BPE，粗估；中文等非拉丁文字偏差較大）",
 ];
 
 function parseArgs(argv) {
@@ -41,7 +42,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    "Usage: node scripts/estimate-token-usage.mjs --test-project <path> [--workspace-root <path>] [--workflow <label>]",
+    "Usage: node .codex/scripts/estimate-token-usage.mjs --test-project <path> [--workspace-root <path>] [--workflow <label>]",
     "",
     "Writes <test-project-dir>/.orchestrator/token-usage-estimate.json.",
     "",
@@ -103,43 +104,14 @@ function resolvePath(workspaceRoot, testProjectDir, value) {
 }
 
 function tokenEstimateFromChars(text) {
-  return Math.ceil([...text].length / 3.6);
+  return Math.ceil([...text].length / CHARS_PER_TOKEN);
 }
 
-async function loadTokenizer() {
-  const candidates = [
-    async () => {
-      const mod = await import("gpt-tokenizer");
-      if (typeof mod.countTokens === "function") {
-        return (text) => mod.countTokens(text);
-      }
-      const encode = mod.encode ?? mod.default?.encode;
-      if (typeof encode === "function") {
-        return (text) => encode(text).length;
-      }
-      throw new Error("gpt-tokenizer does not expose countTokens or encode");
-    },
-    async () => {
-      const mod = await import("js-tiktoken");
-      const encoding = mod.encodingForModel?.("gpt-4o") ?? new mod.Tiktoken(mod.o200k_base);
-      return (text) => encoding.encode(text).length;
-    },
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const count = await candidate();
-      return { count, tokenizer: TOKENIZER_NAME, fallbackUsed: false };
-    } catch {
-      // Keep trying optional tokenizer packages before falling back.
-    }
-  }
-
-  return {
-    count: tokenEstimateFromChars,
-    tokenizer: null,
-    fallbackUsed: true,
-  };
+// 自含估算:刻意不依賴任何外部 tokenizer 套件（gpt-tokenizer / tiktoken 等）。
+// 估算定位為「相對成本比較的 optional telemetry、非 billing」,以 chars/CHARS_PER_TOKEN 粗估
+// visible-context token 即可;零相依,隨 .codex/ 出貨,node 直接執行,無 npm install。
+function makeCounter() {
+  return { count: tokenEstimateFromChars };
 }
 
 function safeStringify(value) {
@@ -344,20 +316,15 @@ function artifactPathFor(workspaceRoot, testProjectDir, assignment) {
   return resolvePath(workspaceRoot, testProjectDir, candidates.find(Boolean));
 }
 
-function confidenceFor({ tokenizer, inputs, fallbackUsed, missingFileCount, artifactJson }) {
+function confidenceFor({ inputs, missingFileCount, artifactJson }) {
+  // chars 粗估:信心上限即 medium（永不 high）。資料完整 → medium，否則 low。
   if (!artifactJson) {
     return "unavailable";
   }
-  if (fallbackUsed) {
-    return inputs ? "medium" : "low";
-  }
   if (inputs && missingFileCount === 0 && asArray(inputs.readFiles).length > 0 && asArray(inputs.writtenFiles).length > 0) {
-    return "high";
-  }
-  if (inputs) {
     return "medium";
   }
-  return tokenizer.fallbackUsed ? "low" : "low";
+  return "low";
 }
 
 function confidenceRank(value) {
@@ -374,7 +341,7 @@ function aggregateConfidence(values) {
 }
 
 async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }) {
-  const tokenizer = await loadTokenizer();
+  const tokenizer = makeCounter();
   const testProjectPath = path.resolve(workspaceRoot, testProjectArg);
   const testProjectDir = isDirectory(testProjectPath) ? testProjectPath : path.dirname(testProjectPath);
   const orchestratorDir = path.join(testProjectDir, ".orchestrator");
@@ -449,9 +416,7 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
       const outputSubtotal = writeCounts.total + artifactTokens;
       const totalEstimated = inputSubtotal + outputSubtotal;
       const confidence = confidenceFor({
-        tokenizer,
         inputs,
-        fallbackUsed: tokenizer.fallbackUsed,
         missingFileCount,
         artifactJson,
       });
@@ -490,8 +455,7 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
         confidence,
         tokenEstimateInputsStatus: inputs ? "provided" : "artifact-fallback",
         sharedArtifactDeduped,
-        tokenizer: tokenizer.fallbackUsed ? null : TOKENIZER_NAME,
-        fallback: tokenizer.fallbackUsed ? FALLBACK_NAME : null,
+        method: ESTIMATE_METHOD,
         countedFiles: {
           agentToml: {
             path: relativeOrNull(workspaceRoot, agentPath),
@@ -520,8 +484,8 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
       estimator: {
         name: ESTIMATOR_NAME,
         version: ESTIMATOR_VERSION,
-        tokenizer: tokenizer.fallbackUsed ? null : TOKENIZER_NAME,
-        fallback: tokenizer.fallbackUsed ? FALLBACK_NAME : null,
+        method: ESTIMATE_METHOD,
+        charsPerToken: CHARS_PER_TOKEN,
       },
       workflow,
       summary: {
@@ -549,8 +513,8 @@ function unavailableEstimate({ workspaceRoot, runStatePath, reason, tokenizer, w
     estimator: {
       name: ESTIMATOR_NAME,
       version: ESTIMATOR_VERSION,
-      tokenizer: tokenizer.fallbackUsed ? null : TOKENIZER_NAME,
-      fallback: tokenizer.fallbackUsed ? FALLBACK_NAME : null,
+      method: ESTIMATE_METHOD,
+      charsPerToken: CHARS_PER_TOKEN,
     },
     workflow: workflow ?? "unknown",
     summary: {

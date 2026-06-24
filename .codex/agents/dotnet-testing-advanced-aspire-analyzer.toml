@@ -178,7 +178,7 @@ Aspire Analyzer **固定輸出單一 Skill**：
 
 ## tokenEstimateInputs（optional telemetry，只記錄可觀測材料）
 
-交接 analysis JSON 應盡量加入頂層 `tokenEstimateInputs`，供共用估算器 `scripts/estimate-token-usage.mjs` 做 visible-context 估算。此欄只記錄你實際讀取 / 寫入的可觀測檔案，**不計算任何 token 數字**，也不得作為任何 correctness 判斷。若資料一時無法完整整理，仍要寫入 analysis artifact，不得因 `tokenEstimateInputs` 缺漏而停止、重試或要求 re-dispatch。
+交接 analysis JSON 應盡量加入頂層 `tokenEstimateInputs`，供共用估算器 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算。此欄只記錄你實際讀取 / 寫入的可觀測檔案，**不計算任何 token 數字**，也不得作為任何 correctness 判斷。若資料一時無法完整整理，仍要寫入 analysis artifact，不得因 `tokenEstimateInputs` 缺漏而停止、重試或要求 re-dispatch。
 
 ```json
 "tokenEstimateInputs": {
