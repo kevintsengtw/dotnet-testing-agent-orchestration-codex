@@ -315,6 +315,7 @@ dotnet run --project <test-project-path> --no-build
    - `scopeReviewed`
    - `tunitCompliance`
    - `verificationCommand`: 固定為 `dotnet run --project <test-project-path> --no-build` 或 `not-rerun-executor-result-used`
+   - `tokenEstimateInputs`（optional telemetry；只記錄可觀測材料，不輸出 token 數字）
 5. **順序要求**：必須先完成 Write，再回傳精簡摘要。若 Write 失敗，直接回報 blocker，不得假裝 reviewer-result 已落地。
 
 回傳給 Orchestrator 的摘要必須包含：
@@ -325,7 +326,23 @@ dotnet run --project <test-project-path> --no-build
   "overallScore": "A",
   "issueCount": 0,
   "missingTestCaseCount": 0,
-  "reviewerResultFilePath": "tests/MyProject.Core.Tests/.orchestrator/reviewer-result/ProductService.reviewer-result.json"
+  "reviewerResultFilePath": "tests/MyProject.Core.Tests/.orchestrator/reviewer-result/ProductService.reviewer-result.json",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
+      { "path": "writerResultFilePath", "reason": "writer handoff artifact" },
+      { "path": "executorResultFilePath", "reason": "executor handoff artifact" },
+      { "path": "測試檔案與被測試目標檔案", "reason": "review input" },
+      { "path": "已載入的 TUnit reviewer skill 檔案", "reason": "loaded skill" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.Core.Tests/.orchestrator/reviewer-result/ProductService.reviewer-result.json", "reason": "reviewer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 

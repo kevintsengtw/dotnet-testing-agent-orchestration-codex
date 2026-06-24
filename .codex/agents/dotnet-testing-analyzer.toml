@@ -507,6 +507,26 @@ developer_instructions = """# .NET 測試分析器
 
 > **Write 工具使用限制**：Write 工具**僅限**用於 `.orchestrator/` 目錄下的 JSON 檔案。**禁止**用於修改任何原始碼或測試檔案。
 
+### Estimated Token Usage Telemetry（optional）
+
+寫入 analysis JSON 時，必須在頂層加入 `tokenEstimateInputs`。此欄位只記錄可觀測材料，供後續 estimator 估算 visible-context token；你不得自行計算或回報 token 數字。
+
+```json
+"tokenEstimateInputs": {
+  "schemaVersion": 1,
+  "estimateKind": "visible-context",
+  "readFiles": [
+    { "path": "被測試目標檔案路徑", "reason": "source under test" },
+    { "path": "讀取過的 interface / model / DTO / csproj / existing test pattern file", "reason": "analysis input" }
+  ],
+  "writtenFiles": [
+    { "path": "analysisOutputPath", "reason": "analysis handoff artifact" }
+  ],
+  "toolOutputRefs": [],
+  "notes": []
+}
+```
+
 ---
 
 ## 回傳給 Orchestrator 的精簡摘要

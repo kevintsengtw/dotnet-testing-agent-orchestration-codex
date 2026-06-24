@@ -436,11 +436,12 @@ Codex hooks 僅屬 optional telemetry，不可假設有 Claude Code 式 subagent
 
 #### Run-state 落地契約（必要）
 
-1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount`、`restartCount`、`executorFixRounds`。
+1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `workflow: "unit"`、`target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount`、`restartCount`、`executorFixRounds`。
 2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `date -u` 取得實際 UTC 時間，使用 Write 更新該 phase assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即再次以 `date -u` 取得 UTC 時間，使用 Write 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`。多 assignment phase（Analyzer/Writer/Reviewer）每一筆 assignment 都必須各自落欄位；Writer split 產生 5 筆時，5 筆都不得缺漏。
    - **不得批次補 stamp**：平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
    - **不得複製 phase boundary**：phase 層級的 `dispatchAcceptedAt`、`artifactReadyAt`、`completedAt` 若存在，只能作為 phase 摘要；不得複製到 `assignments[]` 充當逐 assignment timing。
    - **重派 assignment 例外**：bounded re-dispatch 成功時，只更新被重派 assignment 的新 `agentId`、新 `dispatchAcceptedAt` 與新 `dispatchAcceptLatencyMs`；未重派 assignment 的時間戳不得被覆寫。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
 3. **artifact ready 邊界**：每個 assignment 的 canonical artifact 於磁碟存在且可讀取的當下，使用 Write 更新該 assignment 的 `artifactReadyAt` 與 `artifact` 路徑。多 assignment phase 必須逐 assignment 以各自 canonical artifact path 獨立 poll、獨立 stamp；不得在 phase 收斂後用同一個 `artifactReadyAt` 覆蓋所有 assignment。
    - Writer split 時，每筆 Writer assignment 必須有自己的 `writerResultFilePath` / `testFilePath` 對應關係。Orchestrator 必須對每筆 writer-result JSON 或該筆明確宣告的 canonical artifact 逐檔 poll；哪一檔先可讀，就只 stamp 哪一筆 assignment。
    - Reviewer parallel 時，每筆 Reviewer assignment 必須對應自己的 `reviewResultFilePath`；不得用最後一個 reviewer artifact ready 時間補到所有 reviewer assignment。
@@ -770,6 +771,47 @@ Instrumentation 啟用後，必須輸出 profiling summary 表；拿不到的欄
 | rootCauseCandidate | writer produceSpan dominates observed wall-clock; dispatch acceptance latency is negligible |
 | deferredOptimization | false |
 ```
+
+#### 7. Estimated Token Usage
+
+`Profiling Summary` 後必須輸出 optional telemetry 區塊。四階段全部完成且 final report 前，執行：
+
+```bash
+node scripts/estimate-token-usage.mjs --test-project {testProjectDir}
+```
+
+估算器成功產生 `{testProjectDir}/.orchestrator/token-usage-estimate.json` 時，讀取該 JSON 的 `summary` 與 `phases`，輸出：
+
+```markdown
+### Estimated Token Usage
+
+| Phase | Assignments | Input estimate | Output estimate | Total estimate | Confidence |
+|---|---:|---:|---:|---:|---|
+| Analyzer | N | 0K | 0K | 0K | medium |
+| Writer | N | 0K | 0K | 0K | medium |
+| Executor | N | 0K | 0K | 0K | low |
+| Reviewer | N | 0K | 0K | 0K | medium |
+| **Total** | N | **0K** | **0K** | **0K** | approximate |
+```
+
+固定說明：
+
+```text
+以上為 visible-context/tokenizer-based estimate，不含 Codex runtime 未暴露的 hidden framing、internal reasoning tokens、cached input token accounting 與 provider billing usage；不可用於 billing，只適合比較不同 workflow run 的相對成本。
+```
+
+若 estimator 失敗、`run-state.json` 缺失、artifact 不足或 summary 為 `unavailable`，仍不得讓 workflow 失敗；改輸出：
+
+```markdown
+### Estimated Token Usage
+
+| Field | Value |
+|---|---|
+| status | unavailable |
+| reason | estimator failed or insufficient tokenEstimateInputs |
+```
+
+禁止把 estimated token usage 放入 `gateDecision`、Reviewer 評分、build/test 通過判定或任何 correctness summary。此區塊不得命名為 `Token Usage`。
 
 禁止因 timing table 顯示某 phase 較慢，就在同一輪 final report 中宣稱已完成效能優化或直接提出已套用的 prompt/topology 調整。
 

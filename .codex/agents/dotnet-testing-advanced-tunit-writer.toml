@@ -573,7 +573,22 @@ public class OrderValidatorTests
     }
   ],
   "modifiedAt": "ISO 8601 timestamp",
-  "modificationType": "initial"
+  "modificationType": "initial",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
+      { "path": ".codex/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md", "reason": "loaded skill" },
+      { "path": "被測試目標或相關 csproj / migration source / test pattern 檔案", "reason": "writer input" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.Core.Tests/Services/ProductServiceTests.cs", "reason": "generated test file" },
+      { "path": "tests/MyProject.Core.Tests/.orchestrator/writer-result/ProductService.writer-result.json", "reason": "writer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 
@@ -586,6 +601,7 @@ writer-result 完成條件：
 - `testClasses` 每一列都必須包含 `className`、`filePath`、`methodsCovered`。
 - `methodsCovered` 必須是明確方法名稱清單，不得使用 `All`、`FullClass`、空陣列或敘述文字替代。
 - writer-result 缺 `writerResultFilePath`、`testFilePaths`、`testCaseCount`、`testMethodCount`、`testClasses`、`testClasses[].methodsCovered`、`skillsLoaded` 任一欄位時，必須補齊欄位後才可回傳 `status: completed`。
+- `tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
 
 > **修改模式**：當 `mode: "modification"` 時，讀取既有的 writer-result JSON 並更新，將 `modificationType` 改為 `"applied-reviewer-suggestions"`，更新 `modifiedAt`、`testMethodCount`、`testCaseCount`、`testFilePaths` 等欄位。
 

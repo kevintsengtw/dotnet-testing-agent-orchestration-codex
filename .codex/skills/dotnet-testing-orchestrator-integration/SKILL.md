@@ -51,7 +51,7 @@ description: ".NET 整合測試指揮中心 — 分析 WebAPI 端點結構、決
 4. **禁止直接建立或修改任何 .cs 檔案** — 所有程式碼產出必須透過 subagent 完成。**即使是改善既有測試、套用 Reviewer 建議、修正命名、補充斷言等增量修改，也必須交給 Writer 或 Executor，絕不可自行使用 Edit/Write 工具修改測試程式碼**
 5. **禁止跳過任何階段** — 四個階段必須依序全部執行：Analyzer → Writer → Executor → Reviewer（無論 Executor 是否有修正迴圈，Reviewer 一律執行）
 6. **禁止使用 Bash 呼叫 `claude` 命令** — 嚴禁使用 `Bash(claude --print ...)` 或任何 `Bash(claude ...)` 的方式來啟動 subagent。所有 subagent 呼叫**必須且只能**透過 Codex 原生 SpawnAgent 完成
-7. **禁止回報 token 數字** — Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報 token 數字，不執行 token report，也不得以估算、hook 或 transcript 推導 token 用量
+7. **禁止回報正式 token usage** — Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報 billing / runtime truth token usage；只允許在四階段完成後以 `Estimated Token Usage` optional telemetry 呈現 visible-context estimate，且不得作為 correctness gate
 
 ### 你可以做的事
 
@@ -165,7 +165,7 @@ Orchestrator prompt 只需傳：**交接檔案路徑 + 摘要數字**（endpoint
 
 ### Phase 0.5：初始化 run-state
 
-Phase 0 清理完成後、**啟動 Analyzer 之前**，建立 `{testProjectDir}/.orchestrator/run-state.json`。此檔是本 workflow 的唯一 timing truth source；token usage / hooks 計量不屬於本 Codex 版契約，缺席時不得阻塞流程，也不得回報 token 數字。
+Phase 0 清理完成後、**啟動 Analyzer 之前**，建立 `{testProjectDir}/.orchestrator/run-state.json`。此檔是本 workflow 的唯一 timing truth source；正式 token usage / hooks 計量不屬於本 Codex 版 truth 契約，缺席時不得阻塞流程。token 相關資訊只能在流程完成後以 `Estimated Token Usage` optional telemetry 呈現。
 
 ### 階段 1：啟動分析（Integration Analyzer）
 
@@ -332,9 +332,10 @@ Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath
 
 run-state 寫入規則：
 
-1. Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
+1. Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `workflow: "integration"`、`target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
 2. 每個 phase 發出 SpawnAgent 之前，先以 `date -u` 取得實際 UTC 時間，使用 Write 更新該 phase assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即再次以 `date -u` 取得 UTC 時間，使用 Write 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`。
 3. 平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
 4. 每個 canonical artifact 通過 Glob/Read 驗證後，立即用 `date -u` 寫入 `artifactReadyAt`、`artifact`、`produceSpanMs`。
 5. phase artifact gate 全部通過或 blocker 判定完成後，寫入 `completedAt` 與 phase status。
 6. 整體流程完成或中止時，使用 Write 補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`。
@@ -355,7 +356,7 @@ run-state 寫入規則：
 | Executor 回傳後 | `✅ 階段 3 完成（{run-state 耗時}）— dotnet test：N passed / F failed / S skipped，修正 Y 次` |
 | 啟動 Reviewer 前 | `## 階段 4：啟動審查（Integration Reviewer）` |
 | Reviewer 回傳後 | `✅ 階段 4 完成（{run-state 耗時}）` |
-| 結果呈現後 | 輸出 `### ⏱ 各階段耗時` 與 `### Timing Evidence` |
+| 結果呈現後 | 輸出 `### ⏱ 各階段耗時`、`### Timing Evidence` 與 `### Estimated Token Usage` |
 
 耗時摘要必須讀取 `{testProjectDir}/.orchestrator/run-state.json`，再從該檔的 `dispatchIssuedAt`、`artifactReadyAt`、`completedAt` 計算。若多個 Writer 並行或分兩次啟動，階段 2 耗時取整個 Writer phase 的最長可觀察跨度。總計為四個階段之和。
 
@@ -382,9 +383,39 @@ run-state 寫入規則：
 | Reviewer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | reviewer-result verified |
 ```
 
-### Token 用量
+### Estimated Token Usage
 
-Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報 token 數字，不執行 token report，也不得以估算、hook 或 transcript 推導 token 用量。
+Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報正式 token usage，也不得把估算值包裝為 billing 或 runtime truth。
+
+四階段全部完成且 timing evidence 輸出後，執行：
+
+```bash
+node scripts/estimate-token-usage.mjs --test-project {testProjectDir}
+```
+
+不得傳入 `--workflow integration`；`workflow` 只由 `run-state.json` 作為輸出標籤提供。
+
+估算器成功產生 `{testProjectDir}/.orchestrator/token-usage-estimate.json` 時，輸出 `### Estimated Token Usage` 表格；若 estimator 失敗、`run-state.json` 缺失、artifact 不足或 summary 為 `unavailable`，仍不得讓 workflow 失敗，改輸出 unavailable 表格。
+
+```markdown
+### Estimated Token Usage
+
+| Phase | Assignments | Input estimate | Output estimate | Total estimate | Confidence |
+|---|---:|---:|---:|---:|---|
+| Analyzer | N | 0K | 0K | 0K | medium |
+| Writer | N | 0K | 0K | 0K | medium |
+| Executor | N | 0K | 0K | 0K | low |
+| Reviewer | N | 0K | 0K | 0K | medium |
+| **Total** | N | **0K** | **0K** | **0K** | approximate |
+```
+
+固定說明：
+
+```text
+以上為 visible-context/tokenizer-based estimate，不含 Codex runtime 未暴露的 hidden framing、internal reasoning tokens、cached input token accounting 與 provider billing usage；不可用於 billing，只適合比較不同 workflow run 的相對成本。
+```
+
+禁止把 estimated token usage 放入 Executor 成敗、Reviewer 評分、coverage 判斷、`gateDecision` 或任何 correctness summary。此區塊不得命名為 `Token Usage`。
 
 ---
 
@@ -399,6 +430,7 @@ Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本
 5. 使用的 Skills 組合：列出 Writer 載入了哪些 integration skills
 6. Executor 修正紀錄：含 DB Provider 衝突的 Program.cs 窄例外（如有）
 7. 各階段耗時摘要與 Timing Evidence：從 run-state 讀取
+8. Estimated Token Usage：optional telemetry；不得作為 correctness gate
 
 必須區分「環境問題（Docker/容器/網路）」與「測試品質問題」。Docker daemon 未啟動、port/health check/網路問題不得包裝成 Writer 品質缺陷。
 
@@ -418,7 +450,7 @@ Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本
 2. Integration Executor — 建置並執行修改後的測試，確認結果
 3. Integration Reviewer（re-review 模式）— 以 `mode: "re-review"` 聚焦驗證前次建議是否正確套用
 
-修改流程結果呈現後，同樣只回報 artifact-backed 結果與 run-state timing；不回報 token 數字。
+修改流程結果呈現後，同樣只回報 artifact-backed 結果與 run-state timing；token 相關資訊只允許以 `Estimated Token Usage` optional telemetry 呈現，且不得作為 correctness gate。
 
 ---
 

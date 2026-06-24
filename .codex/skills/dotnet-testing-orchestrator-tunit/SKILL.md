@@ -176,7 +176,7 @@ payload: {
 
 ### Phase 0.5：初始化 run-state
 
-Phase 0 清理完成後、**啟動 Analyzer 之前**，建立 `{testProjectDir}/.orchestrator/run-state.json`。此檔是本 workflow 的唯一 timing truth source；token usage / hooks 計量不屬於本 Codex 版契約，缺席時不得阻塞流程，也不得回報 token 數字。
+Phase 0 清理完成後、**啟動 Analyzer 之前**，建立 `{testProjectDir}/.orchestrator/run-state.json`。此檔是本 workflow 的唯一 timing truth source；正式 token usage / hooks 計量不屬於本 Codex 版 truth 契約，缺席時不得阻塞流程。token 相關資訊只能在流程完成後以 `Estimated Token Usage` optional telemetry 呈現。
 
 ### 階段 1：啟動分析（TUnit Analyzer）
 
@@ -379,9 +379,10 @@ reviewResultFilePath: {reviewResultFilePath}
 
 run-state 寫入規則：
 
-1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
+1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `workflow: "tunit"`、`target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
 2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `date -u` 取得實際 UTC 時間，使用 Write 更新該 phase assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即再次以 `date -u` 取得 UTC 時間，使用 Write 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`。
 3. **不得批次補 stamp**：平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
 4. **artifact gate 邊界**：每個 canonical artifact 通過 Glob/Read 驗證後，立即用 `date -u` 寫入 `artifactReadyAt`、`artifact`、`produceSpanMs`。
 5. **phase complete 邊界**：phase artifact gate 全部通過或 blocker 判定完成後，寫入 `completedAt` 與 phase status。
 6. **duration 摘要**：整體流程完成或中止時，使用 Write 補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`。
@@ -449,9 +450,37 @@ run-state 寫入規則：
 | Reviewer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | reviewer-result verified |
 ```
 
-### Token 用量
+### Estimated Token Usage
 
-Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報 token 數字，不執行 token report，也不得以估算、hook 或 transcript 推導 token 用量。
+Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報正式 token usage，也不得把估算值包裝為 billing 或 runtime truth。
+
+四階段全部完成且 timing evidence 輸出後，執行：
+
+```bash
+node scripts/estimate-token-usage.mjs --test-project {testProjectDir}
+```
+
+估算器成功產生 `{testProjectDir}/.orchestrator/token-usage-estimate.json` 時，輸出 `### Estimated Token Usage` 表格；若 estimator 失敗、`run-state.json` 缺失、artifact 不足或 summary 為 `unavailable`，仍不得讓 workflow 失敗，改輸出 unavailable 表格。
+
+```markdown
+### Estimated Token Usage
+
+| Phase | Assignments | Input estimate | Output estimate | Total estimate | Confidence |
+|---|---:|---:|---:|---:|---|
+| Analyzer | N | 0K | 0K | 0K | medium |
+| Writer | N | 0K | 0K | 0K | medium |
+| Executor | N | 0K | 0K | 0K | low |
+| Reviewer | N | 0K | 0K | 0K | medium |
+| **Total** | N | **0K** | **0K** | **0K** | approximate |
+```
+
+固定說明：
+
+```text
+以上為 visible-context/tokenizer-based estimate，不含 Codex runtime 未暴露的 hidden framing、internal reasoning tokens、cached input token accounting 與 provider billing usage；不可用於 billing，只適合比較不同 workflow run 的相對成本。
+```
+
+禁止把 estimated token usage 放入 `gateDecision`、Reviewer 評分、build/run 通過判定或任何 correctness summary。此區塊不得命名為 `Token Usage`。
 
 ---
 
@@ -497,7 +526,7 @@ Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本
 2. 套用了哪些 Reviewer 建議
 3. 重新評分結果（例：B+ → A）
 
-修改流程結果呈現後，同樣只回報 artifact-backed 結果與 run-state timing；不回報 token 數字。
+修改流程結果呈現後，同樣只回報 artifact-backed 結果與 run-state timing；token 相關資訊只允許以 `Estimated Token Usage` optional telemetry 呈現，且不得作為 correctness gate。
 
 ---
 

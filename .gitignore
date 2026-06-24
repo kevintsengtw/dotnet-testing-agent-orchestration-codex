@@ -235,9 +235,13 @@ node_modules/
 **/.orchestrator/
 
 # Writer 生成的測試碼 byproduct（驗證用 fixture，每次跑工作流程重生）
+samples/**/tests/**/*.Tests/GlobalUsings.cs
+samples/**/tests/**/*.Tests/*Tests.cs
+samples/**/tests/**/*.Tests/**/*Tests.cs
 samples/**/tests/**/Services/
 samples/**/tests/**/Validators/
 samples/**/tests/**/Legacy/
+samples/**/tests/**/Infrastructure/
 
 # Codex CLI / .NET local home（驗證環境暫存）
 .codex-cli-home/

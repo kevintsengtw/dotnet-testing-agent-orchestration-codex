@@ -246,11 +246,33 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
     }
   ],
   "failedTestDetails": [],
-  "addedPackages": []
+  "addedPackages": [],
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json", "reason": "analysis handoff artifact" },
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/writer-result/OrdersController.writer-result.json", "reason": "writer handoff artifact" },
+      { "path": "tests/MyProject.AppHost.Tests/MyProject.AppHost.Tests.csproj", "reason": "test project build context" },
+      { "path": "tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs", "reason": "generated aspire integration test file" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/executor-result/OrdersController.executor-result.json", "reason": "executor handoff artifact" }
+    ],
+    "toolOutputRefs": [
+      { "kind": "docker-info-output-snippet", "sourceField": "dockerStatus" },
+      { "kind": "aspire-workload-list-output-snippet", "sourceField": "aspireWorkloadStatus" },
+      { "kind": "dotnet-build-output-snippet", "sourceField": "buildResult" },
+      { "kind": "dotnet-test-output-snippet", "sourceField": "testResult" }
+    ],
+    "notes": []
+  }
 }
 ```
 
 > **`controllerName` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導。
+
+> **tokenEstimateInputs（必填）**：executor-result 必須包含 `tokenEstimateInputs`，記錄可觀測 `readFiles`（analysis / writer-result 交接檔、測試專案 `.csproj`、產出測試檔）/ `writtenFiles`（executor-result 交接檔）/ `toolOutputRefs`（`docker info`、`dotnet workload list`、`dotnet build`、`dotnet test` 的可觀測輸出欄位）；此欄只供 estimator 使用，不得自行計算 token 數字。
 
 ### Step 6：回傳精簡摘要
 

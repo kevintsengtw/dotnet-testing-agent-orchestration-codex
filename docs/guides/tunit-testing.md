@@ -418,4 +418,4 @@ TUnit Reviewer subagent 接收 Orchestrator 委派後，審查以下項目（無
 
 Reviewer 完成後回傳品質評分報告（`overallScore`）與具體改善建議（`issues`、`missingTestCases`），寫入 `.orchestrator/reviewer-result/{ClassName}.reviewer-result.json`。
 
-Orchestrator 呈現完整結果後**等待使用者決定**是否啟動修改流程（**禁止自動觸發、禁止預先授權**）。若需套用建議，告知 Orchestrator 後進入三階段修改流程（Writer 修改 → Executor 重新執行 → Reviewer re-review）。各階段耗時取自 `run-state.json` 的 wall-clock 時間戳；Token 用量不提供（de-scoped）。
+Orchestrator 呈現完整結果後**等待使用者決定**是否啟動修改流程（**禁止自動觸發、禁止預先授權**）。若需套用建議，告知 Orchestrator 後進入三階段修改流程（Writer 修改 → Executor 重新執行 → Reviewer re-review）。各階段耗時取自 `run-state.json` 的 wall-clock 時間戳；Token 不回報正式 usage，只能以 `Estimated Token Usage` optional telemetry 作相對成本比較。

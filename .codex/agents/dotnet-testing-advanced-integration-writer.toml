@@ -383,6 +383,7 @@ Controllers/{Controller}Tests.cs
     "tests/MyProject.WebApi.Tests/TestBase/IntegrationTestBase.cs"
   ],
   "testCount": 11,
+  "testCaseCount": 11,
   "skillsLoaded": ["webapi-integration-testing", "aspnet-integration-testing", "testcontainers-database"],
   "nugetChanges": ["Added Testcontainers.MsSql 4.3.0", "Added Microsoft.EntityFrameworkCore.SqlServer 9.0.0"],
   "testClasses": [
@@ -393,7 +394,27 @@ Controllers/{Controller}Tests.cs
     }
   ],
   "modifiedAt": "ISO 8601 timestamp",
-  "modificationType": "initial"
+  "modificationType": "initial",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/analysis/ProductsController.analysis.json", "reason": "analysis handoff artifact" },
+      { "path": ".codex/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md", "reason": "loaded integration skill" },
+      { "path": ".codex/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md", "reason": "loaded integration skill when applicable" },
+      { "path": ".codex/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md", "reason": "loaded database container skill when applicable" },
+      { "path": "src/MyProject.WebApi/Controllers/ProductsController.cs", "reason": "controller under test" },
+      { "path": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj", "reason": "test project context" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "reason": "generated integration test file" },
+      { "path": "tests/MyProject.WebApi.Tests/Fixtures/CustomWebApplicationFactory.cs", "reason": "generated test infrastructure when applicable" },
+      { "path": "tests/MyProject.WebApi.Tests/TestBase/IntegrationTestBase.cs", "reason": "generated test infrastructure when applicable" },
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/writer-result/ProductsController.writer-result.json", "reason": "writer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 
@@ -723,6 +744,7 @@ response.Should().Be201Created();
 - `skillsLoaded`
 - `requiresUserApproval`（需要 production 修改時）
 - `scopeWarnings`（端點範圍有任何不確定時）
+- `tokenEstimateInputs`（可觀測 read/write/tool output refs；只供 estimator 使用，不計算 token 數字）
 
 `skillsLoaded` 只能包含 integration 技術 skills：`webapi-integration-testing`、`aspnet-integration-testing`、`testcontainers-database`、`testcontainers-nosql`。不得載入 unit 的 technique skills，也不得載入 TUnit skills。
 

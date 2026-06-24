@@ -301,6 +301,57 @@ public async Task Delete_商品不存在_應回傳404ProblemDetails()
 - Reviewer 無 Edit 工具，發現失敗只記錄，不修改任何檔案。
 - 若 prompt 提供 `reviewResultFilePath`，收尾前必須寫入 `{testProjectDir}/.orchestrator/reviewer-result/{ControllerName}.reviewer-result.json`；寫入失敗即回報 blocker。
 - reviewer-result 至少包含 `reviewResultFilePath`、`overallRating`、`issues[]`、`missingTestCases[]`、`endpointCoverage`、`qualityGates`、`skillsLoaded`、`executionMethodVerified`。
+- reviewer-result 必須包含 `tokenEstimateInputs`，記錄可觀測 readFiles / writtenFiles / toolOutputRefs；此欄只供 estimator 使用，不得自行計算 token 數字。建議包含 analysis / writer-result / executor-result artifacts、被審查測試檔、載入的品質 skills、寫入的 reviewer-result artifact。
+
+```json
+{
+  "reviewResultFilePath": "tests/MyProject.WebApi.Tests/.orchestrator/reviewer-result/OrdersController.reviewer-result.json",
+  "overallRating": {
+    "stars": 4,
+    "label": "WARN",
+    "summary": "指定端點皆已覆蓋，仍有驗證案例或容器穩定性可改善。"
+  },
+  "testFilePaths": ["tests/MyProject.WebApi.Tests/Integration/OrdersControllerTests.cs"],
+  "executionMethodVerified": "dotnet test",
+  "endpointCoverage": {
+    "scope": "OrdersController",
+    "coveredEndpoints": ["GET /api/orders", "POST /api/orders"],
+    "missingEndpoints": []
+  },
+  "qualityGates": {
+    "buildPassed": true,
+    "testsPassed": true,
+    "usesDotnetTest": true
+  },
+  "issues": [],
+  "missingTestCases": [],
+  "skillsLoaded": [
+    "test-naming-conventions",
+    "awesome-assertions",
+    "webapi-integration-testing",
+    "aspnet-integration-testing",
+    "testcontainers-database"
+  ],
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/analysis/OrdersController.analysis.json", "reason": "analysis handoff artifact" },
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/writer-result/OrdersController.writer-result.json", "reason": "writer handoff artifact" },
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/executor-result/OrdersController.executor-result.json", "reason": "executor handoff artifact" },
+      { "path": ".codex/skills/dotnet-testing-test-naming-conventions/SKILL.md", "reason": "loaded reviewer skill" },
+      { "path": ".codex/skills/dotnet-testing-awesome-assertions-guide/SKILL.md", "reason": "loaded reviewer skill" },
+      { "path": ".codex/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md", "reason": "loaded integration reviewer skill" },
+      { "path": "tests/MyProject.WebApi.Tests/Integration/OrdersControllerTests.cs", "reason": "reviewed integration test file" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/reviewer-result/OrdersController.reviewer-result.json", "reason": "reviewer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
+}
+```
 - `executionMethodVerified` 必須確認 Executor 使用 `dotnet test`，若發現 `dotnet run` 或 TUnit 專案形狀，列為 FAIL。
 - 端點覆蓋審查只限本次指定範圍：prompt 明確端點 > Analyzer `endpointsToTest[]` > 整個 Controller。不得把指定範圍外的 sibling endpoints 列為覆蓋缺口。
 - 必須審查 WebApplicationFactory / TestBase / Collection Fixture / `IAsyncLifetime` / Respawn / Flurl / AwesomeAssertions HTTP 斷言 / ProblemDetails / ValidationProblemDetails / 容器生命週期管理。

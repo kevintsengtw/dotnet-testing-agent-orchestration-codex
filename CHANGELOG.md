@@ -4,6 +4,26 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.0.0] - 2026-06-23
+
+**正式版里程碑**:四種測試工作流程(unit / tunit / integration / aspire)的 Codex 版轉換全部完成(v0.0.2~v0.0.5),並完成 **Estimated Token Usage(估算式 token 用量)** 跨四工作流程整合。依版本規則(四工作流程齊備)升至 `v1.0.0`。
+
+### 新增
+- **`scripts/estimate-token-usage.mjs`**:共用的 visible-context token 估算器。讀 `{testProjectDir}/.orchestrator/run-state.json`,逐 phase / assignment 對各 subagent 的可觀測材料(讀取的 source/skill/交接檔、寫出的測試與 artifact、spawn payload、agent 定義)以 `gpt-tokenizer`(`o200k_base`)估算,輸出 `.orchestrator/token-usage-estimate.json`
+- **`package.json` / `package-lock.json`**:estimator 的 `gpt-tokenizer` devDependency(未安裝則自動降級 `chars/3.6`)
+- **per-type 文件**:`docs/guides/token-usage-estimation.md`(估算原理、執行方式、限制與已知偏差)
+
+### 特性(Estimated Token Usage)
+- **四工作流程一致接入**:16 個 subagent 在自己的交接 artifact 寫入頂層 `tokenEstimateInputs`(`schemaVersion`/`estimateKind`/`readFiles`/`writtenFiles`/`toolOutputRefs`);agent 本身**不計算 token**,只登記可觀測材料,由 estimator 事後估算
+- **明確標示為估算、非 billing**:固定附免責(排除 Codex hidden framing / internal reasoning / cached input / provider billing);四 SKILL 最終輸出新增 `Estimated Token Usage` 區塊,**不得命名為 `Token Usage`**、**不得作為任何 correctness gate**
+- **best-effort 不阻塞**:`tokenEstimateInputs` 缺漏、estimator 失敗、run-state 缺失或 artifact 不足時,輸出 `unavailable` 並繼續,**絕不讓工作流程失敗 / 觸發 re-dispatch**
+- **去重與正規化**:run-state phase key 大小寫不敏感;同 phase 多 assignment 共用同一交接 artifact 時做 shared-artifact 去重(避免 two-step Writer 過計)
+- **已知系統性偏差(文件明載)**:Orchestrator 主執行緒未估、analysis 內嵌 `sourceCodeContext` 重複計、aspire two-step 去重數字目前為投影
+
+### 驗證
+- 13+ 真實/合成情境(unit 7 種 + tunit + integration + aspire),真實 dispatch、非 0 估算;兩個估算 bug(phase key 大小寫致全 0、two-step 共用 artifact 過計)均抓到+修+複驗
+- reviewer 端 verify-then-fix:對「integration executor toolOutputRefs 疑似估成 0」**先實跑驗證**(estimator 實測 `toolOutputTokens=70`、三 ref 全 counted)→ 推翻疑似 → 未誤改;analyzer 的 token gate 一律改 best-effort(不污染 correctness);reviewer schema 對齊
+
 ## [v0.0.5] - 2026-06-23
 
 Codex 版第四個(也是最後一個)工作流程預覽:**.NET Aspire 整合測試 Agent Orchestration**(由 `dotnet-testing-agent-orchestration-claude` 經 migrate-to-codex 轉換,並經 Claude-vs-Codex 對照驗證)。四種測試工作流程(unit / integration / aspire / tunit)至此功能齊備。

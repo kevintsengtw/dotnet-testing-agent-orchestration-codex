@@ -220,6 +220,7 @@ developer_instructions = """# .NET 測試審查器
    - `positives`
    - `qualityConclusion`
    - `reviewerResultFilePath`
+   - `tokenEstimateInputs`（optional telemetry；只記錄可觀測材料，不輸出 token 數字）
 5. **順序要求**：必須先完成 Write，再進入 Step 6 回傳精簡摘要。若 Write 失敗，直接回報 blocker，不得假裝 reviewer-result 已落地。
 
 ### Step 6：回傳精簡摘要
@@ -298,7 +299,23 @@ developer_instructions = """# .NET 測試審查器
     "使用 AutoFixture 自動生成測試資料，減少手動建構"
   ],
   "qualityConclusion": "測試品質可接受，但建議補齊缺少的邊界案例後再視為完整。",
-  "reviewerResultFilePath": "tests/MyProject.Core.Tests/.orchestrator/reviewer-result/ProductService.reviewer-result.json"
+  "reviewerResultFilePath": "tests/MyProject.Core.Tests/.orchestrator/reviewer-result/ProductService.reviewer-result.json",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
+      { "path": "writerResultFilePath", "reason": "writer handoff artifact" },
+      { "path": "executorResultFilePath", "reason": "executor handoff artifact" },
+      { "path": "測試檔案與被測試目標檔案", "reason": "review input" },
+      { "path": "已載入的 reviewer skill 檔案", "reason": "loaded skill" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.Core.Tests/.orchestrator/reviewer-result/ProductService.reviewer-result.json", "reason": "reviewer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 

@@ -223,11 +223,29 @@ Step 0 讀取的 analysis JSON 中包含 `sourceCodeContext`，**直接使用這
   },
   "issues": [],
   "missingTestCases": [],
-  "positives": []
+  "positives": [],
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json", "reason": "analysis handoff artifact" },
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/writer-result/OrdersController.writer-result.json", "reason": "writer handoff artifact" },
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/executor-result/OrdersController.executor-result.json", "reason": "executor handoff artifact" },
+      { "path": ".codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md", "reason": "loaded aspire testing skill" },
+      { "path": "tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs", "reason": "reviewed aspire integration test file" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/reviewer-result/OrdersController.reviewer-result.json", "reason": "reviewer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 
 3. 回傳精簡摘要時包含 `reviewResultFilePath`。
+
+> **tokenEstimateInputs（必填）**：reviewer-result 必須包含 `tokenEstimateInputs`，記錄可觀測 `readFiles`（analysis / writer-result / executor-result 交接檔、載入的 `aspire-testing` 等品質 skills、被審查測試檔）/ `writtenFiles`（reviewer-result 交接檔）/ `toolOutputRefs`；此欄只供 estimator 使用，不得自行計算 token 數字。
 
 ---
 

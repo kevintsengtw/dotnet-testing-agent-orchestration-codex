@@ -217,11 +217,30 @@ global using AwesomeAssertions.Web;
     }
   ],
   "modifiedAt": "ISO 8601 timestamp",
-  "modificationType": "initial"
+  "modificationType": "initial",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json", "reason": "analysis handoff artifact" },
+      { "path": ".codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md", "reason": "loaded aspire testing skill" },
+      { "path": "<被測 API Controller 路徑>", "reason": "controller under test" },
+      { "path": "tests/MyProject.AppHost.Tests/MyProject.AppHost.Tests.csproj", "reason": "test project context" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs", "reason": "generated aspire integration test file" },
+      { "path": "tests/MyProject.AppHost.Tests/Infrastructure/AspireAppFixture.cs", "reason": "generated test infrastructure when applicable" },
+      { "path": "tests/MyProject.AppHost.Tests/.orchestrator/writer-result/OrdersController.writer-result.json", "reason": "writer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 
 > **修改模式**：當 `mode: "modification"` 時，讀取既有的 writer-result JSON 並更新，將 `modificationType` 改為 `"applied-reviewer-suggestions"`，更新 `modifiedAt`、`testCount`、`testFilePaths` 等欄位。
+
+> **tokenEstimateInputs（必填）**：writer-result 必須包含 `tokenEstimateInputs`，記錄可觀測的 `readFiles`（analysis 交接檔、載入的 `aspire-testing` skill、被測 Controller、測試專案 `.csproj`）/ `writtenFiles`（產出的測試檔、基礎設施檔、writer-result 交接檔）/ `toolOutputRefs`；此欄只供 estimator 使用，不得自行計算 token 數字。
 
 ### Step 6：回傳精簡摘要
 

@@ -234,11 +234,31 @@ TUnit 測試執行結果
     }
   ],
   "failedTestDetails": [],
-  "addedPackages": []
+  "addedPackages": [],
+  "testOutputSnippet": "dotnet run output snippet used for handoff",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
+      { "path": "writerResultFilePath", "reason": "writer handoff artifact" },
+      { "path": "測試專案 csproj / slnx / 本輪測試檔案", "reason": "executor input" },
+      { "path": ".codex/skills/dotnet-test/SKILL.md", "reason": "loaded skill" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.Core.Tests/.orchestrator/executor-result/ProductService.executor-result.json", "reason": "executor handoff artifact" }
+    ],
+    "toolOutputRefs": [
+      { "kind": "dotnet-run-output-snippet", "sourceField": "testOutputSnippet" }
+    ],
+    "notes": []
+  }
 }
 ```
 
 > **`className` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導（去掉 `Tests.cs` 後綴）。
+
+`tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
 
 ### Step 6：回傳精簡摘要
 

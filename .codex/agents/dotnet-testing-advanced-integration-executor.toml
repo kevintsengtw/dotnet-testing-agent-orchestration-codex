@@ -171,7 +171,26 @@ dotnet test <solution-path> --no-build --verbosity minimal --filter "FullyQualif
   "fixHistory": [],
   "failedTestDetails": [],
   "addedPackages": [],
-  "productionBugFixes": []
+  "productionBugFixes": [],
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/analysis/ProductsController.analysis.json", "reason": "analysis handoff artifact" },
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/writer-result/ProductsController.writer-result.json", "reason": "writer handoff artifact" },
+      { "path": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj", "reason": "test project build context" },
+      { "path": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "reason": "generated integration test file" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/executor-result/ProductsController.executor-result.json", "reason": "executor handoff artifact" }
+    ],
+    "toolOutputRefs": [
+      { "kind": "docker-info-output-snippet", "sourceField": "dockerStatus" },
+      { "kind": "dotnet-build-output-snippet", "sourceField": "buildOutputSnippet" },
+      { "kind": "dotnet-test-output-snippet", "sourceField": "testOutputSnippet" }
+    ],
+    "notes": []
+  }
 }
 ```
 
@@ -287,6 +306,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 - `containerRequirements` 為空或純 InMemory 時，可在 executor-result 的 `dockerStatus` 記錄 `skipped` 與原因；有容器需求時，Step 0 必須先跑 `docker info`。
 - `Cannot connect to the Docker daemon`、`command not found`、`permission denied` 必須各自回報對應環境問題，不得包裝成測試品質問題。
 - executor-result 必須寫入 `{testProjectDir}/.orchestrator/executor-result/{ControllerName}.executor-result.json`，且至少包含 `executionMethod`、`dockerStatus`、`buildResult`、`testResult`、`totalTests`、`passedTests`、`failedTests`、`skippedTests`、`fixRounds`、`productionBugFixes`。
+- executor-result 必須包含 `tokenEstimateInputs`，記錄可觀測 readFiles / writtenFiles / toolOutputRefs；此欄只供 estimator 使用，不得自行計算 token 數字。
 - `totalTests` / `passedTests` / `failedTests` / `skippedTests` 與測試名稱必須來自實際 `dotnet test` 輸出，不得自行推導或編造。
 - DB Provider 衝突的 Program.cs 環境條件修改是唯一 production 窄例外；若觸發，必須寫入 `productionBugFixes[]`，並在回傳摘要標記為「生產 Bug/修改紀錄」。
 

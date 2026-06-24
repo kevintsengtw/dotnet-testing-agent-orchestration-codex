@@ -420,7 +420,22 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
   },
   "scopeWarnings": [],
   "modifiedAt": "ISO 8601 timestamp",
-  "modificationType": "initial"
+  "modificationType": "initial",
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
+      { "path": "已載入的 Skill 檔案路徑", "reason": "loaded skill" },
+      { "path": "被測試目標或相關 interface/model/test pattern 檔案", "reason": "writer input" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.Core.Tests/Services/ProductServiceTests.cs", "reason": "generated test file" },
+      { "path": "tests/MyProject.Core.Tests/.orchestrator/writer-result/ProductService.writer-result.json", "reason": "writer handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
+  }
 }
 ```
 
@@ -433,6 +448,7 @@ writer-result 完成條件：
 - `testClasses` 每一列都必須包含 `className`、`filePath`、`methodsCovered`。
 - `methodsCovered` 必須是明確方法名稱清單，不得使用 `All`、`FullClass`、空陣列或敘述文字替代。
 - 若本次是 split assignment，`methodsCovered` 必須是 assignment 方法清單的子集合或完全相同；不得包含其他 public methods。若此 assignment 負責建構子 guard，`methodsCovered` 必須包含 `"Constructor"`；未負責建構子 guard 的 split assignment 不得包含 `"Constructor"`。
+- `tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
 
 任何必要欄位缺失或方法範圍不一致時，不得回傳 `status: completed`。請先修正 writer-result；若無法修正，回傳 `status: blocked` 並說明缺失欄位。
 

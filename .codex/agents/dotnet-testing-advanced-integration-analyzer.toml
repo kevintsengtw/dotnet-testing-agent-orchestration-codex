@@ -302,6 +302,21 @@ developer_instructions = """# .NET 整合測試分析器
     "solutionPath": "MyProject.slnx",
     "sourceProjectPath": "src/MyProject.WebApi/MyProject.WebApi.csproj",
     "testProjectPath": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj"
+  },
+  "tokenEstimateInputs": {
+    "schemaVersion": 1,
+    "estimateKind": "visible-context",
+    "readFiles": [
+      { "path": "src/MyProject.WebApi/MyProject.WebApi.csproj", "reason": "api project context" },
+      { "path": "src/MyProject.WebApi/Program.cs", "reason": "middleware and DI analysis" },
+      { "path": "src/MyProject.WebApi/Controllers/ProductsController.cs", "reason": "controller under test" },
+      { "path": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj", "reason": "test project context" }
+    ],
+    "writtenFiles": [
+      { "path": "tests/MyProject.WebApi.Tests/.orchestrator/analysis/ProductsController.analysis.json", "reason": "analysis handoff artifact" }
+    ],
+    "toolOutputRefs": [],
+    "notes": []
   }
 }
 ```
@@ -317,8 +332,9 @@ developer_instructions = """# .NET 整合測試分析器
 3. **containerRequirements 一致性**：若 `dbRegistrationAnalysis` 偵測到資料庫，`containerRequirements` 必須包含對應容器
 4. **validatorInfo 完整性**（若有）：每個 validator 必須有 `validBaseObjectHint`，且 `validBaseObjectHint` 的屬性數量 ≥ 1
 5. **existingTestInfrastructure 已確認**：若掃描後無既有設施，`webApiFactory: null`，不要留空物件
+6. **tokenEstimateInputs best-effort**：盡量列出實際讀取的 API project、Program.cs、Controller、DTO/Validator/DbContext、test project、既有測試基礎設施檔案，以及寫入的 analysis artifact。此欄只記錄可觀測材料，不計算 token；若缺漏，不得阻塞 analysis 輸出，也不得觸發 correctness gate 或 re-dispatch。
 
-若發現任何不一致，修正後再進入 Step 7。
+若發現第 1-5 項不一致，修正後再進入 Step 7。`tokenEstimateInputs` 僅供 optional telemetry，缺漏時仍要寫入 analysis artifact，讓 estimator 走 fallback / unavailable。
 
 ---
 
