@@ -28,7 +28,7 @@ practice_tunit/
 | 類別                   | 驗證場景 | 測試技術需求                               |
 | ---------------------- | -------- | ------------------------------------------ |
 | `BookCatalog`          | P3-1     | 純函式、`[Test]` + `[Arguments]` 參數化    |
-| `LibraryMemberService` | P3-2     | Mock、`[MethodDataSource]` / `[Matrix]`    |
+| `LibraryMemberService` | P3-2     | Mock、`[MethodDataSource]`（TUnit 0.6.123 無 `[Matrix]`，多參數笛卡爾組合改用 `[MethodDataSource]` + 巢狀迴圈） |
 | `LoanService`          | P3-3     | Mock、狀態轉換、Executor `dotnet run` 驗證 |
 | `ReservationService`   | P3-4     | TimeProvider、Reviewer 合規性審查          |
 | `CatalogExportService` | P3-5     | IFileSystem、xUnit → TUnit 遷移場景        |

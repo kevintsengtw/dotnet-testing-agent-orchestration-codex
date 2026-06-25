@@ -80,9 +80,9 @@ graph TD
 
 ## 3. Agent 組成
 
-本版聚焦 Unit 測試，由 1 個 Orchestrator Skill 調度 4 個專屬 Subagent。
+本 repo 涵蓋 **4 種工作流程**（unit / tunit / integration / aspire），各一套 1 + 4 模型：1 個 Orchestrator Skill 調度 4 個專屬 Subagent。下表以 **unit** 為例（其餘三種結構相同，agent 檔名前綴為 `dotnet-testing-advanced-{tunit,integration,aspire}-`）：
 
-| 角色         | 類型     | 定義檔路徑                                         |
+| 角色         | 類型     | 定義檔路徑（unit 範例）                            |
 | ------------ | -------- | -------------------------------------------------- |
 | Orchestrator | Skill    | `.codex/skills/dotnet-testing-orchestrator-unit/`  |
 | Analyzer     | Subagent | `.codex/agents/dotnet-testing-analyzer.toml`       |
@@ -90,7 +90,7 @@ graph TD
 | Executor     | Subagent | `.codex/agents/dotnet-testing-executor.toml`       |
 | Reviewer     | Subagent | `.codex/agents/dotnet-testing-reviewer.toml`       |
 
-> Integration / Aspire / TUnit 的 Orchestrator 與對應 Subagent 為後續釋出 🚧。
+> tunit / integration / aspire 的 Orchestrator 與對應 Subagent 同樣已釋出（共 4 個 orchestrator skill + 16 個 subagent）；各自細節見 [tunit-orchestrator.md](tunit-orchestrator.md)、[integration-orchestrator.md](integration-orchestrator.md)、[aspire-orchestrator.md](aspire-orchestrator.md)。本頁以下的流程圖與循序圖以 **unit** 為例說明。
 
 ---
 
@@ -123,6 +123,8 @@ flowchart TD
 ```
 
 > 上圖為**單目標**流程。**多目標**（一次指定多個被測類別）時：Analyzer **平行**（逐 target）、Writer **平行且各 target 仍可 per-class 分割**（dispatch 單位是「Writer assignment」非 target，故 N 個 target 可同時跑 > N 個 Writer）、Executor **循序**（同專案 build 不可並行）、Reviewer **平行**。詳見 [unit-orchestrator.md §9](unit-orchestrator.md)。
+
+> **Phase 5 清理策略依 workflow 而異**：**unit** 在結果呈現後清理 `executor-result/`（`run-state.json` 與 `analysis/` 本 run 不刪，留作 review 證據，於下次 Phase 0 一併清）；**tunit / integration / aspire** 則**不自動清理**本次 `.orchestrator/` artifacts（`analysis/` / `writer-result/` / `executor-result/` / `reviewer-result/` / `run-state.json` 全數保留供驗收與 benchmark），同樣於下次 Phase 0 殘留清理時處理。各自詳見對應的 `*-orchestrator.md`。
 
 ---
 
@@ -191,4 +193,4 @@ sequenceDiagram
 | thread-ceiling 處理 | bounded re-dispatch（**僅撞限時**）| **只在** agent thread limit / capacity ceiling 或 artifact missing 等 bounded 條件出現時補派，**每 phase 最多 2 次**（`restartCount=0`，自癒）；不重啟整個流程 |
 | 技能載入方式      | 動態載入技術型 Agent Skills   | Analyzer **依屬性**（依賴型別/targetType/門檻，非類別名）決定 Writer 需要哪些技能，按需載入 |
 | 交接機制          | JSON 檔案（.orchestrator/）   | Subagent 間透過交接 JSON 傳遞結構化資料，而非在 prompt 中嵌入完整內容 |
-| 清理策略          | 保留 analysis/ 與 run-state.json，刪除 executor-result/ | analysis.json + run-state 供 review 當證據；executor-result/ Phase 5 清；run-state 於下次 Phase 0 清（皆不進版控）  |
+| 清理策略          | **依 workflow 而異**（上為 unit） | **unit**：保留 analysis/ 與 run-state.json、Phase 5 刪 executor-result/；**tunit / integration / aspire**：Phase 5 不自動清，保留完整 `.orchestrator/` artifacts 供驗收/benchmark。兩者皆於下次 Phase 0 清殘留，皆不進版控 |

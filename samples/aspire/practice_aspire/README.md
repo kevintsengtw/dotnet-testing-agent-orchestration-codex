@@ -68,7 +68,7 @@ practice_aspire/
 | ---- | --------------------------------- | -------------------------------------------------------------- |
 | P2-1 | 完整四階段端對端測試              | Resource 擷取完整性、DistributedApplicationTestingBuilder 使用 |
 | P2-2 | Writer 產出符合 Skill 模式的測試  | AspireAppFixture + CollectionDefinition + TestBase             |
-| P2-3 | Executor 成功建置與執行           | Docker + Aspire workload 檢查、長超時設定                      |
+| P2-3 | Executor 成功建置與執行           | Docker 檢查、Aspire workload / NuGet SDK 判定、長超時設定      |
 | P2-4 | Reviewer 正確審查 Aspire 特定項目 | 無 WebApplicationFactory、有 Collection Fixture                |
 
 ## 與 samples/aspire/ 的差異
@@ -89,6 +89,6 @@ practice_aspire/
 # 建置
 dotnet build practice_aspire/Practice.Aspire.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
 
-# 測試（需要 Docker + Aspire workload）
+# 測試（需要 Docker；Aspire.AppHost.Sdk 9.0+ 為 NuGet，免裝 Aspire workload）
 dotnet test practice_aspire/Practice.Aspire.slnx --no-build --verbosity minimal
 ```

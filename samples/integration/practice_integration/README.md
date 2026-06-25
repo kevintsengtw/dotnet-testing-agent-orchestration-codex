@@ -11,9 +11,10 @@ practice_integration/
 ├── src/
 │   └── Practice.Integration.WebApi/       # 待測試的 WebAPI 專案
 │       ├── Controllers/
-│       │   └── OrdersController.cs        # 訂單 CRUD + 狀態轉換 API
+│       │   ├── OrdersController.cs        # 訂單 CRUD + 狀態轉換 API
+│       │   └── CustomerActivitiesController.cs  # 顧客活動（MongoDB）
 │       ├── Data/
-│       │   └── OrderDbContext.cs           # EF Core DbContext (InMemory)
+│       │   └── OrderDbContext.cs           # EF Core DbContext (PostgreSQL / Npgsql)
 │       ├── Handlers/
 │       │   ├── FluentValidationExceptionHandler.cs
 │       │   └── GlobalExceptionHandler.cs
@@ -43,13 +44,15 @@ practice_integration/
 
 ## 驗證場景
 
-本專案設計為可觸發以下 5 個整合測試場景：
+本專案以**容器化資料庫**為主（無 InMemory 退路），設計為可觸發以下整合測試場景：
 
-1. **InMemory DB** — 使用 EF Core InMemory Provider 的基本整合測試
-2. **SQL Server Testcontainers** — 使用 SQL Server 容器替換 InMemory
-3. **FluentValidation** — 驗證請求驗證與 ValidationProblemDetails 回傳
-4. **PostgreSQL Testcontainers** — 使用 PostgreSQL 容器替換 InMemory
-5. **MongoDB/Redis NoSQL** — NoSQL 容器整合（進階場景）
+1. **PostgreSQL Testcontainers** — `OrderDbContext`（Npgsql）以 PostgreSQL 容器執行訂單 CRUD + 狀態轉換
+2. **MongoDB Testcontainers** — `CustomerActivitiesController` 以 MongoDB 容器執行文件操作
+3. **Redis Testcontainers** — 以 Redis 容器執行快取場景
+4. **FluentValidation** — 驗證請求驗證與 `ValidationProblemDetails` 回傳
+5. **資料隔離** — 搭配 Respawn 於測試間重置容器資料庫狀態
+
+> 需 Docker 環境（容器由 Testcontainers 啟動）。
 
 ## 建置與測試
 

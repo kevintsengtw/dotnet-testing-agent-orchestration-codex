@@ -294,4 +294,4 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 3. 修改後更新 `writer-result` / `executor-result`。
 4. Reviewer 以 re-review 模式確認前次 issues 是否解決，不展開無限新增審查。
 
-> 各階段耗時取自 `run-state.json` 的 wall-clock 時間戳，輸出「各階段耗時」與「Timing Evidence」兩張表；**Token 用量不提供（de-scoped）** — 不回報、不估算、不以 hook 或 transcript 推導。
+> 各階段耗時取自 `run-state.json` 的 wall-clock 時間戳，輸出「各階段耗時」與「Timing Evidence」兩張表。**Token 用量**：正式 billing token 無可靠 truth source 故不回報；四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {測試專案}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 optional 的 `Estimated Token Usage`（僅供 visible-context 相對成本比較，不可用於計費或 correctness gate）。細節見 [token-usage-estimation.md](token-usage-estimation.md)。

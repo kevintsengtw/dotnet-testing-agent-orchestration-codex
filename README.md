@@ -73,7 +73,7 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 
 ## 安裝與環境設定
 
-本 repo 發佈的是 **Orchestrator 契約本身**（4 個 subagent + orchestrator skill + `dotnet-test`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
+本 repo 發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
 
 ### 步驟 1：取得本 repo 的 `.codex/` 內容
 
