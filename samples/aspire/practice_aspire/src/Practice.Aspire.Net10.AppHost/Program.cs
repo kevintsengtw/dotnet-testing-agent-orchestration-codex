@@ -13,14 +13,12 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
 // 1. 加入 SQL Server 資料庫容器
-var sqlServer = builder.AddSqlServer("sql")
-    .WithDataVolume("practice-aspire-net10-sql-data");
+var sqlServer = builder.AddSqlServer("sql");
 
 var bookingsDb = sqlServer.AddDatabase("BookingsDb");
 
 // 2. 加入 Redis 快取容器
-var cache = builder.AddRedis("cache")
-    .WithDataVolume("practice-aspire-net10-redis-data");
+var cache = builder.AddRedis("cache");
 
 // 3. 加入 WebAPI 專案並設定依賴
 builder.AddProject<Projects.Practice_Aspire_Net10_WebApi>("bookingapi")

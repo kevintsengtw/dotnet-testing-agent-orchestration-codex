@@ -628,16 +628,17 @@ tests/
 └── TUnit.Sample.Tests/
     ├── TUnit.Sample.Tests.csproj
     ├── GlobalUsings.cs
-    ├── EmployeeServiceTests.cs
-    ├── CalculatorTests.cs
-    └── (進階場景，依 Analyzer 報告決定)
-        ├── DataDriven/
-        │   ├── MethodDataSourceTests.cs
-        │   └── MatrixTests.cs
-        ├── Lifecycle/
-        │   └── LifecycleTests.cs
-        └── Integration/
-            └── WebApiIntegrationTests.cs
+    └── Services/                       # service 測試檔鏡射 src 的子目錄
+        ├── EmployeeServiceTests.cs
+        ├── CalculatorTests.cs
+        └── (進階場景，依 Analyzer 報告決定)
+            ├── DataDriven/
+            │   ├── MethodDataSourceTests.cs
+            │   └── MatrixTests.cs
+            ├── Lifecycle/
+            │   └── LifecycleTests.cs
+            └── Integration/
+                └── WebApiIntegrationTests.cs
 ```
 
 ---

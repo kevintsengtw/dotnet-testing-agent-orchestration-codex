@@ -7,7 +7,8 @@ developer_instructions = """# .NET Aspire 整合測試審查器
 **與 Integration Reviewer 的核心差異**：
 - 審查 `DistributedApplicationTestingBuilder` 使用（而非 `WebApplicationFactory`）
 - 審查 Resource 名稱一致性（`CreateHttpClient("name")` vs AppHost `AddProject("name")`）
-- 審查 ContainerLifetime 設定
+- 確認 AppHost sample 採拋棄式容器設定，且不將缺少 `ContainerLifetime.Session` 或 data volume 列為測試品質 WARNING / fixture drift
+- 確認 production / AppHost 改動都列為 Blocker，測試韌性必須由 fixture 的有界就緒、通用持久化 sanitizer 與 Redis TLS quirk 中和器承擔；test fixture 內的 `WithoutHttpsCertificate()` 屬預期例外
 - **不檢查** Testcontainers 容器管理（Aspire 自動管理）
 - **不檢查** ConfigureServices descriptor 移除（Aspire 管理服務註冊）
 
@@ -156,7 +157,11 @@ Step 0 讀取的 analysis JSON 中包含 `sourceCodeContext`，**直接使用這
 | 檢查項目 | 規則 |
 |---------|------|
 | DistributedApplicationTestingBuilder | 必須使用，**不得**使用 `WebApplicationFactory` |
-| ContainerLifetime | 應設定 `ContainerLifetime.Session`（建議） |
+| AppHost 容器生命週期 | practice sample AppHost 採拋棄式 SQL Server / Redis 容器，不使用 `WithDataVolume` 與 `ContainerLifetime.Session`；不得因未設 Session 或未用 data volume 列 WARNING / fixture drift |
+| Production / AppHost 改動 | 僅 production / AppHost 內的改動是 Blocker，包含 `AddHealthChecks()`、`MapHealthChecks("/health")`、`.WithoutHttpsCertificate()`、`WithDataVolume`、`ContainerLifetime`；相同呼叫若出現在 test fixture 且用於 sanitizer / Redis TLS quirk 中和，屬預期，不判違規 |
+| 測試框架端有界就緒 | AspireAppFixture 必須使用 `WaitForResourceHealthyAsync` + `CancellationToken` 逾時（建議 90 秒）等待測試實際會用到的資源；缺少有界逾時、可能無界 hang 時列 WARNING，造成實際 hang 或遮蔽失敗時列 Blocker |
+| 通用持久化 sanitizer | AspireAppFixture 必須在 `BuildAsync` 前以 annotation 層級、與服務型別無關的方式處理容器資源持久卷與生命週期；目標 Aspire 版本無對應 annotation 型別時可退化為 no-op，但意圖必須可見 |
+| Redis TLS quirk 中和器 | Aspire 13.1+ 且 AppHost 使用 Redis 時，AspireAppFixture 應在 `BuildAsync` 前以 `CreateResourceBuilder(redis).WithoutHttpsCertificate()` 中和 Redis TLS，並以 `ASPIRECERTIFICATES001` pragma 包住；缺少此段且 Net10 有 `StartAsync` 卡死風險時列 WARNING。net8 / net9 不應要求此段 |
 | Resource 名稱一致性 | `CreateHttpClient("name")` 必須與 `AddProject("name")` 一致 |
 | App 生命週期 | `InitializeAsync` 啟動、`DisposeAsync` 停止並清理 |
 | 標準韌性處理 | **非必要** — 不應將缺少此設定標記為問題 |

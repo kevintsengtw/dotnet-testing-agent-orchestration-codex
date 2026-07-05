@@ -398,10 +398,10 @@ reviewResultFilePath: {reviewResultFilePath}
 
 ### Phase 5：後置清理
 
-四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），使用 Bash 工具清理暫存結果目錄：
+四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），清理暫存結果目錄。為跨平台可靠（含 Windows VS Code Codex Extension 等非 bash shell），一律用 `node` 刪除，**不得用 `rm -rf`**（Unix-only，非 bash shell 會失敗）：
 
 ```bash
-rm -rf "{testProjectDir}/.orchestrator/executor-result/"
+node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{recursive:true,force:true})"
 ```
 
 > **注意**：`.orchestrator/analysis/` 目錄**保留不刪除**，供外部 benchmark 工具讀取 analysis.json 檔案大小。`.orchestrator/run-state.json` 在本次 run 內也不得被 Phase 5 清理刪除；它只會在下一次 run 的 Phase 0 殘留清理時，與 `.orchestrator/` 其他殘留一起處理。下一次執行時，Phase 0 前置清理會處理殘留的 `.orchestrator/` 目錄。
@@ -412,10 +412,30 @@ rm -rf "{testProjectDir}/.orchestrator/executor-result/"
 
 ### 時間追蹤方式（Run-state wall-clock）
 
-時間追蹤以磁碟上的 run-state wall-clock timestamps 為準。主協調者必須在 `{testProjectDir}/.orchestrator/run-state.json` 維護一份 run-state 檔，並在每次 SpawnAgent dispatch 前後與 artifact ready 邊界使用 Write 更新：
+> **run-state.json 寫入機制（必用，跨平台）**：run-state.json 一律透過 `shell_command` 呼叫 `node .codex/scripts/run-state.mjs` 建立與更新。**不得**假設有「Write 工具」、**不得**用 `date -u`、**不得**手寫 shell read-modify-write。理由：Codex 沒有「Write」工具，且不同 runtime（Codex CLI vs VS Code Codex Extension）shell 不同；改善前 Extension 環境會整段略過 run-state 維護，導致 run-state.json 從不產生、各階段耗時與 Estimated Token Usage 全空。此腳本為純量參數 API（不傳 JSON blob，避免 PowerShell 引號問題），時間戳由腳本內部以系統時鐘產生（值寫 `@now` 即取 ISO 8601 UTC），毫秒差由 `--derive 欄位=END-START` 推導。以下 `{p}` 代表 `{testProjectDir}/.orchestrator/run-state.json`。常用呼叫：
+>
+> ```bash
+> # 初始化（Phase 0 清理後、啟動 Analyzer 前）
+> node .codex/scripts/run-state.mjs init --path {p} --workflow unit --target {target}
+> # dispatch 前：記 dispatchIssuedAt（並一併登記 Estimated Token Usage metadata）
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath}
+> # 收到 agentId：記 agentId/dispatchAcceptedAt，推導 latency
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+> # artifact 落地：記 artifactReadyAt/artifact，推導 produceSpan
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+> # phase 收斂：記 completedAt
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
+> # 計數 / 整體：counters 與 overallWallClock.end
+> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now
+> # bounded re-dispatch 事件：append 一筆
+> node .codex/scripts/run-state.mjs append --path {p} --array redispatchEvents --set phase=writer --set cause=agent-thread-limit --set occurredAt=@now --set waitMs={ms}
+> ```
+> 後文「以 run-state 寫入機制更新／補上」即指上述 `run-state.mjs` 呼叫。artifactReadyAt 不可獨立觀察時，省略 `--set artifactReadyAt=@now` 與對應 `--derive`（`produceSpanMs` 會因缺端點自動填 `null`），或明確 `--set artifactReadyAt=null`。不得以對話敘述或人工推估值代替腳本寫入。
+
+時間追蹤以磁碟上的 run-state wall-clock timestamps 為準。主協調者必須在 `{testProjectDir}/.orchestrator/run-state.json` 維護一份 run-state 檔，並在每次 SpawnAgent dispatch 前後與 artifact ready 邊界以 run-state 寫入機制更新：
 
 - `dispatchIssuedAt`：發出 SpawnAgent dispatch 的時間
-- `dispatchAcceptedAt`：SpawnAgent 回傳 `agentId` 後，Orchestrator 立即用 `date -u` 取得的時間。此欄只代表派發被 runtime 接受，**不代表 agent 真正開始工作**。
+- `dispatchAcceptedAt`：SpawnAgent 回傳 `agentId` 後，於同一邊界以 `run-state.mjs set ... --set dispatchAcceptedAt=@now` 記錄的時間。此欄只代表派發被 runtime 接受，**不代表 agent 真正開始工作**。
 - `artifactReadyAt`：對應 canonical artifact 存在且可讀取的時間
 - `completedAt`：該 phase 收斂完成的時間
 - `dispatchAcceptLatencyMs`：`dispatchAcceptedAt - dispatchIssuedAt`
@@ -436,31 +456,31 @@ Codex hooks 僅屬 optional telemetry，不可假設有 Claude Code 式 subagent
 
 #### Run-state 落地契約（必要）
 
-1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `workflow: "unit"`、`target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount`、`restartCount`、`executorFixRounds`。
-2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `date -u` 取得實際 UTC 時間，使用 Write 更新該 phase assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即再次以 `date -u` 取得 UTC 時間，使用 Write 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`。多 assignment phase（Analyzer/Writer/Reviewer）每一筆 assignment 都必須各自落欄位；Writer split 產生 5 筆時，5 筆都不得缺漏。
+1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，以 `run-state.mjs init --path {p} --workflow unit --target {target}` 建立 `{testProjectDir}/.orchestrator/run-state.json`；腳本自動含 `workflow: "unit"`、`target`、`overallWallClock.start`、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount`、`restartCount`、`executorFixRounds` 歸零。
+2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `run-state.mjs set --path {p} --phase {phase} --assignment {assignmentId} --set dispatchIssuedAt=@now` 記錄該 assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即以 `run-state.mjs set ... --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt` 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`（時間戳由腳本內部以系統時鐘產生，毫秒差由腳本推導）。多 assignment phase（Analyzer/Writer/Reviewer）每一筆 assignment 都必須各自落欄位；Writer split 產生 5 筆時，5 筆都不得缺漏。
    - **不得批次補 stamp**：平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
    - **不得複製 phase boundary**：phase 層級的 `dispatchAcceptedAt`、`artifactReadyAt`、`completedAt` 若存在，只能作為 phase 摘要；不得複製到 `assignments[]` 充當逐 assignment timing。
    - **重派 assignment 例外**：bounded re-dispatch 成功時，只更新被重派 assignment 的新 `agentId`、新 `dispatchAcceptedAt` 與新 `dispatchAcceptLatencyMs`；未重派 assignment 的時間戳不得被覆寫。
-   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
-3. **artifact ready 邊界**：每個 assignment 的 canonical artifact 於磁碟存在且可讀取的當下，使用 Write 更新該 assignment 的 `artifactReadyAt` 與 `artifact` 路徑。多 assignment phase 必須逐 assignment 以各自 canonical artifact path 獨立 poll、獨立 stamp；不得在 phase 收斂後用同一個 `artifactReadyAt` 覆蓋所有 assignment。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；以 dispatch 邊界的同一個 `run-state.mjs set` 呼叫一併 `--set target=...`、`--set agentDefinitionPath=...`、`--set expectedArtifactPath=...` 登記（`assignmentId` 由 `--assignment` 自動帶入）。這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+3. **artifact ready 邊界**：每個 assignment 的 canonical artifact 於磁碟存在且可讀取的當下，以 run-state 寫入機制更新該 assignment 的 `artifactReadyAt` 與 `artifact` 路徑。多 assignment phase 必須逐 assignment 以各自 canonical artifact path 獨立 poll、獨立 stamp；不得在 phase 收斂後用同一個 `artifactReadyAt` 覆蓋所有 assignment。
    - Writer split 時，每筆 Writer assignment 必須有自己的 `writerResultFilePath` / `testFilePath` 對應關係。Orchestrator 必須對每筆 writer-result JSON 或該筆明確宣告的 canonical artifact 逐檔 poll；哪一檔先可讀，就只 stamp 哪一筆 assignment。
    - Reviewer parallel 時，每筆 Reviewer assignment 必須對應自己的 `reviewResultFilePath`；不得用最後一個 reviewer artifact ready 時間補到所有 reviewer assignment。
    - 若 runtime 只在 agent 完成後才揭露 artifact path，且 Orchestrator 無法在該筆 artifact 落地當下獨立觀察，該 assignment 的 `artifactReadyAt` 必須填 `null`，`produceSpanMs` 必須填 `null`，並以 `timingNote` 說明「artifact ready was not independently observable for this assignment」。不得使用 phase-level artifact ready 代替。
-4. **completed 邊界**：該 phase 收斂完成時，使用 Write 更新該 phase 的 `completedAt`。若 phase 失敗或被判定 blocker，仍必須寫入 `completedAt` 與 `failure`。
+4. **completed 邊界**：該 phase 收斂完成時，以 run-state 寫入機制更新該 phase 的 `completedAt`。若 phase 失敗或被判定 blocker，仍必須寫入 `completedAt` 與 `failure`。
 5. **失敗落地**：若某 phase 未能產出 artifact，該 phase 必須寫入 `artifactReadyAt: null`、`artifact: null`、`failure` 欄位，`failure` 必須保留原始錯誤訊息或症狀分類。
-6. **派生耗時欄位**：每個 assignment 的 `artifactReadyAt` 落地後，立即計算並寫入 `produceSpanMs = artifactReadyAt - dispatchAcceptedAt`。若 `dispatchAcceptedAt` 或 `artifactReadyAt` 任一缺失，`produceSpanMs` 必須填 `null` 並在 assignment `timingNote` 說明，不得捏造。
+6. **派生耗時欄位**：每個 assignment 的 `artifactReadyAt` 落地時，以同一個 `run-state.mjs set ... --set artifactReadyAt=@now --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt` 由腳本推導 `produceSpanMs`。若 `dispatchAcceptedAt` 或 `artifactReadyAt` 任一缺失，腳本會自動將 `produceSpanMs` 填 `null`，此時必須在 assignment `timingNote` 說明，不得捏造。
    - 平行 assignment 的 `produceSpanMs` 只可由該筆 assignment 自己的 `dispatchAcceptedAt` 與自己的 `artifactReadyAt` 計算。
    - 若 2 筆以上平行 assignment 的 `dispatchAcceptedAt`、`artifactReadyAt`、`produceSpanMs` 三者全部 byte-identical，必須先視為 timing evidence 污染；除非每筆都有可查證的同時獨立 artifact 觀察理由，否則必須把受污染 assignment 的 `produceSpanMs` 改為 `null` 並加 `timingNote`，不得把它們納入 critical path 或 profiling summary 分布統計。
-7. **bounded re-dispatch 事件**：每次遇到 `agent thread limit reached` 或同義 capacity ceiling 而做 bounded re-dispatch 時，必須在撞限當下以 `date -u` 記錄 `occurredAt`；補派成功取得新 `agentId` 後計算 `waitMs`，並 append 到 top-level `redispatchEvents[]`：
+7. **bounded re-dispatch 事件**：每次遇到 `agent thread limit reached` 或同義 capacity ceiling 而做 bounded re-dispatch 時，必須在撞限當下以 `run-state.mjs append --path {p} --array redispatchEvents --set occurredAt=@now ...` append 一筆到 top-level `redispatchEvents[]`，至少含下列欄位（`occurredAt` 由腳本 `@now` 產生，`waitMs` 於補派成功取得新 `agentId` 後再以一次 set/append 補上）：
    - `phase`：發生補派的 phase，例如 `writer`
    - `occurredAt`：撞限時間
    - `cause`：固定使用可機器判讀字串，例如 `agent-thread-limit`
    - `waitMs`：從撞限到補派成功啟動的等待毫秒；若補派未成功填 `null` 並在 `action` 說明
    - `action`：實際動作，例如 `closed 3 completed analyzer agents, re-dispatched 1 pending writer`
-8. **計數欄位**：每次 bounded re-dispatch、restart 或 Executor fix round 收斂後，都必須使用 Write 更新 `boundedRedispatchCount`、`restartCount`、`executorFixRounds`；`boundedRedispatchCount` 必須等於 `redispatchEvents.length`，除非有歷史相容原因，這時必須在 `profilingSummary.notes` 說明。
-9. **總體時間**：整體流程完成或中止時，使用 Write 更新 `overallWallClock` 為 `<workflowStartedAt>/<workflowCompletedAt>`。
-10. **phase duration 摘要**：整體流程完成或中止時，使用 Write 補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`.
-11. **profiling summary**：整體流程完成或中止時，使用 Write 補上 `profilingSummary`，至少包含 `bottleneck`、`bottleneckBreakdown`、`rootCauseCandidate`、`deferredOptimization`、`timingSource`。`rootCauseCandidate` 不得是 `unresolved`；拿不到的細項填 `null` 並在 `notes` 說明。
+8. **計數欄位**：每次 bounded re-dispatch、restart 或 Executor fix round 收斂後，都必須以 run-state 寫入機制更新 `boundedRedispatchCount`、`restartCount`、`executorFixRounds`；`boundedRedispatchCount` 必須等於 `redispatchEvents.length`，除非有歷史相容原因，這時必須在 `profilingSummary.notes` 說明。
+9. **總體時間**：整體流程完成或中止時，以 run-state 寫入機制更新 `overallWallClock` 為 `<workflowStartedAt>/<workflowCompletedAt>`。
+10. **phase duration 摘要**：整體流程完成或中止時，以 run-state 寫入機制補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`.
+11. **profiling summary**：整體流程完成或中止時，以 run-state 寫入機制補上 `profilingSummary`，至少包含 `bottleneck`、`bottleneckBreakdown`、`rootCauseCandidate`、`deferredOptimization`、`timingSource`。`rootCauseCandidate` 不得是 `unresolved`；拿不到的細項填 `null` 並在 `notes` 說明。
 
 #### 多 Writer / 多 Target Timing 契約
 

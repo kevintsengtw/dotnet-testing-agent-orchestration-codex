@@ -8,7 +8,7 @@
 
 ## 專案結構
 
-```plaintext
+```text
 practice_aspire/
 ├── Practice.Aspire.slnx                     # Solution 檔案
 ├── README.md                                # 本檔案
@@ -85,10 +85,10 @@ practice_aspire/
 
 ## 建置與測試
 
-```powershell
+```bash
 # 建置
-dotnet build practice_aspire/Practice.Aspire.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
+dotnet build samples/aspire/practice_aspire/Practice.Aspire.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
 
 # 測試（需要 Docker；Aspire.AppHost.Sdk 9.0+ 為 NuGet，免裝 Aspire workload）
-dotnet test practice_aspire/Practice.Aspire.slnx --no-build --verbosity minimal
+dotnet test samples/aspire/practice_aspire/Practice.Aspire.slnx --no-build --verbosity minimal
 ```

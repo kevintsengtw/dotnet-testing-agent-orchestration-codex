@@ -5,7 +5,7 @@
 
 ## 專案結構
 
-```plaintext
+```text
 practice_tunit/
 ├── Practice.TUnit.slnx
 ├── migration_source/                  # P3-5 xUnit → TUnit 遷移來源
@@ -35,12 +35,12 @@ practice_tunit/
 
 ## 建置與測試
 
-```powershell
+```bash
 # 建置
-dotnet build practice_tunit/Practice.TUnit.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
+dotnet build samples/tunit/practice_tunit/Practice.TUnit.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
 
 # 執行 TUnit 測試（使用 dotnet run）
-dotnet run --project practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
+dotnet run --project samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 ```
 
 ## 注意事項

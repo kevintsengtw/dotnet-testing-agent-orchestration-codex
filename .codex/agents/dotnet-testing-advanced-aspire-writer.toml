@@ -104,6 +104,8 @@ Step 0 讀取的交接檔案中包含 `sourceCodeContext` 欄位（由 Analyzer 
 
 #### 目錄結構規範
 
+> 即使呼叫者提供的 `outputPath` 指向其他子目錄或測試專案根目錄，Aspire 整合測試檔仍必須置於 `Integration/` 子目錄，fixtures 置於 `Infrastructure/`；本目錄結構規範優先於呼叫者路徑。
+
 ```
 tests/AppHost.Tests/
 ├── AppHost.Tests.csproj
@@ -121,9 +123,9 @@ tests/AppHost.Tests/
 
 ### Step 3：撰寫測試
 
-> ⚠️ **ContainerLifetime.Session 前置條件**（原則 10）：`ContainerLifetime.Session` API 從 **Aspire 9.0 起才引入**，Aspire 8.x **不支援**。
+> ⚠️ **拋棄式容器前置條件**（原則 10）：practice sample AppHost 的 SQL Server / Redis 採拋棄式容器，不使用持久資料卷（`WithDataVolume`），也不使用 `ContainerLifetime.Session`。這是 sample 現況；Writer 不修改 production / AppHost。Writer 產生的 fixture 必須內建通用持久化 sanitizer，作為真實專案持久卷與生命週期差異的測試框架端防護網。
 
-> ⚠️ **Aspire 13.1.0+ Redis TLS 前置條件**（原則 11）：若 Aspire 版本 ≥ 13.1.0 且使用手動 Redis 連線，需加入 `.WithoutHttpsCertificate()`。
+> ⚠️ **已知 Aspire 框架預設測試不友善行為**（原則 11）：Redis TLS 由 fixture (C) 在 test 端中和。Aspire 13.1+ 且 AppHost 使用 Redis 時，Writer 產生 `BuildAsync()` 前的 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma）；net8 / net9 不產生。Writer 不碰 production / AppHost。
 
 根據 `suggestedTestScenarios` 和 `apiProjectInfo.endpoints`，撰寫各類別的測試。
 
@@ -162,8 +164,14 @@ global using AwesomeAssertions.Web;
 ### Rule 4：使用 DistributedApplicationTestingBuilder
 - **絕對不要**使用 `WebApplicationFactory`
 - **絕對不要**使用 Testcontainers 程式化容器
+- **絕對不要**修改 production / AppHost（包含 Health Checks、Redis TLS、volume、lifetime）
+- `CreateAsync<T>()` 後、`BuildAsync()` 前，AspireAppFixture 必須執行通用持久化 sanitizer：以 annotation 層級、與服務型別無關的方式剝除容器資源的持久具名資料卷掛載，並強制 ephemeral / session-scoped 生命週期。9.x / 13.x 使用 typed 形式；8.2.x 若無法 typed 存取 `appHost.Resources` / annotation 型別，採 reflection fallback（以 annotation 型別名稱字串比對 `ContainerMountAnnotation` / `ContainerLifetimeAnnotation`）達成相同意圖。若目標 Aspire 版本缺少對應 annotation 型別，sanitizer 可退化為 no-op，但意圖必須保留。
+- `CreateAsync<T>()` 後、`BuildAsync()` 前，Aspire 13.1+ 且 AppHost 使用 Redis 時，AspireAppFixture 必須執行 Redis TLS quirk 中和：對每個 Redis resource 使用 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`，並以 `#pragma warning disable ASPIRECERTIFICATES001` / restore 包住。net8 / net9 不產生此段。
 
 ### Rule 5：Collection Fixture 共享 AppHost
+- AspireAppFixture 必須在 `StartAsync` 後，對測試實際會用到的資源做有界 readiness 等待，搭配 `CancellationTokenSource(TimeSpan.FromSeconds(90))`。
+- readiness 預設採跨版本通用形式：`Services.GetRequiredService<ResourceNotificationService>().WaitForResourceAsync(name, KnownResourceStates.Running, ct)`（Aspire 8.2.x / 9.x / 13.x 皆可用）。僅在 Analyzer 確認 Aspire >= 9.1 且需要健康檢查語意時，才使用 `ResourceNotifications.WaitForResourceHealthyAsync`；依 Analyzer 回報版本產生，避免 8.2.x / 9.0.0 使用不存在 API 造成編譯 fix 輪。
+- readiness 逾時必須拋出點名資源的清楚例外；禁止無界等待、禁止 `Task.Delay` 硬等，且不得改 production / AppHost 來掩蓋 readiness 問題。
 ### Rule 6：Resource 名稱一致性
 ### Rule 7：System.Net.Http.Json
 ### Rule 8：ProblemDetails 驗證（使用 Satisfy<T>() 鏈式語法）
@@ -186,6 +194,7 @@ global using AwesomeAssertions.Web;
 | `new HttpClient()` | 必須使用 `app.CreateHttpClient("name")` |
 | `.HaveStatusCode(HttpStatusCode.X)` | 此方法不存在 |
 | `Task.Delay()` 硬式等待 | 使用 readiness 等待機制 |
+| `CreateHttpClient` 前無界等待資源健康 | 必須使用 Aspire resource notification + `CancellationToken` 有界逾時 |
 
 ---
 
@@ -270,8 +279,8 @@ global using AwesomeAssertions.Web;
 7. **移除 unused using**
 8. **遵守呼叫者的交辦 scope**
 9. **中文三段式命名**
-10. **ContainerLifetime.Session 版本相依設定** — Aspire 9.0+ 必須檢查並設定，8.x 跳過
-11. **Aspire 13.1.0+ Redis TLS 處理** — 手動 Redis 連線需加入 `.WithoutHttpsCertificate()`
+10. **拋棄式容器 sample 前提** — practice sample AppHost 不使用 `WithDataVolume` 與 `ContainerLifetime.Session`；Writer 只確認分析結果，不臨時修改 production / AppHost，並在 fixture 內建通用持久化 sanitizer
+11. **已知 Aspire 框架預設測試不友善行為** — Redis TLS 由 fixture (C) test 端中和；僅 Aspire 13.1+ 產生、含 `ASPIRECERTIFICATES001` pragma，且不碰 production / AppHost
 
 ## Tools
 

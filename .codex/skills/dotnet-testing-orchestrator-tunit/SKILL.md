@@ -176,7 +176,7 @@ payload: {
 
 ### Phase 0.5：初始化 run-state
 
-Phase 0 清理完成後、**啟動 Analyzer 之前**，建立 `{testProjectDir}/.orchestrator/run-state.json`。此檔是本 workflow 的唯一 timing truth source；正式 token usage / hooks 計量不屬於本 Codex 版 truth 契約，缺席時不得阻塞流程。token 相關資訊只能在流程完成後以 `Estimated Token Usage` optional telemetry 呈現。
+Phase 0 清理完成後、**啟動 Analyzer 之前**，以 `node .codex/scripts/run-state.mjs init --path {testProjectDir}/.orchestrator/run-state.json --workflow tunit --target {target}` 建立 `{testProjectDir}/.orchestrator/run-state.json`（詳見「run-state 持久化與 timing truth（P1）」的 run-state.json 寫入機制）。此檔是本 workflow 的唯一 timing truth source；正式 token usage / hooks 計量不屬於本 Codex 版 truth 契約，缺席時不得阻塞流程。token 相關資訊只能在流程完成後以 `Estimated Token Usage` optional telemetry 呈現。
 
 ### 階段 1：啟動分析（TUnit Analyzer）
 
@@ -248,7 +248,11 @@ Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認�
 
 1. **`analysisFilePath`** — Analyzer 交接檔案路徑（Writer 會在 Step 0 讀取完整分析 JSON）
 2. **被測試目標的檔案路徑**
-3. **測試檔案的預期輸出路徑**（依照現有專案結構推導）
+3. **測試檔案的預期輸出路徑** — 必須**鏡射被測類別在 `src/` 下的相對子目錄**到測試專案，**禁止**放在測試專案根目錄。推導規則：
+   - `{TestDir}` = 測試專案目錄（取 `projectContext.testProjectPath` 去掉結尾的 `.csproj` 檔名後的目錄）。
+   - 一般規則：被測類別位於 `src/<Proj>/<SubDir>/<Class>.cs` 時，測試檔放 `{TestDir}/<SubDir>/<Class>Tests.cs`（鏡射 `<SubDir>`）。本練習專案的 service 類別位於 `Services/`，故對應 `{TestDir}/Services/{ClassName}Tests.cs`。
+   - 非分割：`{TestDir}/Services/{ClassName}Tests.cs`
+   - 分割（多 Writer）：每個 Writer 各自一個輸出路徑，皆位於 `{TestDir}/Services/` 下，例如 `{TestDir}/Services/{ClassName}{群組語意}Tests.cs`；不得有任一分割檔落在測試專案根目錄。
 
 > ⚠️ **禁止在 Writer prompt 中嵌入任何分析內容**（targetClasses、tunitFeatureRequirements、requiredSkills、suggestedTestScenarios、existingTestInfrastructure 等）。Writer 的 Step 0 會讀取交接檔案取得全部資訊。**如果你在 prompt 中提供了這些內容，Writer 可能跳過 Step 0 不讀交接檔案，導致下游交接斷裂。**
 
@@ -366,10 +370,30 @@ reviewResultFilePath: {reviewResultFilePath}
 
 ## run-state 持久化與 timing truth（P1）
 
-時間追蹤以磁碟上的 run-state wall-clock timestamps 為準。主協調者必須在 `{testProjectDir}/.orchestrator/run-state.json` 維護一份 run-state 檔，並在每次 SpawnAgent dispatch 前後與 artifact ready 邊界使用 Write 更新：
+> **run-state.json 寫入機制（必用，跨平台）**：run-state.json 一律透過 `shell_command` 呼叫 `node .codex/scripts/run-state.mjs` 建立與更新。**不得**假設有「Write 工具」、**不得**用 `date -u`、**不得**手寫 shell read-modify-write。理由：Codex 沒有「Write」工具，且不同 runtime（Codex CLI vs VS Code Codex Extension）shell 不同；改善前 Extension 環境會整段略過 run-state 維護，導致 run-state.json 從不產生、各階段耗時與 Estimated Token Usage 全空。此腳本為純量參數 API（不傳 JSON blob，避免 PowerShell 引號問題），時間戳由腳本內部以系統時鐘產生（值寫 `@now` 即取 ISO 8601 UTC），毫秒差由 `--derive 欄位=END-START` 推導。以下 `{p}` 代表 `{testProjectDir}/.orchestrator/run-state.json`。常用呼叫：
+>
+> ```bash
+> # 初始化（Phase 0 清理後、啟動 Analyzer 前）
+> node .codex/scripts/run-state.mjs init --path {p} --workflow tunit --target {target}
+> # dispatch 前：記 dispatchIssuedAt（並一併登記 Estimated Token Usage metadata）
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath}
+> # 收到 agentId：記 agentId/dispatchAcceptedAt，推導 latency
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+> # artifact 落地：記 artifactReadyAt/artifact，推導 produceSpan
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+> # phase 收斂：記 completedAt
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
+> # 計數 / 整體：counters 與 overallWallClock.end
+> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now
+> # bounded re-dispatch 事件：append 一筆
+> node .codex/scripts/run-state.mjs append --path {p} --array redispatchEvents --set phase=writer --set cause=agent-thread-limit --set occurredAt=@now --set waitMs={ms}
+> ```
+> 後文「以 run-state 寫入機制更新／補上」即指上述 `run-state.mjs` 呼叫。artifactReadyAt 不可獨立觀察時，省略 `--set artifactReadyAt=@now` 與對應 `--derive`（`produceSpanMs` 會因缺端點自動填 `null`），或明確 `--set artifactReadyAt=null`。不得以對話敘述或人工推估值代替腳本寫入。
+
+時間追蹤以磁碟上的 run-state wall-clock timestamps 為準。主協調者必須在 `{testProjectDir}/.orchestrator/run-state.json` 維護一份 run-state 檔，並在每次 SpawnAgent dispatch 前後與 artifact ready 邊界以 run-state 寫入機制更新：
 
 - `dispatchIssuedAt`：發出 SpawnAgent dispatch 的時間
-- `dispatchAcceptedAt`：SpawnAgent 回傳 `agentId` 後，Orchestrator 立即用 `date -u` 取得的時間。此欄只代表派發被 runtime 接受，**不代表 agent 真正開始工作**。
+- `dispatchAcceptedAt`：SpawnAgent 回傳 `agentId` 後，於同一邊界以 `run-state.mjs set ... --set dispatchAcceptedAt=@now` 記錄的時間。此欄只代表派發被 runtime 接受，**不代表 agent 真正開始工作**。
 - `artifactReadyAt`：Orchestrator 在磁碟上確認 canonical artifact 已存在且可讀的時間。
 - `completedAt`：該 phase artifact gate 通過或 blocker 判定完成的時間。
 - `produceSpanMs`：`artifactReadyAt - dispatchAcceptedAt`，只代表 Orchestrator 可觀察的 artifact produce span。
@@ -379,13 +403,13 @@ reviewResultFilePath: {reviewResultFilePath}
 
 run-state 寫入規則：
 
-1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，建立 `{testProjectDir}/.orchestrator/run-state.json`，至少包含 `workflow: "tunit"`、`target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
-2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `date -u` 取得實際 UTC 時間，使用 Write 更新該 phase assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即再次以 `date -u` 取得 UTC 時間，使用 Write 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`。
+1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，以 `run-state.mjs init --path {p} --workflow tunit --target {target}` 建立 `{testProjectDir}/.orchestrator/run-state.json`；腳本自動含 `workflow: "tunit"`、`target`、`overallWallClock.start`、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
+2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `run-state.mjs set --path {p} --phase {phase} --assignment {assignmentId} --set dispatchIssuedAt=@now` 記錄該 assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即以 `run-state.mjs set ... --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt` 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`（時間戳由腳本內部以系統時鐘產生，毫秒差由腳本推導）。
 3. **不得批次補 stamp**：平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
-   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
-4. **artifact gate 邊界**：每個 canonical artifact 通過 Glob/Read 驗證後，立即用 `date -u` 寫入 `artifactReadyAt`、`artifact`、`produceSpanMs`。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；以 dispatch 邊界的同一個 `run-state.mjs set` 呼叫一併 `--set target=...`、`--set agentDefinitionPath=...`、`--set expectedArtifactPath=...` 登記（`assignmentId` 由 `--assignment` 自動帶入）。這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+4. **artifact gate 邊界**：每個 canonical artifact 通過 Glob/Read 驗證後，立即以 `run-state.mjs set ... --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt` 寫入 `artifactReadyAt`、`artifact` 並推導 `produceSpanMs`。
 5. **phase complete 邊界**：phase artifact gate 全部通過或 blocker 判定完成後，寫入 `completedAt` 與 phase status。
-6. **duration 摘要**：整體流程完成或中止時，使用 Write 補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`。
+6. **duration 摘要**：整體流程完成或中止時，以 run-state 寫入機制補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`。
 
 若某 phase 內有多個平行 assignment（例如多 target Analyzer、split Writer、多 Reviewer），run-state 必須保留每個 assignment 的 timing evidence，不得只記一個彙總時間。
 

@@ -8,7 +8,7 @@ developer_instructions = """# .NET Aspire 整合測試執行器
 - 需要額外檢查 **.NET Aspire workload** 是否已安裝
 - 容器由 Aspire AppHost 自動管理，不需要手動啟動/停止 Testcontainers
 - 執行時間通常較長（需啟動 AppHost + 多個容器），**必須**使用 `--blame-hang-timeout` 參數（建議 10-15 分鐘）
-- 錯誤模式不同（Resource readiness timeout、`Projects.xxx` 型別、TLS 憑證等）
+- 錯誤模式不同（Resource readiness timeout、`Projects.xxx` 型別、TLS 憑證等）；Executor 只能修測試專案內檔案，不能修改 production / AppHost
 
 ## 輸入契約（Input Contract）
 
@@ -177,13 +177,13 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 |---------|------|---------|
 | `DistributedApplicationTestingBuilder` 找不到 | 缺少 `Aspire.Hosting.Testing` 套件 | 安裝 NuGet 套件 |
 | `Projects.xxx` 型別不存在 | 程式集名稱含特殊字元未正確轉換 | 使用正確的型別名稱（連字號轉底線） |
-| Resource readiness timeout | 容器啟動超時 | 增加等待時間、設定 `ContainerLifetime.Session` |
+| Resource readiness timeout | 容器啟動超時、測試框架端有界就緒失敗，或 Docker/WSL2 SQL 冷啟偏慢 | 測試框架端應在 90 秒內快速失敗並點名資源；Executor 不得修改 production / AppHost。Windows/WSL2 SQL 冷啟偏慢屬環境效能，回報即可 |
 | `CreateHttpClient` 找不到服務 | 服務名稱不符或缺少 `launchSettings.json` | 確認名稱一致性，必要時建立 `launchSettings.json` |
 | `Cannot open database` | DB schema 未建立 | 在 AspireAppFixture 加入 `EnsureCreatedAsync()` |
-| `GET /health` 回傳 404 | WebAPI 未註冊 Health Checks | 加入 `AddHealthChecks()` + `MapHealthChecks("/health")` |
+| `GET /health` 回傳 404 | WebAPI 未註冊 Health Checks 或 AppHost 非測試就緒 | 回報為「AppHost 非測試就緒 / production 設定測試不友善」；不得加入 `AddHealthChecks()` 或 `MapHealthChecks("/health")` |
 | `GetConnectionStringAsync` 回傳 null | 使用了 `IConfiguration` 而非 Aspire API | 改用 `App.GetConnectionStringAsync("resourceName")` |
-| TLS/SSL 憑證錯誤（Redis） | Aspire 13.1.0+ Redis TLS 預設啟用 | 加入 `.WithoutHttpsCertificate()` |
-| `ContainerLifetime` 未設定 | 每次測試重啟容器導致超時 | 加入 `.WithLifetime(ContainerLifetime.Session)`（Aspire 9.0+） |
+| TLS/SSL 憑證錯誤（Redis） | Aspire 13.1.0+ Redis TLS 預設啟用，Writer fixture (C) 未在 test 端中和，導致 cache 不 healthy 或 API 明文連線失敗 | Executor 不改 production / AppHost；回報並要求補 AspireAppFixture 的 Redis TLS quirk 中和器：`BuildAsync()` 前對 Redis resource 使用 `CreateResourceBuilder(redis).WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma） |
+| `ContainerLifetime` 未設定 | AppHost sample 採拋棄式容器的預期狀態 | 不列為錯誤或 fixture drift；不得為此修改 production code；持久卷 / 生命週期由測試框架端 sanitizer 通用處理 |
 
 ### 測試失敗
 
@@ -192,7 +192,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 | `Assert.Equal() Failure` | 預期值不符 | 檢查預期值與實際回傳值 |
 | `Expected status code xxx, but got yyy` | HTTP 狀態碼不符 | 確認 API 行為或調整斷言 |
 | `JsonException` | 序列化/反序列化不符 | 修正型別或使用正確的 DTO |
-| `TimeoutException` | AppHost + 容器啟動過慢 | 確認 `ContainerLifetime.Session` 設定 |
+| `TimeoutException` | 測試框架端有界就緒失敗、AppHost + 容器啟動過慢，或 Docker/WSL2 SQL 冷啟偏慢 | 測試框架端應在 90 秒內快速失敗並點名資源；Executor 不得修改 production / AppHost。Windows/WSL2 SQL 冷啟偏慢屬環境效能，回報即可 |
 | `HttpRequestException` | 服務尚未就緒 | 確認 `WaitFor` 設定 |
 
 ### Docker / 環境錯誤
@@ -210,7 +210,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 1. **最多 5 次迭代** — 超過 5 次仍失敗，停止並回報（Aspire 測試因環境複雜度較高，需更多修正空間）
 2. **每次只修正一類問題** — 不要同時修正多個不相關的錯誤
 3. **修正後必須重新建置** — 每次 `Edit` 後都要 `dotnet build` 確認
-4. **不修改 source code（有例外）** — 原則上只修改測試程式碼。**例外**：Health Checks 缺失、`ContainerLifetime.Session` 未設定、Redis TLS 問題
+4. **不修改 production / AppHost source code（無例外）** — Executor 只修改測試專案內檔案，絕不修改 `src/**`、AppHost `Program.cs`、production `.csproj` 或 production 組態。Health Checks、volume、lifetime 與 production / AppHost 內的 Redis TLS 變更都不是例外；fixture 缺 Redis TLS quirk 中和器時，回報要求補測試 fixture，而非改 AppHost。fix 迴圈只能動測試碼與測試專案檔
 5. **記錄每次修正** — 在回報中列出修正歷史
 
 ---
@@ -317,7 +317,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 1. **Docker + Aspire 雙重檢查** — Step 0 和 Step 0.5 都是必要步驟，不可跳過
 2. **先建置再測試** — 永遠 `dotnet build` 成功後才 `dotnet test --no-build`
 3. **低警告等級** — 建置時使用 `-p:WarningLevel=0 /clp:ErrorsOnly` 減少雜訊
-4. **Production code 窄例外** — 原則上只修改測試程式碼；只有 Health Checks 缺失、`ContainerLifetime.Session`、Redis TLS 三類 Aspire 已授權例外可做最小 production / AppHost 組態修改，且必須寫入 `fixHistory` 與 final report
+4. **Production / AppHost 硬邊界** — Executor 只修改測試碼，絕不修改 production / AppHost（含 Health Checks、volume、lifetime、production / AppHost 內 Redis TLS 變更）。任何需要改 `src/**`、AppHost `Program.cs` 或 production `.csproj` 的狀況都回報為契約外需求或「AppHost 非測試就緒」，不得自行修正；Redis TLS 僅能由 Writer fixture (C) 在 test 端中和
 5. **完整回報** — 包含 Docker 狀態、Aspire workload 狀態、建置結果、測試結果、修正歷史
 6. **防掛保護（必要）** — `dotnet test` 必須使用 `--blame-hang-timeout` 參數
 7. **精確錯誤分類** — 區分「測試碼錯誤」vs「環境問題」

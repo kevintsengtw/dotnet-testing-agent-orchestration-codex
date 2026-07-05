@@ -4,7 +4,7 @@
 
 ## 專案結構
 
-```plaintext
+```text
 practice_integration/
 ├── Practice.Integration.slnx              # Solution 檔案
 ├── README.md                              # 本檔案
@@ -56,10 +56,10 @@ practice_integration/
 
 ## 建置與測試
 
-```powershell
+```bash
 # 建置
-dotnet build practice_integration/Practice.Integration.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
+dotnet build samples/integration/practice_integration/Practice.Integration.slnx -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
 
 # 測試
-dotnet test practice_integration/Practice.Integration.slnx --no-build --verbosity minimal
+dotnet test samples/integration/practice_integration/Practice.Integration.slnx --no-build --verbosity minimal
 ```

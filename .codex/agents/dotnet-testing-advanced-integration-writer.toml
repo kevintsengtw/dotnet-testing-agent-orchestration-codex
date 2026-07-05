@@ -321,6 +321,8 @@ public abstract class IntegrationTestBase : IAsyncLifetime
 
 測試專案**必須**遵循以下目錄結構，不得將所有檔案放在根目錄：
 
+> 即使呼叫者提供的 `outputPath` 指向測試專案根目錄，Controller 測試檔仍必須置於 `Controllers/{Controller}Tests.cs`，不得放在根目錄；本目錄結構規範優先於根目錄路徑。
+
 ```
 tests/{TestProject}/
 ├── Fixtures/

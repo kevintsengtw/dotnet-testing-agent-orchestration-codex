@@ -4,7 +4,7 @@
 
 ## 專案結構
 
-```plaintext
+```text
 practice/
 ├── Practice.Samples.slnx        # 解決方案檔
 ├── src/

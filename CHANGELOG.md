@@ -4,6 +4,22 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.0.2] - 2026-07-05
+
+修正:四工作流程(unit / tunit / integration / aspire)`run-state.json` 在 **VSCode Codex Extension** 下全空的問題,並針對 aspire 測試韌性與 readiness 跨版本相容性做精修。
+
+### 變更
+- **`run-state.mjs` 確定性寫入**:契約原要求 orchestrator 用「Write 工具 + `date -u`」維護 `{testProjectDir}/.orchestrator/run-state.json`。但 Codex 沒有「Write」工具——Codex CLI 的 model 會腦補成 shell read-modify-write(能動),**VS Code Codex Extension 的 model 不腦補、整段略過 run-state 維護**,導致 run-state.json 從不產生、各階段耗時與 Estimated Token Usage 全空。新增 `.codex/scripts/run-state.mjs`(純量參數 API:`init`/`set`/`append`,值寫 `@now` 由腳本內部取系統時鐘 ISO、`--derive` 推毫秒差,不傳 JSON blob 以避開 PowerShell 引號問題),四個 orchestrator 的 run-state 段落改為確定性呼叫此腳本,CLI 與 Extension 行為一致
+- **測試檔輸出路徑鏡射修正**:tunit/integration/aspire 的測試檔輸出路徑原本未在 SKILL 明訂推導規則,導致落點漂移。修法為「鏡射被測類別的 src 子目錄」:tunit → `Services/`、integration → `Controllers/`、aspire → `Integration/`
+- **aspire AppHost 改用拋棄式容器**:base/Net8/Net10 三個 AppHost 的 SQL Server / Redis 移除 `WithDataVolume` 持久資料卷與 `ContainerLifetime.Session`。根因是 Aspire 每次重跑會自動輪替 SA 密碼,持久卷掛載舊密碼導致「新容器新密碼、掛舊卷舊密碼」造成 SQL readiness 卡死 15 分鐘以上(所有 Aspire 版本皆會發生,`ContainerLifetime.Session` 無法規避)
+- **aspire 測試韌性設計轉向**:Executor / Writer **永不修改 production / AppHost 碼**(含但不限於 `AddHealthChecks()`、`WithoutHttpsCertificate()`、`WithDataVolume`、`ContainerLifetime`),Reviewer 見改動一律 Blocker。韌性改由測試框架端 fixture 三段式承擔:(B) 通用持久化 sanitizer(annotation 層級剝持久卷 + 強制 ephemeral,與服務無關)→ (C) 已知框架 quirk 中和器(僅 Aspire 13.1+ 有 Redis 時於 fixture 端 `WithoutHttpsCertificate()` 中和預設 TLS)→ (A) 有界就緒安全網(只等測試實際使用的資源,逾時拋點名例外,取代無上限 hang)
+- **aspire fixture 有界就緒改用跨版本通用 API**:(A) 改用 `Services.GetRequiredService<ResourceNotificationService>().WaitForResourceAsync(name, KnownResourceStates.Running, ct)`(Aspire 8.2.x / 9.x / 13.x 皆可用),取代原本 net10-only 的 `WaitForResourceHealthyAsync`,降低 net8/net9 因 API 版本不相容導致的 readiness 相關修正輪次
+
+### 驗證
+- run-state.mjs:unit / tunit / integration 三工作流程,Win/mac × CLI/Ext × 單/多目標共 8 格全數驗證通過
+- aspire run-state + 拋棄式容器 + 測試框架端韌性轉向:3 版本(base 9.0.0 / Net8 8.2.2 / Net10 13.1.2)× 2 系統 × 2 環境全矩陣驗證通過,`src/**` / production / AppHost 零改動
+- aspire readiness 跨版本精修:3 版本 × 2 系統 × 2 環境 = 12 格全綠,readiness 相關修正輪次全數歸零(net8/net9),net10 回歸測試 4/4 全綠且 fixRounds 皆為 0;Windows Net8 CLI Executor 耗時由精修前 29 分 40 秒降至 3 分 28 秒
+
 ## [v1.0.1] - 2026-06-24
 
 修正:Estimated Token Usage 估算器**位置調整 + 改為零相依自含**,與「安裝只部署 `.codex/`」產品模型對齊。

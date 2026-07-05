@@ -59,15 +59,13 @@ Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本
 
 ### Production Code 修改邊界
 
-一般四階段流程與修改流程都不得主動修改 production code。若需修改 `src/**`、production `.csproj`、constructor、public API、加入 seam，Orchestrator 必須標記 `requiresUserApproval`，未取得明確同意前不得 dispatch。
+一般四階段流程與修改流程都不得主動修改 production code。若需修改 `src/**`、AppHost `Program.cs`、production `.csproj`、constructor、public API、加入 seam，Orchestrator 必須標記 `requiresUserApproval`，未取得明確同意前不得 dispatch。
 
-Aspire 窄例外僅限下列三類，Executor 可做最小修改並在 final report 以「生產 Bug/修改紀錄」標記：
+Aspire 測試韌性一律由測試框架端處理。Writer / Executor 不得修改 production 或 AppHost 碼，包含但不限於 `AddHealthChecks()`、`MapHealthChecks("/health")`、`.WithoutHttpsCertificate()`、`WithDataVolume`、`ContainerLifetime`。Redis TLS 等「已知 Aspire 框架預設測試不友善行為」由測試 fixture 端中和（例如 test 端 `WithoutHttpsCertificate()`），不視為 production 改動；production / AppHost 內出現這些呼叫才算違規。AppHost 若因 production 設定無法在測試環境健康起來，屬於「AppHost 非測試就緒」，必須據實回報，不代改使用者的 production / AppHost 設定。
 
-- WebApi 缺 Health Checks，`GET /health` 404 -> 加 `AddHealthChecks()` + `MapHealthChecks("/health")`。
-- 容器每測試重啟超時 -> 在 AppHost 或 fixture 加 `.WithLifetime(ContainerLifetime.Session)`（Aspire 9.0+）。
-- Redis TLS（Aspire 13.1.0+ 預設啟用）-> 加 `.WithoutHttpsCertificate()` 等對應設定。
+Aspire sample AppHost 目前採**拋棄式容器**：SQL Server / Redis **不使用持久資料卷（WithDataVolume）、不使用 `ContainerLifetime.Session`**。這是 sample 現況；真實專案的持久卷與生命週期差異由測試框架端 sanitizer 通用消化，不逐服務改 AppHost。Reviewer 不得將「未設 ContainerLifetime.Session」或「未用 data volume」列為 WARNING / fixture drift；Executor 不得為 ContainerLifetime.Session 或 data volume 修改 production code。
 
-任何超出上述三類的 production 改動仍走批准閘門。
+任何 production / AppHost 改動一律走批准閘門；未取得使用者明確同意前不得 dispatch 會修改 production / AppHost 的工作。
 
 ---
 
@@ -139,9 +137,29 @@ payload: {
 
 ### Phase 0.5：初始化 run-state
 
-建立 `{testProjectDir}/.orchestrator/run-state.json`。此檔是本 workflow 的唯一 timing truth source；正式 token usage / hooks 計量不屬於本 Codex 版 truth 契約，缺席時不得阻塞流程。token 相關資訊只能在流程完成後以 `Estimated Token Usage` optional telemetry 呈現。
+以 `node .codex/scripts/run-state.mjs init --path {testProjectDir}/.orchestrator/run-state.json --workflow aspire --target {target}` 建立 `{testProjectDir}/.orchestrator/run-state.json`（詳見下方「run-state.json 寫入機制」）。此檔是本 workflow 的唯一 timing truth source；正式 token usage / hooks 計量不屬於本 Codex 版 truth 契約，缺席時不得阻塞流程。token 相關資訊只能在流程完成後以 `Estimated Token Usage` optional telemetry 呈現。
 
 run-state 初始化必須包含 `workflow: "aspire"`、`target`、`overallWallClock` 起點、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
+
+> **run-state.json 寫入機制（必用，跨平台）**：run-state.json 一律透過 `shell_command` 呼叫 `node .codex/scripts/run-state.mjs` 建立與更新。**不得**假設有「Write 工具」、**不得**用 `date -u`、**不得**手寫 shell read-modify-write。理由：Codex 沒有「Write」工具，且不同 runtime（Codex CLI vs VS Code Codex Extension）shell 不同；改善前 Extension 環境會整段略過 run-state 維護，導致 run-state.json 從不產生、各階段耗時與 Estimated Token Usage 全空。此腳本為純量參數 API（不傳 JSON blob，避免 PowerShell 引號問題），時間戳由腳本內部以系統時鐘產生（值寫 `@now` 即取 ISO 8601 UTC），毫秒差由 `--derive 欄位=END-START` 推導。以下 `{p}` 代表 `{testProjectDir}/.orchestrator/run-state.json`。常用呼叫：
+>
+> ```bash
+> # 初始化（Phase 0 清理後、啟動 Analyzer 前）
+> node .codex/scripts/run-state.mjs init --path {p} --workflow aspire --target {target}
+> # dispatch 前：記 dispatchIssuedAt（並一併登記 Estimated Token Usage metadata）
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath}
+> # 收到 agentId：記 agentId/dispatchAcceptedAt，推導 latency
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+> # artifact 落地：記 artifactReadyAt/artifact，推導 produceSpan
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+> # phase 收斂：記 completedAt
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
+> # 計數 / 整體：counters 與 overallWallClock.end
+> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now
+> # bounded re-dispatch 事件：append 一筆
+> node .codex/scripts/run-state.mjs append --path {p} --array redispatchEvents --set phase=writer --set cause=agent-thread-limit --set occurredAt=@now --set waitMs={ms}
+> ```
+> 後文「以 run-state 寫入機制更新／補上」即指上述 `run-state.mjs` 呼叫。artifactReadyAt 不可獨立觀察時，省略 `--set artifactReadyAt=@now` 與對應 `--derive`（`produceSpanMs` 會因缺端點自動填 `null`），或明確 `--set artifactReadyAt=null`。不得以對話敘述或人工推估值代替腳本寫入。
 
 run-state 必須記錄：
 
@@ -190,6 +208,11 @@ Analyzer phase 全部 assignment 完成且 analysis artifact 確認存在後，d
 
 Writer payload 必須包含 `analysisFilePath`、`apiProjectPath`、`appHostPath`、`outputPath`、`writerControls`。
 
+**`outputPath` 推導規則（確定性，必用）**：`outputPath` 必須置於測試專案的 **`Integration/` 子目錄**，**禁止**放在以被測 controller 命名的子目錄（例如 `Bookings/`）或測試專案根目錄（與 Aspire Writer 的「目錄結構規範」一致）。
+- `{TestDir}` = 測試專案目錄（取 `projectContext.testProjectPath` 去掉結尾 `.csproj` 檔名後的目錄）。
+- 規則：`{TestDir}/Integration/{TestClassName}.cs`；檔名沿用 Aspire Writer 命名慣例（例：`BookingsControllerAspireTests.cs`）。
+- 測試基礎設施（AspireAppFixture、CollectionDefinition、IntegrationTestBase、DatabaseManager）沿用 Writer 規範置於 `{TestDir}/Infrastructure/`；`GlobalUsings.cs` 置於測試專案根。
+
 Writer 必須先讀 Analyzer 交接檔，再載入 `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`。不得載 unit 的 technique skills、TUnit skills、integration skills。
 
 Writer 必須使用：
@@ -198,7 +221,10 @@ Writer 必須使用：
 - `app.CreateHttpClient("servicename")`
 - AspireAppFixture + `IAsyncLifetime`
 - `[CollectionDefinition]` + `ICollectionFixture<T>`
-- 必要時 `ContainerLifetime.Session`
+- AppHost sample 採拋棄式 SQL Server / Redis 容器，不使用持久資料卷與 `ContainerLifetime.Session`
+- 測試框架端有界就緒：`StartAsync` 後只對測試實際會用到的資源呼叫 `WaitForResourceHealthyAsync`，搭配 `CancellationToken`（建議 90 秒）；逾時必須拋出點名資源的清楚例外。禁止無界等待與 `Task.Delay` 硬等。
+- 測試框架端通用持久化 sanitizer：`BuildAsync` 前以 annotation 層級、與服務型別無關的方式，剝除容器資源的持久具名資料卷掛載並強制 ephemeral / session-scoped 生命週期；若目標 Aspire 版本缺少對應 annotation 型別，sanitizer 可退化為 no-op，但意圖必須保留。
+- 測試框架端已知框架 quirk 中和器：Aspire 13.1+ 時，fixture 必須在 `BuildAsync` 前對每個 Redis resource 使用 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()` 關閉 Redis TLS，並以 `#pragma warning disable ASPIRECERTIFICATES001` / restore 包住；net8 / net9 不產生此段，避免編譯失敗。
 - 必要時 Respawn
 - `App.GetConnectionStringAsync("resourceName")`
 
@@ -266,7 +292,7 @@ Executor 執行模型：
 3. `dotnet build <solution-path> -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal`
 4. `dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout <10m|15m>`
 
-`--blame-hang-timeout` 必須存在：Aspire 8.x/9.x 用 `10m`，13.x+ 用 `15m`。禁止 `--timeout`，禁止 `dotnet run`。
+`--blame-hang-timeout` 必須存在：Aspire 8.x/9.x 用 `10m`，13.x+ 用 `15m`。禁止 `--timeout`，禁止 `dotnet run`。`--blame-hang-timeout` 是最後防線；主要防掛必須靠 Writer 產生的測試框架端有界就緒（建議 90 秒），正常應快速失敗並點名資源，不應撞到 blame-hang。
 
 修正迴圈最多 5 次。容器由 Aspire + `IAsyncLifetime.DisposeAsync` 處理，不需手動清理。
 
@@ -298,7 +324,11 @@ Reviewer 必須驗證：
 
 - `DistributedApplicationTestingBuilder` 正確使用，且沒有 `WebApplicationFactory`。
 - `CreateHttpClient("name")` 名稱與 AppHost `AddProject("name")` 一致。
-- Collection Fixture / `IAsyncLifetime` / `ContainerLifetime.Session` / Respawn 使用合理。
+- Collection Fixture / `IAsyncLifetime` / AppHost sample 拋棄式容器前提 / Respawn 使用合理；Reviewer 不得因「未設 ContainerLifetime.Session」或「未用 data volume」對測試產物列 WARNING。
+- 依位置判定韌性呼叫是否違規：production / AppHost 出現 `AddHealthChecks()`、`MapHealthChecks("/health")`、`.WithoutHttpsCertificate()`、`WithDataVolume`、`ContainerLifetime` 一律列為 Blocker；相同呼叫若出現在測試 fixture 且用於測試框架端 sanitizer / Redis TLS quirk 中和，屬預期，不判違規。
+- AspireAppFixture 具備測試框架端有界就緒：使用 `CancellationToken` 逾時（建議 90 秒）等待測試實際會用到的資源健康，且沒有無界等待或 `Task.Delay` 硬等。
+- AspireAppFixture 具備測試框架端通用持久化 sanitizer：`BuildAsync` 前以 annotation 層級處理容器資源的持久卷與生命週期，與服務型別無關。
+- Aspire 13.1+ 且 AppHost 使用 Redis 時，AspireAppFixture 具備 Redis TLS quirk 中和器；net8 / net9 不應產生此段。
 - 執行方式為 `dotnet test`，不是 `dotnet run`。
 - csproj 有 `Microsoft.NET.Test.Sdk` + `xunit` + `Aspire.Hosting.Testing`，沒有 `<OutputType>Exe</OutputType>`。
 - 端點覆蓋只針對 P3 範圍，不擴大到 sibling endpoints/resources。
@@ -333,7 +363,7 @@ Reviewer 回傳後，Orchestrator 必須用 Glob 確認 `reviewResultFilePath` �
 3. `dotnet test` 摘要，數字來自 executor-result / 實際輸出，不得編造。
 4. `dockerStatus`、`aspireWorkloadStatus`、`executionMethod`、`--blame-hang-timeout` 證據。
 5. Reviewer 評級與 blocker / warning 摘要。
-6. 生產 Bug/修改紀錄：僅列 Health Checks、ContainerLifetime.Session、Redis TLS 三類窄例外；沒有則明確寫「無」。
+6. 生產 Bug/修改紀錄：正常應為「無」；若偵測到任何 production / AppHost 改動，視為契約違反並明確標記。ContainerLifetime.Session 或 data volume 不列為 Executor production 修正。
 7. 「各階段耗時」與「Timing Evidence」兩張表，時間取自 run-state。
 8. `Estimated Token Usage`：optional telemetry；不得作為 correctness gate。
 
@@ -349,7 +379,7 @@ Reviewer 回傳後，Orchestrator 必須用 Glob 確認 `reviewResultFilePath` �
 4. 品質審查摘要：Reviewer 的整體評級、blocker / warning / pass 狀態與關鍵發現。
 5. 改善建議：整理 Reviewer 的 `issues` 與 `missingTestCases`，沒有則明確寫「無」。
 6. 使用的 Skills 組合：列出 Writer 載入的 skills，Aspire workflow 固定應包含 `aspire-testing`，不得混入 unit、TUnit 或一般 integration skills。
-7. Executor 修正紀錄：列出 `fixRounds`、`fixHistory`、`addedPackages`，並標記是否套用 Aspire production 窄例外；窄例外僅限 Health Checks、`ContainerLifetime.Session`、Redis TLS，沒有則明確寫「無」。
+7. Executor 修正紀錄：列出 `fixRounds`、`fixHistory`、`addedPackages`。生產 Bug/修改紀錄正常應為「無」；若偵測到任何 production / AppHost 改動，視為契約違反並明確標記。ContainerLifetime.Session 或 data volume 不屬於 Executor 臨時修正項目。
 8. 各階段耗時摘要 + Timing Evidence：讀取 `{testProjectDir}/.orchestrator/run-state.json`，輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
 9. Estimated Token Usage：optional telemetry。四階段與 timing evidence 完成後，執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，並輸出「### Estimated Token Usage」表格；estimator 失敗 / run-state 缺失 / artifact 不足 / summary 為 `unavailable` 時改輸出 unavailable 表格，但不得讓 workflow 失敗。不得作為 correctness gate。
 
