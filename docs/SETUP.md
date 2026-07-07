@@ -209,3 +209,22 @@ dotnet --list-sdks
 ```
 
 2. 若有 `global.json` 指定了特定 SDK 版本，確認該版本已安裝。從 [.NET 官方下載頁](https://dotnet.microsoft.com/download) 安裝缺少的版本。
+
+---
+
+### 問題 5：各階段耗時與 Estimated Token Usage 全空（`run-state.json` 未產生）
+
+**症狀：** 工作流程四階段都正常跑完、測試也已產生，但最終輸出的「各階段耗時」與「Estimated Token Usage」全是 `null` / `unavailable`，Timing Evidence 標示 `run-state.json` 不存在。
+
+**可能原因：** 喚起工作流程時**沒有以「啟用式」呼叫 skill**。若把 skill 寫成 markdown 檔案連結 `[$dotnet-testing-orchestrator-unit](.../SKILL.md)`，或用技能名前**沒有 `$` 觸發符**的純文字，Codex 只會把 `SKILL.md` 當**參考文件**讀，跟著主流程跑卻略過契約要求的 `run-state.mjs` 打點指令 → `run-state.json` 從不產生 → 耗時與 token 遙測全空。此現象在 **VS Code Codex Extension** 尤其明顯（Codex CLI 的 model 較會自行補跑）。
+
+**解法：** 以**啟用式**喚起——直接輸入裸的 `$dotnet-testing-orchestrator-unit`（讓 Codex 解析成技能 chip 並注入 `<skill>` 治理區塊），**不要**包成 `[$..](路徑)` 連結、也**不要**拿掉 `$`：
+
+```text
+使用 $dotnet-testing-orchestrator-unit 工作流程，為 EmployeeService 撰寫並執行單元測試。
+- 測試目標專案：...
+- 測試目標類別：...
+- 測試專案：...
+```
+
+自我確認：啟用成功時，model **不需要**再用 `Get-Content` 去讀 `SKILL.md`（內容已注入），且會在啟動 Analyzer 前執行 `node .codex/scripts/run-state.mjs init ...`。四種 orchestrator（unit / tunit / integration / aspire）皆同此規則。

@@ -4,6 +4,20 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.0.3] - 2026-07-07
+
+修正:Estimated Token Usage 估算器在 Writer canonical artifact 偶為 `.cs` 時崩潰、導致 token 表間歇 unavailable;並移除 Claude 版移植遺留的 `.codex/hooks.json` 死碼。
+
+### 變更
+- **estimator `readJsonIfFile` 包 try/catch**:`estimate-token-usage.mjs` 逐 assignment 對 `artifact` 路徑 `JSON.parse`,但 Writer 的 canonical artifact 偶爾被 stamp 成生成的 `.cs`(而非 `writer-result.json`),`JSON.parse("namespace ...")` 拋未捕捉例外 → 整個估算器崩潰、`token-usage-estimate.json` 不產生,故 token 表**間歇** unavailable。改為 parse 失敗回 `null`,呼叫端已能處理(該 `.cs` 的 raw token 仍由 `countFile` 計入,僅該 assignment confidence 降級,不再整份崩潰);`run-state.json` 損毀時也一併受惠(改回報 unreadable 而非崩潰)
+- **移除 `.codex/hooks.json`**:此檔為 Claude 版移植遺留(matcher `"Agent"` 是 Claude Code 工具名、command 指向 `.claude/hooks/*.sh`),Codex 不觸發此 hook(全歷史 session log 中對應 timer-hook fire 次數為 0),對 Codex 工作流程無作用。正式 phase 時序本就只認 `run-state.json`,契約明訂不得依賴 hook 輸出
+
+### 驗證
+- estimator 修正:重現測試(`artifact` 指向 `.cs` → 修正前崩潰、修正後正常產出且 `.cs` raw token 仍計入)+ 正常 JSON artifact 回歸皆通過
+- **四工作流程全矩陣遙測**:unit / tunit / integration / aspire × Win/mac × CLI/Ext = **16 格,遙測全數通過**(`$` 啟用式喚起 → `<skill>` 注入、`run-state.json` 四階段時間戳、`token-usage-estimate.json` 產出、estimator 零 `.cs` 例外;Windows 8 格以 session log 逐項採證,macOS 8 格以報告耗時表 + token 表佐證)
+- **功能面**:unit / tunit 全 8 格測試實跑通過;integration / aspire 在 **Windows**(Docker 就緒)兩格皆完整跑綠(integration OrdersController 24/21 passed、aspire Net10 BookingsController 19/23 passed、`src/**` 與 AppHost 零改動),**macOS** 因 Docker daemon 未啟動,Executor 依契約停在環境 gate、測試未實跑(環境限制,非退化;run-state / token 遙測仍完整)
+- hooks.json 移除:全矩陣移除後照常運作,再次證實 hooks.json 與 run-state / token 遙測無因果
+
 ## [v1.0.2] - 2026-07-05
 
 修正:四工作流程(unit / tunit / integration / aspire)`run-state.json` 在 **VSCode Codex Extension** 下全空的問題,並針對 aspire 測試韌性與 readiness 跨版本相容性做精修。

@@ -78,7 +78,15 @@ function readJsonIfFile(p) {
   if (text === null) {
     return null;
   }
-  return JSON.parse(text);
+  // Best-effort estimator: an artifact path may resolve to a non-JSON file (e.g. a
+  // generated .cs handoff), or run-state.json may be malformed. A JSON.parse throw here
+  // would crash the whole estimator and drop token telemetry. Degrade to null instead —
+  // callers already handle null (raw artifact text is still counted via countFile).
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function normalizeSlashes(value) {
