@@ -52,6 +52,22 @@ Analyzer 讀原始碼，識別目標類型與依賴，產出 `analysis.json`。
 
 Orchestrator 收摘要後**驗證交接檔案確實存在**，才 SpawnAgent Writer。
 
+### 3.1 使用者提供情境與測試資料
+
+初始提示詞若包含測試情境或測試資料，Orchestrator 以 `userProvidedScenarios` 將完整原文傳給 Analyzer，不預先要求固定格式，也不自行裁決合理性。支援 `unit-test-scenarios` Markdown、自然語言、清單、表格、JSON、YAML、Gherkin 與混合內容。
+
+Analyzer 必須逐項解析及檢視：合理項目優先保留；格式或命名問題只做正規化；重複項以 `merged` 保留 provenance；只有與原始碼、scope 或 unit-test 邊界有具體衝突的單一項目才能 `rejected`。缺 production seam 時優先標示 limitation，不可把整批使用者輸入棄用。
+
+analysis artifact 保留既有 `suggestedTestScenarios: string[]`，並新增：
+
+- `userProvidedScenarioInput`：是否有輸入、完整原文與偵測格式。
+- `scenarioCatalog[]`：`USR-*` / `GEN-*` ID、來源、原文、正規化名稱、方法、狀態、Arrange/Act/Assert、測試資料、拒絕理由與 limitation。
+- `scenarioReviewSummary`：使用者情境各狀態與 Analyzer 補充數量。
+
+Orchestrator 的 Analyzer artifact gate 必須驗證 catalog、summary、`suggestedTestScenarios`、`methodScenarioCounts` 與 `scenarioCount` 一致；有效使用者情境必須排在 Analyzer 補充情境之前。
+
+`unit-test-scenarios` 是 workspace 內可獨立觸發的前置 Skill，不加入四角色 dispatch topology。它遵守「只輸出 Test Scenarios、不撰寫測試」的契約，因此使用方式是先完成該 Skill 請求，再把完整 Markdown 產出交給後續 unit orchestrator。Orchestrator 不直接讀取此外部 Skill，也不在使用者已提供情境時強制重跑。
+
 ---
 
 ## 4. Phase 2 Writer
@@ -95,6 +111,12 @@ Writer 在 Step 0 讀 analysis.json，按 `requiredTechniques` 載入 Agent Skil
 
 Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writer-result.json` 驗欄位齊全（`testFilePaths`、`testCaseCount`、`testClasses[].methodsCovered`、`skillsLoaded` 等）+ 方法範圍檢查（method-scope 不得溢寫全類別；split assignment 的 `methodsCovered` 可回溯；ctor 測試只能在單一檔）。缺欄/不一致 → 不進 Executor，可 **bounded re-dispatch Writer 最多 2 次**（只補缺漏，**不重啟整個 workflow**），仍不行則判 blocker。
 
+analysis 有 `scenarioCatalog` 時，每個 Writer assignment 另帶 `scenarioIds`。有效 `USR-*` 必須恰好分派一次，Writer 優先實作並優先採用使用者指定資料。writer-result 的 `scenarioCoverage[]` 記錄 scenario ID、測試檔／方法、`implemented|blocked|limitation` 及 `exact|partial|generated|not-applicable` 資料使用狀態；任何有效使用者情境都不得靜默略過。
+
+Writer artifact gate 也會逐 ID 比對 catalog `normalizedName`、`testMethodNames` 與 `testDataEvidence`。這可在 Executor 前攔截「ID 數量正確、但實際配到另一個情境」的錯誤。Reviewer 完成後再以 `--require-review-pass` 執行正式 acceptance；coverage incomplete 或 Reviewer fail 不得被全綠測試結果覆蓋。
+
+Reviewer 的 missing-test 判定嚴格受 `methodsToTest` 限制；method-scope 未包含 `Constructor` 時，不得把建構子防禦列為缺漏。
+
 ### 4.5 階段間主動釋放 agent（Codex 強化）
 
 Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **主動關閉已完成 Writer agents**，釋放後續 phase 的 runtime thread slots（Analyzer→Writer、Executor→Reviewer 同樣處理）。此舉是 thread-ceiling 的單點優化，只釋放已完成 agent，不改測試/分割/correctness。
@@ -113,6 +135,8 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 ## 6. Phase 4 Reviewer
 
 讀測試碼 + 三個交接檔（analysis/writer-result/executor-result），品質審查。Reviewer 有完整審查 / re-review 兩模式。**reviewer.toml 目前明文 checklist** 涵蓋：命名（中文三段式）、斷言風格（AwesomeAssertions、例外斷言、lambda、物件斷言）、`using` 排序、`_timeProvider` 設定、測試隔離、Mock 設定、覆蓋完整性（含邊界）。
+
+有使用者情境時，Reviewer 先以 `scenarioCatalog` 的有效 `USR-*` 集合作 coverage 權威，交叉驗證 writer-result `scenarioCoverage` 與實際測試碼。它必須檢查指定測試資料與預期結果是否落實、排除已拒絕情境、確認 merged 情境由目標情境承接，並輸出 `userScenarioCoverage`。缺少 P0 使用者情境視為 error；coverage 不完整不得評為 A/A+。
 
 > 註：§4.2 的完整跨檔 fixture 一致面向（`InitialNow` 具名常數、AutoFixture 遞迴行為、`_fixture`/`_sut` 命名、SUT 建構模式、per-test 時間變數命名）目前主要由 **Writer 風格統一指令 + Orchestrator artifact gate** 保證；reviewer.toml 尚未逐條顯式列出全部。若要 Reviewer 端完整把關，須補強該 toml。
 

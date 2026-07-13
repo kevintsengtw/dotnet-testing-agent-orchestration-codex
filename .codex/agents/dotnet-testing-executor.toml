@@ -157,6 +157,7 @@ dotnet test <測試專案路徑> --no-build --verbosity minimal --filter "{testF
   "failedTests": 0,
   "skippedTests": 0,
   "fixRounds": 1,
+  "executionAttempts": 2,
   "fixHistory": [
     {
       "round": 1,
@@ -200,7 +201,8 @@ dotnet test <測試專案路徑> --no-build --verbosity minimal --filter "{testF
 2. **`totalTests`**：測試總數
 3. **`passedTests`**：通過數
 4. **`failedTests`**：失敗數
-5. **`fixRounds`**：修正迴圈次數
+5. **`fixRounds`**：實際修改測試檔／測試專案的次數；初次 build/test 不計入，最後一次純驗證成功也不計入。必須等於 `fixHistory.length`
+6. **`executionAttempts`**：實際執行 build/test 流程的嘗試次數；例如初次失敗、修正一次後第二次成功，則 `fixRounds: 1`、`executionAttempts: 2`
 6. **`executorResultFilePath`**：交接檔案路徑
 7. **`testFilePaths`**：測試檔案路徑清單
 

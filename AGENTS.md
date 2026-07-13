@@ -18,11 +18,13 @@ dotnet-testing Agent Orchestration for Codex。提供 **Codex 原生 Subagent** 
 ## 關鍵目錄
 
 - `.codex/agents/` — 16 個自訂 Subagent 定義檔（`.toml`）：unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`（analyzer / writer / executor / reviewer）
-- `.codex/skills/` — 4 個 Orchestrator Skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）+ 測試執行器 Skill（`dotnet-test`）
+- `.codex/skills/` — 4 個 Orchestrator Skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）+ 測試執行器 Skill（`dotnet-test`）+ 固定上游版本的測試情境 Skill（`unit-test-scenarios`）
 - `.codex/config.toml` — Codex workspace 設定（啟用 `multi_agent`、設定 agent thread 上限與 runtime 上限）
 - `.codex/scripts/` — Estimated Token Usage 估算器（零相依、自含；需 Node.js）
 
 > 技術型 Agent Skills（`dotnet-testing-*`）由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需另行安裝（直接複製到 `.codex/skills/`）。
+
+Unit workflow 接受使用者以任意格式提供測試情境與資料。合理的使用者內容必須優先使用，只能逐項排除不合理或不正確的情境；未提供時可先呼叫 `$unit-test-scenarios` 產生情境。
 
 ## Dispatch 機制
 

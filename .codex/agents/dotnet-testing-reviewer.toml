@@ -33,8 +33,8 @@ developer_instructions = """# .NET 測試審查器
 
 使用 Read 工具讀取所有可用的交接檔案：
 
-1. **`analysisFilePath`**（必要）→ 取得 `skillMap.reviewer`、`targetType`、`validatorInfo`、`suggestedTestScenarios`、`dependencies`、`methodsToTest`（= 本次審查的 in-scope 目標方法集合，coverage 判定的權威範圍）
-2. **`writerResultFilePath`**（可選）→ 取得 `testFilePaths`、`testClasses`、`testMethodCount`、`testCaseCount`
+1. **`analysisFilePath`**（必要）→ 取得 `skillMap.reviewer`、`targetType`、`validatorInfo`、`suggestedTestScenarios`、`scenarioCatalog`、`scenarioReviewSummary`、`dependencies`、`methodsToTest`（= 本次審查的 in-scope 目標方法集合，coverage 判定的權威範圍）
+2. **`writerResultFilePath`**（可選）→ 取得 `testFilePaths`、`testClasses`、`testMethodCount`、`testCaseCount`、`scenarioCoverage`
 3. **`executorResultFilePath`**（可選）→ 取得 `testResult`、`totalTests`、`passedTests`、`failedTests`、`fixHistory`
 4. **`reviewResultFilePath`**（必要）→ 作為 Step 5 寫入 reviewer-result 交接檔案的唯一輸出路徑
 
@@ -102,9 +102,27 @@ developer_instructions = """# .NET 測試審查器
 - 確認 Mock 設定與介面方法簽章一致
 - 識別遺漏的測試案例
 
+> **Scope hard gate**：`methodsToTest` 是 missing-test 判定的權威集合。只有 `methodsToTest` 明確包含 `Constructor`，或有效 `scenarioCatalog` 本身存在 `methodName: "Constructor"` 時，才可把建構子防禦列為 missing。method-scope workflow 未包含 `Constructor` 時，即使原始碼存在 null guard，也只能視為 out-of-scope observation，不得寫入 `issues`、`missingTestCases`、扣分或使 `gateDecision` 失敗。同理，不得自行擴張到其他 public methods。
+
 ### Step 3：逐項審查
 
 依照已載入的 Skills，逐項檢查以下面向：
+
+#### 3-1. 使用者提供情境覆蓋（有 `scenarioCatalog` 時先執行）
+
+1. 從 catalog 取出 `source: "user"` 且狀態為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation` 的項目；這是使用者情境 coverage 的權威集合。
+2. `merged` 只需確認 `mergedIntoScenarioId` 指向的有效情境已覆蓋；不得要求額外重複測試。
+3. `rejected` 必須從 missing test cases 排除；但要檢查 rejection 是否有允許的 reason code、具體 message 與 evidence。若 Analyzer 只以格式或抽象「不合理」拒絕，列為 error。
+4. 逐一比對 writer-result `scenarioCoverage` 與實際測試碼，確認每個有效 `USR-*`：
+   - 有且只有一個負責的 Writer/test mapping。
+   - 測試方法確實驗證 `normalizedName` 的行為，而非只同名。
+   - 使用者指定的 `testData`、Arrange、預期結果或 mock 行為有實際落實。
+   - `accepted_with_limitation` 的 limitation 有在 writer-result 與測試策略中誠實呈現。
+5. Analyzer 補充情境可以增加覆蓋，但不得取代有效的使用者情境。
+6. 缺少 P0 使用者情境、用不同資料改變其語意、或把有效情境靜默略過，列為 error；其他資料落差至少列 warning。
+7. `scenarioCoverage.normalizedName`、`testMethodNames` 與 catalog 同 ID 名稱不一致時直接列 error；不得依 writer-result 宣稱的 ID 覆蓋取代對實際 method body 的核對。
+
+產出 `userScenarioCoverage`，至少包含 `acceptedScenarioIds`、`implementedScenarioIds`、`missingScenarioIds`、`dataMismatchScenarioIds`、`rejectedScenarioIdsExcluded`、`coverageComplete`。
 
 #### 3a. 命名品質（來自 `test-naming-conventions` Skill）
 
@@ -293,6 +311,14 @@ developer_instructions = """# .NET 測試審查器
     "ProcessOrder_WhenPaymentFails_ShouldNotSendConfirmationEmail",
     "ProcessOrder_WithZeroQuantity_ShouldThrowArgumentException"
   ],
+  "userScenarioCoverage": {
+    "acceptedScenarioIds": ["USR-001"],
+    "implementedScenarioIds": ["USR-001"],
+    "missingScenarioIds": [],
+    "dataMismatchScenarioIds": [],
+    "rejectedScenarioIdsExcluded": [],
+    "coverageComplete": true
+  },
   "positives": [
     "AAA Pattern 結構清晰，每個測試都有 // Arrange、// Act、// Assert 註解",
     "Mock 設定與介面簽章完全一致",
@@ -330,6 +356,8 @@ developer_instructions = """# .NET 測試審查器
 | **C+** | 有 error 級別 issues，但整體結構尚可 |
 | **C** | 多個 error，結構/命名/斷言有系統性問題 |
 | **D** | 嚴重品質問題，建議完全重寫 |
+
+若 `userScenarioCoverage.coverageComplete === false`，不得評為 A 或 A+。缺少任何 P0 使用者情境時，最高為 C+，且必須在 `issues` 與 `missingTestCases` 同時指出 scenario ID 與名稱。
 
 ### Severity 定義
 

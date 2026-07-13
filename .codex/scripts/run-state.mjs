@@ -27,9 +27,11 @@
 //   anything else         -> stored as a string
 //   --set supports DOTTED keys for nesting, e.g. --set overallWallClock.end=@now
 //
-// --derive field=END-START computes integer milliseconds (END - START) from two sibling
-//   ISO fields on the target scope; stores null if either is missing or unparseable.
+// --derive field=END-START computes integer milliseconds (END - START) from two
+//   ISO fields on the target scope; dotted paths are supported for the output and
+//   both endpoints. Stores null if either endpoint is missing or unparseable.
 //   e.g. --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+//   e.g. --derive overallWallClock.durationMs=overallWallClock.end-overallWallClock.start
 //
 // SCOPE for `set`:
 //   (no --phase)                  -> top-level object (counters, overallWallClock.*, ...)
@@ -107,6 +109,15 @@ function setDeep(obj, keyPath, value) {
   cur[keyPath[keyPath.length - 1]] = value;
 }
 
+function getDeep(obj, keyPath) {
+  let cur = obj;
+  for (const key of keyPath) {
+    if (typeof cur !== "object" || cur === null || !(key in cur)) return undefined;
+    cur = cur[key];
+  }
+  return cur;
+}
+
 function msOrNull(iso) {
   if (typeof iso !== "string") return null;
   const t = Date.parse(iso);
@@ -114,18 +125,23 @@ function msOrNull(iso) {
 }
 
 // "produceSpanMs=artifactReadyAt-dispatchAcceptedAt" applied to a scope object.
+// Output and endpoint fields may use dotted paths.
 function applyDerive(scope, token) {
   const eq = token.indexOf("=");
   if (eq < 0) throw new Error(`--derive expects field=END-START, got: ${token}`);
-  const field = token.slice(0, eq);
+  const fieldPath = token.slice(0, eq).split(".").filter(Boolean);
+  if (fieldPath.length === 0) throw new Error(`--derive has empty output field: ${token}`);
   const expr = token.slice(eq + 1);
   const dash = expr.indexOf("-");
   if (dash < 0) throw new Error(`--derive expression must be END-START, got: ${expr}`);
-  const endField = expr.slice(0, dash);
-  const startField = expr.slice(dash + 1);
-  const end = msOrNull(scope[endField]);
-  const start = msOrNull(scope[startField]);
-  scope[field] = (end === null || start === null) ? null : end - start;
+  const endPath = expr.slice(0, dash).split(".").filter(Boolean);
+  const startPath = expr.slice(dash + 1).split(".").filter(Boolean);
+  if (endPath.length === 0 || startPath.length === 0) {
+    throw new Error(`--derive expression has an empty endpoint: ${expr}`);
+  }
+  const end = msOrNull(getDeep(scope, endPath));
+  const start = msOrNull(getDeep(scope, startPath));
+  setDeep(scope, fieldPath, (end === null || start === null) ? null : end - start);
 }
 
 function readState(p) {
@@ -172,7 +188,7 @@ function opInit(args) {
   const state = {
     workflow: args.workflow,
     target: args.target,
-    overallWallClock: { start: nowIso(), end: null },
+    overallWallClock: { start: nowIso(), end: null, durationMs: null },
     phases: {},
     redispatchEvents: [],
     boundedRedispatchCount: 0,

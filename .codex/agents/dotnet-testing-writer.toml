@@ -23,6 +23,8 @@ developer_instructions = """# .NET 測試撰寫器
 1. **Analyzer 交接檔案路徑 `analysisFilePath`**（主要）— 我會在 Step 0 讀取此檔案，從中提取以下欄位：
    - `requiredTechniques`：決定載入哪些 Skills
    - `suggestedTestScenarios`：直接採用中文三段式命名
+   - `scenarioCatalog`：情境 provenance、使用者原文、正規化名稱、測試資料、驗證狀態與 limitation；有效 `USR-*` 情境優先於 `GEN-*`
+   - `scenarioReviewSummary`：使用者情境接受／合併／拒絕與 Analyzer 補充數量
    - `targetType`：決定測試模式（service / validator / legacy）
    - `validatorInfo`：Validator 專用規則分析（當 `targetType === "validator"` 時）
    - `legacyInfo`：Legacy Code 專用分析（當 `targetType === "legacy"` 時）
@@ -45,8 +47,11 @@ developer_instructions = """# .NET 測試撰寫器
    - `Writer assignment` 中的 `只負責以下 methods`
    - split handoff 的方法清單
    - `writerControls.methods`
+   - `writerControls.scenarioIds` / split assignment 的 `scenarioIds`
 
 > **方法範圍優先級**：呼叫者 prompt 中明確指定的方法清單 > Analyzer artifact 的 `methodsToTest` > Analyzer artifact 的 `suggestedTestScenarios` 中可推導出的目標方法 > 全類別。只要任一上層範圍存在，低層範圍不得擴大。
+
+> **情境優先級**：assignment 的 `scenarioIds` 是硬範圍；在該範圍內，`source: "user"` 且狀態為 `accepted` / `accepted_with_normalization` / `accepted_with_limitation` 的情境必須先實作，再處理 `source: "analyzer"` 的補充情境。`merged` 與 `rejected` 不得建立獨立測試。
 
 > **向下相容**：如果呼叫者未提供 `analysisFilePath`，而是直接在 prompt 中傳遞完整分析報告 JSON，則跳過 Step 0，直接使用 prompt 中的資訊。此機制確保手動呼叫時仍可正常運作。
 
@@ -74,7 +79,7 @@ developer_instructions = """# .NET 測試撰寫器
 
 ```
 Read({analysisFilePath})
-→ 解析 JSON，取得 requiredTechniques、suggestedTestScenarios、targetType、dependencies、
+→ 解析 JSON，取得 requiredTechniques、suggestedTestScenarios、scenarioCatalog、scenarioReviewSummary、targetType、dependencies、
    directIoOperations、testabilityIssues、
    constructorGuards、existingTestInfrastructure、projectContext 等全部欄位
 ```
@@ -97,11 +102,30 @@ Read({analysisFilePath})
 - 若 `effectiveMethodsToTest` 非空，Step 4 只能撰寫這些方法的測試。
 - 不得為其他 public methods 產生測試，即使 Analyzer artifact 內有其他 `suggestedTestScenarios`。
 - split writer 只能處理自己 assignment 的 methods 與 scenarios。
+- 若 prompt / writerControls 有 `scenarioIds`，只能處理這些 ID；不得搶寫其他 assignment 的情境。若沒有 `scenarioIds`，處理 effective method scope 內全部非 `merged`、非 `rejected` catalog 項目。
 - method-scope workflow 不得擴寫成整個 class。
 - 建構子 null guard 只有在 assignment 明確包含 `Constructor`、或呼叫者明確要求該 Writer 負責 constructor tests 時才可撰寫；split writer 不得各自重複 constructor tests。
 - 若 Analyzer artifact 有 `constructorGuards[]` 且本次為全類別測試（沒有 split/method-scope 硬約束），`effectiveMethodsToTest` 視為包含 `Constructor`，必須撰寫全部 constructor guard 測試。
 - 若本次是 split assignment，只有負責方法清單包含 `Constructor` 的 Writer 可以撰寫 constructor guard 測試；其他 split Writer 即使讀到 `constructorGuards[]` 也不得撰寫，避免重複。
 - 若你無法判斷某 scenario 是否屬於 `effectiveMethodsToTest`，不要撰寫該 scenario；在 writer-result 的 `scopeWarnings` 記錄原因。
+- 對有效 `USR-*` 情境不得只因格式、命名或資料不完整而略過。無法實作時仍要在 `scenarioCoverage` 記錄 `blocked` 或 `limitation` 及具體原因。
+
+### Step 0.6：建立有效情境清單與資料優先序
+
+若 Analyzer artifact 有 `scenarioCatalog`：
+
+1. 依 assignment `scenarioIds`（若有）與 `effectiveMethodsToTest` 篩選 catalog。
+   - catalog ID 的 canonical 欄位是 `scenarioCatalog[].scenarioId`；不得改讀 `id`、陣列索引或 `suggestedTestScenarios` 位置。
+   - 宣告 assignment 缺少 scenario ID 前，必須以集合差集 `assignment.scenarioIds - scenarioCatalog[].scenarioId` 實際驗證。差集為空時不得在 `scopeWarnings`、`tokenEstimateInputs.notes` 或回傳摘要聲稱 Analyzer 未提供 ID。
+2. 排除 `merged`、`rejected`；`merged` 的需求由 `mergedIntoScenarioId` 指向的有效情境承接。
+3. 先排序 `source: "user"`，再排序 `source: "analyzer"`，各自保持 catalog 原始順序。
+4. 使用者在 `testData`、`arrange`、`assert` 指定的值與結果是首選。AutoFixture、Bogus、builder 或手動預設值只能補足未指定欄位，不得覆寫使用者明確資料。
+5. 若使用者資料與實際型別不相容但可安全轉譯（例如日期字串轉 `DateTimeOffset`、列舉名稱轉 enum），保留語意後轉譯並在 `scenarioCoverage.note` 說明。
+6. 若無法使用資料，記錄 `blocked` 或 `limitation`；不得悄悄改用隨機資料後宣稱已覆蓋。
+7. 在寫測試前先建立內部一對一 mapping table，每列至少包含 `scenarioId`、catalog `normalizedName`、`methodName`、使用者指定 Arrange/Assert/testData、預定測試方法名稱。測試方法名稱預設必須等於 catalog `normalizedName`；不得依陣列位置、相似情境或自行重新排序後重新配對 ID。
+8. 寫完測試後逐列反查實際 method body：確認 scenario 指定的輸入、mock 回傳、recipient、threshold、expected value/message 與互動次數都出現在該列對應測試。只有全部一致才可填 `testDataUsage: "exact"`。
+
+若 artifact 沒有 `scenarioCatalog`，沿用既有 `suggestedTestScenarios` 行為以保持向下相容。
 
 Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[].methodsCovered`，讓 Executor、Reviewer、final report 可反查每個測試檔的方法範圍。
 
@@ -249,9 +273,11 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 
 1. **AAA Pattern**：每個測試方法必須有清楚的 Arrange / Act / Assert 區塊，用 `// Arrange`、`// Act`、`// Assert` 註解標記
 2. **中文三段式命名**：測試方法命名**必須**使用 `方法_情境_預期` 中文格式。如果 Analyzer 有提供 `suggestedTestScenarios`，直接採用其中文命名。
+   - 若 catalog 項目為使用者情境，使用 `normalizedName` 作為測試名稱；不得因 Analyzer 補充了相似名稱而改寫成只對應補充情境的測試。
    - 情境常用詞彙：`輸入`、`給定`、`當`、`有效`、`無效`、`為null`、`已過期`、`各種`
    - 預期常用詞彙：`應回傳`、`應拋出`、`應為`、`應包含`、`應不發送`、`應正常處理`
-   - 範例：`ProcessOrder_訂單有效且付款成功_應回傳成功結果`、`Divide_輸入10和0_應拋出DivideByZeroException`
+    - 範例：`ProcessOrder_訂單有效且付款成功_應回傳成功結果`、`Divide_輸入10和0_應拋出DivideByZeroException`
+3. **xUnit import 策略**：先檢查測試專案既有 `GlobalUsings.cs`、implicit usings 與鄰近測試檔。單一 Writer 沿用專案慣例；split assignment 必須遵守 Orchestrator 指定的同一策略。若指定 `explicit`，每個 split 檔都加入 `using Xunit;`；若指定 `global`，每個 split 檔都不得個別加入 `using Xunit;`。不得在同一組 split 產出中混用兩種策略。
 3. **AwesomeAssertions**：使用 `.Should()` 語法而非 xUnit 內建 `Assert.*`（依照 `awesome-assertions` Skill）
 4. **一個測試一個斷言概念**：每個測試方法驗證一個行為
 5. **程式碼組織**：使用 `#region 方法名稱` / `#endregion` 組織測試方法群組（按被測試方法分組），不使用 `//-----` 註解分割線。每個 region 對應一個被測試方法的所有測試案例。
@@ -386,6 +412,8 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 | 方法範圍外擴 | `effectiveMethodsToTest` 非空，但測試方法名稱、region 或 `methodsCovered` 包含未被分配的方法 | 刪除或移出範圍外測試；不可把 method-scope 或 split assignment 擴成全類別 |
 | writer-result 缺欄位 | writer-result 缺 `testFilePaths`、`testCaseCount`、`testMethodCount`、`testClasses`、`testClasses[].methodsCovered`、`skillsLoaded`、`writerResultFilePath` 任一欄位 | 補齊欄位後才可回傳 `status: completed` |
 | methodsCovered 不可回溯 | `testClasses[].methodsCovered` 為空、泛稱 `All`、或與 assignment 方法清單不一致 | 改成明確方法名稱清單；split writer 必須只列自己負責的方法 |
+| scenario ID／名稱錯配 | `scenarioCoverage.normalizedName` 不等於 catalog 同 ID 的 `normalizedName`，或 `testMethodNames` 未包含該名稱 | 以 `scenarioId` 回查 catalog，修正 mapping 與實際測試方法；不得只改 writer-result 掩蓋測試碼錯位 |
+| 使用者資料宣稱 exact 但無證據 | `testDataUsage` 為 `exact`，但無法從對應 method body 指出指定輸入、mock 回傳與 expected assertion | 修正測試資料並在 `testDataEvidence` 列出實際程式碼證據；若只能部分採用則改為 `partial` 並填 note |
 
 ### Step 5：寫入 writer-result 交接檔案（必要 — 寫完測試後立即執行）
 
@@ -419,6 +447,30 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
     "outOfScopeMethodsExcluded": ["Delete"]
   },
   "scopeWarnings": [],
+  "scenarioCoverage": [
+    {
+      "scenarioId": "USR-001",
+      "source": "user",
+      "normalizedName": "ProcessOrder_訂單有效_應回傳成功",
+      "status": "implemented",
+      "testFilePath": "tests/MyProject.Core.Tests/Services/ProductServiceTests.cs",
+      "testMethodNames": ["ProcessOrder_訂單有效_應回傳成功"],
+      "testDataUsage": "exact",
+      "testDataEvidence": ["orderId = 42", "result.Should().Be(expected)"],
+      "note": null
+    },
+    {
+      "scenarioId": "GEN-001",
+      "source": "analyzer",
+      "normalizedName": "ProcessOrder_訂單為null_應拋出例外",
+      "status": "implemented",
+      "testFilePath": "tests/MyProject.Core.Tests/Services/ProductServiceTests.cs",
+      "testMethodNames": ["ProcessOrder_訂單為null_應拋出例外"],
+      "testDataUsage": "not-applicable",
+      "testDataEvidence": [],
+      "note": null
+    }
+  ],
   "modifiedAt": "ISO 8601 timestamp",
   "modificationType": "initial",
   "tokenEstimateInputs": {
@@ -446,6 +498,11 @@ writer-result 完成條件：
 - `testMethodCount` 與 `testCaseCount` 必須為數字，且不可省略。
 - `skillsLoaded` 必須列出實際載入的 Skills。
 - `testClasses` 每一列都必須包含 `className`、`filePath`、`methodsCovered`。
+- Analyzer artifact 有 `scenarioCatalog` 時，`scenarioCoverage` 必須存在，且完整列出本 assignment 負責的每個有效 scenario ID。
+- `scenarioCoverage.status` 只可為 `implemented`、`blocked`、`limitation`；後兩者的 `note` 不得為空。
+- `scenarioCoverage.testDataUsage` 只可為 `exact`、`partial`、`generated`、`not-applicable`。有使用者明確資料卻填 `generated` 時，不得回傳 `completed`，除非 note 說明不可採用的具體 blocker / limitation。
+- 每筆 `scenarioCoverage.normalizedName` 必須逐字等於 Analyzer catalog 同一 `scenarioId` 的 `normalizedName`；`implemented` 的 `testMethodNames` 必須包含該名稱。
+- user scenario 使用 `exact` 或 `partial` 時，`testDataEvidence` 必須是非空字串陣列，列出對應 test method 內可核對的具體輸入／mock／assertion；`partial` 另須以 note 說明未採用部分。
 - `methodsCovered` 必須是明確方法名稱清單，不得使用 `All`、`FullClass`、空陣列或敘述文字替代。
 - 若本次是 split assignment，`methodsCovered` 必須是 assignment 方法清單的子集合或完全相同；不得包含其他 public methods。若此 assignment 負責建構子 guard，`methodsCovered` 必須包含 `"Constructor"`；未負責建構子 guard 的 split assignment 不得包含 `"Constructor"`。
 - `tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。

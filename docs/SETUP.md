@@ -2,7 +2,7 @@
 
 本文件提供完整的安裝步驟與常見問題解決。根目錄 README 提供簡版安裝說明，本文提供更完整的設定指南。
 
-本版發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
+本版發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test` + 固定版本的 `unit-test-scenarios`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
 
 ---
 
@@ -24,7 +24,7 @@
 | **.NET SDK** | 支援 net8.0 / net9.0 / net10.0，至少安裝一個版本              |
 
 > **Docker**：**integration / aspire 工作流程必需**（啟動真實容器）；**unit / tunit 不需要**。aspire 以 `Aspire.AppHost.Sdk` 9.0+ NuGet 提供，**免安裝 Aspire workload**。
-> **Node.js**（任一近期 LTS）：**僅 Estimated Token Usage 需要**（執行 `.codex/scripts/estimate-token-usage.mjs`）；估算器零相依、無需 `npm install`，不影響四階段測試流程本身。
+> **Node.js**（任一近期 LTS）：unit workflow 的 `run-state.json` 稽核需要 `.codex/scripts/run-state.mjs`；optional Estimated Token Usage 使用 `.codex/scripts/estimate-token-usage.mjs`。兩者皆為零相依腳本，無需 `npm install`。
 
 ### 驗證必要工具已安裝
 
@@ -38,7 +38,7 @@ dotnet --list-sdks
 
 ### 步驟 1：取得本 repo 的 `.codex/` 內容
 
-將本 repo 的 `.codex/` 放入你的專案根目錄（或合併進既有 `.codex/`）。內含 **4 個 Orchestrator Skill + 16 個 Subagent**（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）：
+將本 repo 的 `.codex/` 放入你的專案根目錄（或合併進既有 `.codex/`）。內含 **6 個 Skill + 16 個 Subagent**（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）：
 
 ```text
 .codex/
@@ -51,13 +51,14 @@ dotnet --list-sdks
 │   ├── dotnet-testing-advanced-integration-*.toml   （analyzer/writer/executor/reviewer）
 │   └── dotnet-testing-advanced-aspire-*.toml        （analyzer/writer/executor/reviewer）
 ├── config.toml
-├── scripts/                                    ← Estimated Token Usage 估算器
+├── scripts/                                    ← run-state helper + Estimated Token Usage 估算器
 └── skills/
     ├── dotnet-test/
     ├── dotnet-testing-orchestrator-unit/
     ├── dotnet-testing-orchestrator-tunit/
     ├── dotnet-testing-orchestrator-integration/
-    └── dotnet-testing-orchestrator-aspire/
+    ├── dotnet-testing-orchestrator-aspire/
+    └── unit-test-scenarios/
 ```
 
 也可以直接 clone 本 repo 後複製 `.codex/`：
@@ -120,7 +121,7 @@ dotnet-testing-xunit-project-setup/
 │   └── dotnet-testing-advanced-aspire-{analyzer,writer,executor,reviewer}.toml
 │
 ├── config.toml                            ← 本 repo 內建（啟用 multi_agent）
-├── scripts/                               ← 本 repo 內建（Estimated Token Usage 估算器）
+├── scripts/                               ← 本 repo 內建（run-state helper + Estimated Token Usage 估算器）
 │
 └── skills/
     │
@@ -130,6 +131,7 @@ dotnet-testing-xunit-project-setup/
     ├── dotnet-testing-orchestrator-tunit/        TUnit Orchestrator
     ├── dotnet-testing-orchestrator-integration/  整合測試 Orchestrator
     ├── dotnet-testing-orchestrator-aspire/       Aspire Orchestrator
+    ├── unit-test-scenarios/                      測試情境產生（固定上游版本）
     │
     │   ── dotnet-testing-agent-skills 複製後新增（29 個）────
     ├── dotnet-testing/
@@ -141,7 +143,7 @@ dotnet-testing-xunit-project-setup/
 
 - `.codex/agents/` 有 16 個 `.toml`（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）
 - `.codex/skills/` 含 4 個 orchestrator skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）的 `SKILL.md`
-- `.codex/skills/` 含 `dotnet-test` + 29 個技術型 skill
+- `.codex/skills/` 含 `dotnet-test`、`unit-test-scenarios` + 29 個技術型 skill
 - `.codex/config.toml` 存在且 `[features] multi_agent = true`
 - 在 Codex 呼叫任一 `$dotnet-testing-orchestrator-{unit,tunit,integration,aspire}` 時能正確 SpawnAgent 四階段
 

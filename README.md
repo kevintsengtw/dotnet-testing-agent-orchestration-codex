@@ -32,6 +32,8 @@
 
 > 四種工作流程**共用同一個 1 + 4 模型**(1 Orchestrator Skill + 4 Subagent、Codex 原生 SpawnAgent、Analyzer → Writer → Executor → Reviewer);差別在**執行模型、測試粒度與技術棧**,如下。
 
+> **Unit 工作流程**:使用者可在一開始以 Markdown、free text、表格、JSON 或混合格式提供測試情境與測試資料。合理內容優先於 Analyzer 自行補充的情境，只有個別情境不合理或不正確時才能逐項拒絕。若未提供情境，可先呼叫內建的 `$unit-test-scenarios` 產生情境，再交給 `$dotnet-testing-orchestrator-unit`。
+
 > **TUnit 工作流程**:執行模型為 **`dotnet run`**(Source Generator / Microsoft.Testing.Platform,非 `dotnet test`),產出 `OutputType=Exe`、不含 `Microsoft.NET.Test.Sdk`;支援 `[Test]`/`[Arguments]`/`[MethodDataSource]`、`.slnx` 版本感知選擇、xUnit→TUnit 遷移、Validator(`forbidWriterSplit`)。呼叫 `$dotnet-testing-orchestrator-tunit`;練習素材見 `samples/tunit/practice_tunit/`,細節見 `docs/guides/tunit-testing.md`。
 
 > **整合測試工作流程**:執行模型為 **`dotnet test`**(xUnit,含 `Microsoft.NET.Test.Sdk`、無 `OutputType=Exe`)+ **Docker / Testcontainers**;以 **HTTP endpoint 為粒度**,透過 `WebApplicationFactory<Program>` 發真實 HTTP 請求,HTTP 斷言用 **AwesomeAssertions.Web**(`Be200Ok`/`Be404NotFound` 等),錯誤格式驗 `ProblemDetails`/`ValidationProblemDetails`,容器化資料庫(PostgreSQL/SQL Server/MongoDB/Redis)搭配 Respawn 資料隔離。**需 Docker 環境**。呼叫 `$dotnet-testing-orchestrator-integration`;練習素材見 `samples/integration/practice_integration/`,細節見 `docs/guides/integration-testing.md`。
@@ -73,11 +75,11 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 
 ## 安裝與環境設定
 
-本 repo 發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
+本 repo 發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test` + 固定版本的 `unit-test-scenarios`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
 
 ### 步驟 1：取得本 repo 的 `.codex/` 內容
 
-將本 repo 的 `.codex/` 放入你的專案根目錄（或合併進既有 `.codex/`）。內含 **4 個 Orchestrator Skill + 16 個 Subagent**（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）：
+將本 repo 的 `.codex/` 放入你的專案根目錄（或合併進既有 `.codex/`）。內含 **6 個 Skill + 16 個 Subagent**（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）：
 
 ```text
 .codex/
@@ -95,7 +97,8 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
     ├── dotnet-testing-orchestrator-unit/
     ├── dotnet-testing-orchestrator-tunit/
     ├── dotnet-testing-orchestrator-integration/
-    └── dotnet-testing-orchestrator-aspire/
+    ├── dotnet-testing-orchestrator-aspire/
+    └── unit-test-scenarios/
 ```
 
 ### 步驟 2：安裝 Agent Skills（dotnet-testing-agent-skills）
@@ -156,6 +159,7 @@ dotnet-testing-xunit-project-setup/
     ├── dotnet-testing-orchestrator-tunit/        ← 本 repo 內建
     ├── dotnet-testing-orchestrator-integration/  ← 本 repo 內建
     ├── dotnet-testing-orchestrator-aspire/       ← 本 repo 內建
+    ├── unit-test-scenarios/                      ← 本 repo 內建（固定上游版本）
     ├── dotnet-testing/                            ← 步驟 2 安裝
     ├── dotnet-testing-unit-test-fundamentals/     ← 步驟 2 安裝
     └── …（其餘技術型 skill）
@@ -165,7 +169,7 @@ dotnet-testing-xunit-project-setup/
 
 - `.codex/agents/` 有 16 個 `.toml`（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）
 - `.codex/skills/` 含 4 個 orchestrator skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）的 `SKILL.md`
-- `.codex/skills/` 含 `dotnet-test` + 29 個技術型 skill
+- `.codex/skills/` 含 `dotnet-test`、`unit-test-scenarios` + 29 個技術型 skill
 - 在 Codex 呼叫任一 `$dotnet-testing-orchestrator-{unit,tunit,integration,aspire}` 時能正確 SpawnAgent 四階段
 
 ---
@@ -179,6 +183,8 @@ dotnet-testing-xunit-project-setup/
 ```
 
 工作流程會：分析 `OrderService` → 載入對應 Skills 撰寫測試 → 建置執行（含修正迴圈）→ 審查並回報；最後呈現固定格式的結果報告（測試總覽、Reviewer 結論、各階段耗時等）。
+
+也可以先呼叫 `$unit-test-scenarios` 產生測試情境，或直接在同一段提示詞提供任意格式的情境與資料；unit workflow 會先驗證並保留合理的使用者輸入，再補足必要案例。
 
 ---
 

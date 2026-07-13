@@ -15,9 +15,11 @@ description: ".NET 單元測試指揮中心 — 分析被測目標、決定技�
 
 > **語言規定**：所有輸出訊息、狀態更新、錯誤說明、摘要報告，一律使用**繁體中文**。禁止以英文輸出任何面向使用者的文字。
 
+> **可選前置 Skill 邊界**：`.codex/skills/unit-test-scenarios/SKILL.md` 是獨立的前置情境產生器，不是本 workflow 的第五個角色。本 Orchestrator 不直接讀取或內聯執行它。使用者若先呼叫 `$unit-test-scenarios`，該次請求只產出 Test Scenarios；後續再把完整產出帶入 `$dotnet-testing-orchestrator-unit`。使用者已提供任何形式的情境或測試資料時，直接進入本 workflow，由 Analyzer 逐項檢視，不得要求重新執行前置 Skill。
+
 ---
 
-## 🚨 第一步行動（你收到任務後必須立即執行）
+## 🚨 第一步行動（Orchestrator 請求開始後必須立即執行）
 
 **不要讀原始碼。不要分析專案。不要寫任何程式碼。**
 
@@ -87,7 +89,8 @@ payload: {
   "targetName": "<類別名稱或方法名稱>",
   "testProjectPath": "<測試專案路徑>",
   "analysisOutputPath": "<canonical analysis path>",
-  "userRequest": "<使用者特殊需求，如有>"
+  "userRequest": "<使用者特殊需求，如有>",
+  "userProvidedScenarios": "<使用者提供的測試情境與測試資料完整原文，如有>"
 }
 
 SpawnAgent
@@ -140,7 +143,7 @@ payload: {
 
 ## Prompt 精簡原則
 
-> ⚠️ **不需要在 subagent prompt 中嵌入完整分析報告 JSON、被測類別路徑、dependency 清單、requiredTechniques 完整陣列、suggestedTestScenarios、existingTestInfrastructure、targetType 等內容**。每個 subagent 已有 Step 0 讀取交接檔案的能力，可自行取得所有資訊。
+> ⚠️ **不需要在下游 subagent prompt 中嵌入完整分析報告 JSON、被測類別路徑、dependency 清單、requiredTechniques 完整陣列、suggestedTestScenarios、existingTestInfrastructure、targetType 等內容**。每個下游 subagent 已有 Step 0 讀取交接檔案的能力，可自行取得所有資訊。唯一例外是 Analyzer 尚未有交接檔案可讀；使用者初始提示詞中的測試情境與測試資料必須以 `userProvidedScenarios` 完整原文傳給 Analyzer。
 >
 > Orchestrator prompt 只需傳：**交接檔案路徑 + 摘要數字**（methodCount、scenarioCount、testMethodCount、testCaseCount 等）+ 必要的控制參數（風格統一指令、modification request 等）。
 
@@ -169,6 +172,7 @@ payload: {
 - 測試專案的路徑
 - **`analysisOutputPath`**：由 Orchestrator 預先計算好的交接檔案完整路徑，格式為 `{testProjectDir}/.orchestrator/analysis/{ClassName}.analysis.json`
 - 使用者的特殊需求（如果有的話）
+- **`userProvidedScenarios`**（如果有）：使用者在初始提示詞提供的測試情境與測試資料完整原文。格式不限，不得由 Orchestrator 先正規化、摘要、刪除或要求改格式；解析與逐項合理性檢視是 Analyzer 的職責
 
 **精簡 prompt 範例**：
 ```
@@ -176,6 +180,8 @@ payload: {
 被測試目標檔案路徑：src/MyProject.Core/Services/ProductService.cs
 測試專案路徑：tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj
 analysisOutputPath: tests/MyProject.Core.Tests/.orchestrator/analysis/ProductService.analysis.json
+userProvidedScenarios: |
+  {使用者提供的測試情境與測試資料完整原文；沒有時省略此欄}
 ```
 
 > ⚠️ `analysisOutputPath` 必須由 Orchestrator 計算並提供。計算方式：從測試專案路徑去掉 `.csproj` 檔名，拼接 `.orchestrator/analysis/{ClassName}.analysis.json`。Analyzer **不需要自行推導路徑**。
@@ -187,8 +193,16 @@ analysisOutputPath: tests/MyProject.Core.Tests/.orchestrator/analysis/ProductSer
 - `constructorGuards` 或 `constructorGuardCount`：Analyzer 識別到的建構子 guarded 依賴（若有）
 - `analysisFilePath`：Analyzer 實際寫入的交接檔案路徑（應與 `analysisOutputPath` 一致）
 - `projectContext`
+- `userScenarioSummary`：使用者情境的 provided / accepted / merged / rejected 與 Analyzer supplemented 數量；沒有使用者輸入時也應回傳零值摘要
 
-**驗證交接檔案**：收到 Analyzer 摘要後，使用 Glob 確認 `analysisFilePath` 指向的檔案確實存在。若不存在，說明 Analyzer 未正確寫入，需排查問題。
+**驗證交接檔案**：收到 Analyzer 摘要後，使用 Glob 確認 `analysisFilePath` 指向的檔案確實存在，並讀取實體 JSON 執行下列 gate。若不存在或 gate 不通過，不得進入 Writer：
+
+- 若有傳入 `userProvidedScenarios`，`userProvidedScenarioInput.present` 必須為 `true`，且 `rawContent` 必須保留非空原文。
+- 每個 Analyzer 辨識出的使用者情境都必須有一筆 `USR-*` `scenarioCatalog` 項目；不得整批接受或整批拒絕而不逐項記錄。
+- `rejected` 只能使用設計規格允許的 reason code，且必須有具體 message 與 evidence；抽象的「不合理」不合格。
+- `scenarioReviewSummary` 必須與 catalog 狀態數量一致。
+- 非 `merged`、非 `rejected` 的 catalog 項目必須完整對齊 `suggestedTestScenarios`；使用者有效情境排在 Analyzer 補充情境之前。
+- `scenarioReviewSummary.effective`、`suggestedTestScenarios.length`、`scenarioCount`、`methodScenarioCounts` 加總必須相等。
 
 #### 階段間主動釋放（Analyzer → Writer 必要）
 
@@ -222,10 +236,11 @@ Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認�
    - 目標：兩組的 fixture setup 內聚且跨檔一致；scenario 數量接近是次要目標
    - **保證：同一方法的所有測試案例絕不拆分到不同組**
 2. **建構子 null-guard 預設放置**：若 Analyzer artifact 有 `constructorGuards[]` 或 `methodScenarioCounts.Constructor > 0`，`Constructor` 測試必須完整集中於單一 Writer assignment，預設放入 Writer 1 / 主要組；不得把 constructor guard 測試分散到多檔，也不得讓多個 split Writer 重複撰寫。此規則只決定建構子 guard 測試的單一歸屬，不增加 Writer agent 數，且保留跨檔 fixture 一致契約。
-3. 對應的 `suggestedTestScenarios` 跟著各自的方法分組；`Constructor_*` scenarios 只跟著負責 `Constructor` 的 assignment
+3. 對應的 `suggestedTestScenarios` 與 `scenarioCatalog` 有效項目跟著各自的方法分組；每個 Writer assignment 必須帶有負責的 `scenarioIds`，同一有效 user scenario ID 必須恰好歸屬一個 assignment；`Constructor_*` scenarios 只跟著負責 `Constructor` 的 assignment
 4. 同時啟動 **最多 2 個 Writer subagent**（平行執行），每個 Writer 的 prompt 額外包含：
    - **明確指定只負責哪些方法**（列出方法名稱清單）
    - **告知 Writer 只處理指定方法的 scenarios**
+   - **列出本 assignment 負責的 `scenarioIds`**；其中 `USR-*` 必須優先實作，使用者指定測試資料優先於自動產生資料
    - 若該 assignment 負責建構子 guard，方法清單必須明確包含 `Constructor`，並告知 Writer 依 Analyzer artifact 的 `constructorGuards[]` 為每個 guarded 依賴撰寫 null-guard 測試；不負責 `Constructor` 的 assignment 必須明確不得撰寫 constructor tests
    - **指定使用獨立測試類別**（非 partial class），各自有獨立的 constructor、field、mock 設定
    - **指定輸出檔案路徑與獨立類別名稱**：
@@ -288,6 +303,7 @@ ProductService 6 methods, 28 scenarios:
    - 禁止分散到每個測試方法中各自設定 `SetLocalTimeZone()`
 
    **跨檔 fixture 一致契約**（所有 split Writer 必須遵守）：
+   - xUnit import 策略一致：Orchestrator dispatch split Writers 前，依測試專案既有慣例選定 `explicit` 或 `global`，並把同一值傳給所有 assignments。`explicit` 表示每個 split 檔都含 `using Xunit;`；`global` 表示每個 split 檔都依賴同一個既有 global using，且不得個別加入 `using Xunit;`
    - SUT 建構模式一致：constructor、field、helper method 或 factory method 的使用方式必須逐檔一致；禁止一檔 inline 建構 SUT、另一檔用 helper 建構 SUT
    - 欄位命名一致：同一語意的欄位在所有 split 測試檔必須使用同一名稱，例如 `_fixture`、`_timeProvider`、`_sut`
    - 區域變數命名一致：同一語意的 per-test 時間變數在所有 split 測試檔必須使用同一名稱，例如兩檔都用 `now` 或兩檔都用 `currentTime`；不得一檔 `now`、另一檔 `currentTime`
@@ -305,7 +321,8 @@ analysisFilePath: {analysisFilePath}
 被測試目標的檔案路徑: {filePath}
 測試檔案的預期輸出路徑: {outputPath}
 ```
-分割模式時額外加入：負責的方法清單、測試類別名稱、風格統一指令。
+分割模式時額外加入：負責的方法清單、測試類別名稱、風格統一指令，以及所有 assignments 共用的 `xunitImportStrategy: explicit|global`。
+有 `scenarioCatalog` 時額外加入：本 assignment 的 `scenarioIds`（只傳 ID，不嵌入 catalog 內容；Writer 從 analysis artifact 讀取完整資料）。
 method-scope 模式時額外加入：`methodsToTest` / `methodName`，並明確寫出「只能測試指定方法，不得擴寫其他 public methods」。
 
 **等候 Writer 回傳精簡摘要**：`testFilePaths`、`testMethodCount`、`testCaseCount`、`skillsLoaded`、`writerResultFilePath`
@@ -323,6 +340,7 @@ Writer 回傳後，Orchestrator 不得只採信回覆摘要。必須使用 canon
 - `testClasses[].filePath`
 - `testClasses[].methodsCovered`
 - `skillsLoaded`
+- `scenarioCoverage`（analysis artifact 含 `scenarioCatalog` 時必要）
 
 方法範圍檢查：
 
@@ -331,6 +349,9 @@ Writer 回傳後，Orchestrator 不得只採信回覆摘要。必須使用 canon
 - 若 Analyzer artifact 有 `constructorGuards[]` 或 `methodScenarioCounts.Constructor > 0`，必須且只能有一個 writer-result `testClasses[].methodsCovered` 包含 `"Constructor"`；該檔負責全部 guarded 依賴的建構子 null-guard 測試。
 - method-scope workflow 不得因 writer-result 寫成全類別而視為完成。
 - `methodsCovered` 不得是空陣列、`All`、`FullClass` 或純敘述文字。
+- 每個有效 `USR-*` scenario ID 必須恰好由一個 Writer assignment 負責，並出現在該 writer-result 的 `scenarioCoverage`。
+- `scenarioCoverage.status` 只可為 `implemented`、`blocked`、`limitation`；`blocked` / `limitation` 必須有具體 note，不得靜默略過。
+- `scenarioCoverage.testDataUsage` 必須說明使用者測試資料是 `exact`、`partial`、`generated` 或 `not-applicable`；有明確使用者資料時不得無理由以 `generated` 取代。
 
 若 writer-result 缺欄位、不可讀、或方法範圍不一致：
 
@@ -396,6 +417,14 @@ reviewResultFilePath: {reviewResultFilePath}
 
 **驗證 Reviewer 交接檔案**：Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath` 指向的檔案確實存在且可讀取。若檔案未落地，不得只採信 Reviewer 回傳訊息；必須將該 phase 判定為 blocker，分類為 `artifact 一直沒出現`，並更新 `run-state.json` 中 reviewer phase：`artifactReadyAt: null`、`artifact: null`、`failure` 填入原始症狀。
 
+Reviewer artifact 存在後，必須以本次 analysis、所有 writer-result 與 reviewer-result 執行正式 acceptance gate：
+
+```bash
+node scripts/validate-unit-scenario-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} --reviewer {reviewResultFilePath} --require-review-pass
+```
+
+多 Writer 時每份 writer-result 都各加一個 `--writer`。若此命令失敗，workflow 最終結論必須為 fail；不得因 Executor 測試全綠改寫成通過。`--require-review-pass` 要求 `userScenarioCoverage.coverageComplete === true`、missing/dataMismatch 皆為空，且 `gateDecision` 不得為 fail／blocked。
+
 ### Phase 5：後置清理
 
 四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），清理暫存結果目錄。為跨平台可靠（含 Windows VS Code Codex Extension 等非 bash shell），一律用 `node` 刪除，**不得用 `rm -rf`**（Unix-only，非 bash shell 會失敗）：
@@ -404,7 +433,7 @@ reviewResultFilePath: {reviewResultFilePath}
 node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{recursive:true,force:true})"
 ```
 
-> **注意**：`.orchestrator/analysis/` 目錄**保留不刪除**，供外部 benchmark 工具讀取 analysis.json 檔案大小。`.orchestrator/run-state.json` 在本次 run 內也不得被 Phase 5 清理刪除；它只會在下一次 run 的 Phase 0 殘留清理時，與 `.orchestrator/` 其他殘留一起處理。下一次執行時，Phase 0 前置清理會處理殘留的 `.orchestrator/` 目錄。
+> **注意**：`.orchestrator/analysis/` 目錄**保留不刪除**，供後續流程稽核與 artifact 驗證使用。`.orchestrator/run-state.json` 在本次 run 內也不得被 Phase 5 清理刪除；它只會在下一次 run 的 Phase 0 殘留清理時，與 `.orchestrator/` 其他殘留一起處理。下一次執行時，Phase 0 前置清理會處理殘留的 `.orchestrator/` 目錄。
 
 ---
 
@@ -412,7 +441,7 @@ node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{
 
 ### 時間追蹤方式（Run-state wall-clock）
 
-> **run-state.json 寫入機制（必用，跨平台）**：run-state.json 一律透過 `shell_command` 呼叫 `node .codex/scripts/run-state.mjs` 建立與更新。**不得**假設有「Write 工具」、**不得**用 `date -u`、**不得**手寫 shell read-modify-write。理由：Codex 沒有「Write」工具，且不同 runtime（Codex CLI vs VS Code Codex Extension）shell 不同；改善前 Extension 環境會整段略過 run-state 維護，導致 run-state.json 從不產生、各階段耗時與 Estimated Token Usage 全空。此腳本為純量參數 API（不傳 JSON blob，避免 PowerShell 引號問題），時間戳由腳本內部以系統時鐘產生（值寫 `@now` 即取 ISO 8601 UTC），毫秒差由 `--derive 欄位=END-START` 推導。以下 `{p}` 代表 `{testProjectDir}/.orchestrator/run-state.json`。常用呼叫：
+> **run-state.json 寫入機制（必用，跨平台）**：run-state.json 一律透過 `shell_command` 呼叫 `node .codex/scripts/run-state.mjs` 建立與更新。**不得**假設有「Write 工具」、**不得**用 `date -u`、**不得**手寫 shell read-modify-write。理由：Codex 沒有「Write」工具，且不同 runtime（Codex CLI vs VS Code Codex Extension）shell 不同；統一透過腳本才能確保 run-state.json、各階段耗時與 Estimated Token Usage metadata 都會落地。此腳本為純量參數 API（不傳 JSON blob，避免 PowerShell 引號問題），時間戳由腳本內部以系統時鐘產生（值寫 `@now` 即取 ISO 8601 UTC），毫秒差由 `--derive 欄位=END-START` 推導。以下 `{p}` 代表 `{testProjectDir}/.orchestrator/run-state.json`。常用呼叫：
 >
 > ```bash
 > # 初始化（Phase 0 清理後、啟動 Analyzer 前）
@@ -425,8 +454,10 @@ node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
 > # phase 收斂：記 completedAt
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
-> # 計數 / 整體：counters 與 overallWallClock.end
-> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now
+> # Executor artifact gate 通過：立即同步 artifact 的實際 fixRounds，不得沿用 init 的 0
+> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={executorResult.fixRounds}
+> # Reviewer artifact gate 通過、全部階段完成：補 overall end 並推導巢狀 duration
+> node .codex/scripts/run-state.mjs set --path {p} --set overallWallClock.end=@now --derive overallWallClock.durationMs=overallWallClock.end-overallWallClock.start
 > # bounded re-dispatch 事件：append 一筆
 > node .codex/scripts/run-state.mjs append --path {p} --array redispatchEvents --set phase=writer --set cause=agent-thread-limit --set occurredAt=@now --set waitMs={ms}
 > ```
@@ -451,7 +482,7 @@ Codex hooks 僅屬 optional telemetry，不可假設有 Claude Code 式 subagent
 
 - 不得為了縮短耗時改變 Analyzer → Writer → Executor → Reviewer 的 correctness contract。
 - 不得因某 phase 較慢而直接調整 prompt、dispatch topology、分割條件或 bounded re-dispatch 規則。
-- 不得引入 root `scripts/**` profiler 或舊 dynamic-workflows / autoresearch scripts 作為 timing truth。
+- 不得引入任何外部 profiling 或自動實驗工具作為 timing truth。
 - 若無法從 `run-state.json` 定位到比 phase 更細的瓶頸，final report 必須誠實說明缺失欄位；但在 profiling instrumentation 已啟用後，`profilingSummary.rootCauseCandidate` 不得使用 `unresolved`，必須根據已觀察欄位給出具體候選（例如 `writer produceSpan dominates; dispatch acceptance latency is negligible` 或 `redispatch wait dominates writer wall-clock`）。
 
 #### Run-state 落地契約（必要）
@@ -477,8 +508,8 @@ Codex hooks 僅屬 optional telemetry，不可假設有 Claude Code 式 subagent
    - `cause`：固定使用可機器判讀字串，例如 `agent-thread-limit`
    - `waitMs`：從撞限到補派成功啟動的等待毫秒；若補派未成功填 `null` 並在 `action` 說明
    - `action`：實際動作，例如 `closed 3 completed analyzer agents, re-dispatched 1 pending writer`
-8. **計數欄位**：每次 bounded re-dispatch、restart 或 Executor fix round 收斂後，都必須以 run-state 寫入機制更新 `boundedRedispatchCount`、`restartCount`、`executorFixRounds`；`boundedRedispatchCount` 必須等於 `redispatchEvents.length`，除非有歷史相容原因，這時必須在 `profilingSummary.notes` 說明。
-9. **總體時間**：整體流程完成或中止時，以 run-state 寫入機制更新 `overallWallClock` 為 `<workflowStartedAt>/<workflowCompletedAt>`。
+8. **計數欄位**：每次 bounded re-dispatch、restart 或 Executor fix round 收斂後，都必須以 run-state 寫入機制更新 `boundedRedispatchCount`、`restartCount`、`executorFixRounds`；Executor canonical artifact gate 通過後，必須讀取實體 `executor-result.json.fixRounds` 並立即寫入 top-level `executorFixRounds`，不得保留 `init` 的預設 `0`。`boundedRedispatchCount` 必須等於 `redispatchEvents.length`，除非有歷史相容原因，這時必須在 `profilingSummary.notes` 說明。
+9. **總體時間**：整體流程完成或中止時，必須在同一個 `run-state.mjs set` 呼叫寫入 `overallWallClock.end=@now`，並以 `--derive overallWallClock.durationMs=overallWallClock.end-overallWallClock.start` 產生巢狀 duration。禁止建立 top-level 的字面鍵名 `"overallWallClock.durationMs"`，也不得留下 `durationMs: null`。
 10. **phase duration 摘要**：整體流程完成或中止時，以 run-state 寫入機制補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`.
 11. **profiling summary**：整體流程完成或中止時，以 run-state 寫入機制補上 `profilingSummary`，至少包含 `bottleneck`、`bottleneckBreakdown`、`rootCauseCandidate`、`deferredOptimization`、`timingSource`。`rootCauseCandidate` 不得是 `unresolved`；拿不到的細項填 `null` 並在 `notes` 說明。
 
@@ -708,6 +739,20 @@ Codex hooks 僅屬 optional telemetry，不可假設有 Claude Code 式 subagent
 - `Issues`：Reviewer `issues`、`warnings`、`suggestions` 中與品質或 coverage 有關的重點。
 - `Missing test cases`：Reviewer `missingTestCases` 或 coverage gate 的 missing scenarios。
 - `Warning 以上改善建議`：severity >= warning 的項目；沒有時填 `無`。
+
+#### 2.1 使用者情境處理摘要
+
+只要初始提示詞有提供測試情境或測試資料，Reviewer 結論後必須輸出：
+
+```markdown
+### 使用者情境處理摘要
+
+| Target | Provided | Accepted | Normalized | Limited | Merged | Rejected | Analyzer supplemented | Coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| ClassName | 5 | 3 | 1 | 0 | 0 | 1 | 4 | complete |
+```
+
+若有 `rejected`，另列每個 `scenarioId`、原始內容摘要、reason code、具體理由與 evidence。不得只回報拒絕數量。Reviewer 的 `userScenarioCoverage.missingScenarioIds` 或 `dataMismatchScenarioIds` 也必須明列。
 
 #### 3. 使用的技術組合
 
@@ -957,6 +1002,7 @@ Orchestrator 應在結果呈現的最後，提示使用者可用的操作：
 - 是否負責 `Constructor` pseudo-method（僅在該 target 有 constructor guards 時，且每個 target 最多一個 assignment 為 true）。
 - 預期輸出測試檔案路徑與測試類別名稱。
 - 是否由 split 產生。
+- 負責的 `scenarioIds`；每個有效 `USR-*` 在同一 target 內恰好出現一次。
 
 writer-result 與 final report 必須能回溯每個測試檔負責的方法範圍。若某 target 產生多個測試檔，總覽表不得只列 target 總數，必須列出各測試檔與其 `methodsCovered`。
 
@@ -977,7 +1023,4 @@ writer-result 與 final report 必須能回溯每個測試檔負責的方法範�
 2. **保持 context 精簡** — 只保留 subagent 回傳的摘要，不展開中間過程
 3. **setup 親和優先分割 + ctor 單一主檔放置** — 用 `methodScenarioCounts` 判斷是否需要 Writer 分割；實際分組時先依共用 SUT / mock / TimeProvider / AutoFixture setup 親和分組，再用 scenario count 做次要平衡；若有建構子 guarded 依賴，`Constructor` 測試完整集中於 Writer 1 / 主要組，不參與 split 平衡
 4. **`suggestedTestScenarios` 必須是中文** — Analyzer 產出的建議測試命名必須使用中文三段式格式
-
-## MANUAL MIGRATION REQUIRED
-
-Review unsupported Claude skill fields manually: `Keywords`.
+5. **使用者情境優先** — Orchestrator 不裁決情境內容；它完整傳給 Analyzer，並以 artifact gate 保證逐項檢視、provenance、Writer assignment 與 Reviewer coverage 可追溯

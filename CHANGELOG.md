@@ -4,6 +4,27 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.0.4] - 2026-07-13
+
+新增:單元測試工作流程支援使用者以任意格式提供測試情境與測試資料，並整合固定版本的 `unit-test-scenarios` Skill 作為無輸入時的情境產生來源。
+
+### 新增
+- **`unit-test-scenarios` Skill**:將 [`kevintsengtw/unit-test-scenarios`](https://github.com/kevintsengtw/unit-test-scenarios) 的固定版本納入 repo，讓使用者可先產生經分析的測試情境，再交給 unit workflow 使用；版本來源與更新方式記錄於 `docs/dependencies/unit-test-scenarios.md`
+- **使用者情境契約 validator**:`scripts/validate-unit-scenario-contract.mjs` 驗證 Analyzer catalog、Writer scenario coverage、Reviewer coverage consistency 與正式 acceptance gate；搭配正反向 fixture 測試
+- **run-state 回歸測試**:補上巢狀 duration、缺失端點與 Executor fix rounds 的測試，防止 workflow 稽核欄位退化
+
+### 變更
+- **使用者輸入優先**:Analyzer 接受 Markdown、free text、表格、JSON 或混合格式的測試情境與資料；合理內容必須優先保留，只能逐項拒絕不合理或不正確的情境，不得整批棄用
+- **跨階段可追溯**:Writer 必須逐一回報情境與資料使用方式；Reviewer 必須與 Writer artifact 對帳，`blocked` / `limitation` 不得偽報為 `implemented`
+- **資料保護**:使用者提供明確 `testData` 時，不得以自動產生資料取代後仍宣稱完成；沒有明確資料而使用 generated data 時也必須記錄原因
+- **移除過時 smoke validator**:刪除實驗階段的 `validate-orchestrator-smoke.mjs`，正式靜態驗收改由 scenario contract 與 run-state 測試負責；歷史實驗文件保留原始紀錄
+- **public 發布同步**:同步 `unit-test-scenarios` Skill、固定版本說明與 consumer 文件，確保 public repo 具備完整執行資產
+
+### 驗證
+- scenario contract 與 run-state 測試共 **23 項全數通過**
+- 完成 structured split、free-text non-split、部分情境與額外目標等完整 workflow 驗證；確認使用者情境先進入 Analyzer catalog，再由 Writer、Executor、Reviewer 持續追蹤
+- 簽入範圍不含 `samples/*/tests/` 產生的測試檔、`.orchestrator/` artifacts 或 `.csproj` byproduct
+
 ## [v1.0.3] - 2026-07-07
 
 修正:Estimated Token Usage 估算器在 Writer canonical artifact 偶為 `.cs` 時崩潰、導致 token 表間歇 unavailable;並移除 Claude 版移植遺留的 `.codex/hooks.json` 死碼。

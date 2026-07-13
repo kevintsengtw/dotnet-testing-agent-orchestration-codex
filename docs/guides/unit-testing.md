@@ -11,6 +11,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
+- **`unit-test-scenarios` 已部署到 `.codex/skills/`**（可選前置情境產生器；安裝包內建）
 - **dotnet-testing-agent-skills 已複製到 `.codex/skills/`**（Writer 載入技術型 Skill 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**（`dotnet --version` 可確認）
 - **不需要 Docker**（單元測試不使用容器）
@@ -34,6 +35,55 @@ $dotnet-testing-orchestrator-unit
 - 簡短說明（可選，用於補充特殊需求）
 
 Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer → Writer → Executor → Reviewer，全程無需手動介入，並維護 `run-state.json` 記錄各階段耗時。
+
+## 提供自己的測試情境或測試資料
+
+可以直接在初始提示詞附上測試情境或測試資料，不需要轉成固定格式。例如可貼上 `unit-test-scenarios` Agent Skill 產出的 Markdown，也可以使用自然語言、清單、表格、JSON、YAML、Gherkin 或混合內容。
+
+```text
+請為 OrderService.ProcessAsync 建立單元測試。
+
+我指定的情境：
+- 訂單金額 1000、折扣碼 VIP20，預期折扣後金額為 800。
+- repository 找不到客戶時應拋出 CustomerNotFoundException，且不可寫入訂單。
+```
+
+處理規則：
+
+- Analyzer 逐項檢視，而不是整批接受或拒絕。
+- 合理的使用者情境優先，Analyzer 只補充缺漏情境。
+- 格式、命名或欄位不完整會被正規化，不會因此拒絕。
+- 只有與實作、指定 scope 或單元測試邊界有具體衝突的單一情境才會被拒絕，最終報告會列出理由與證據。
+- Writer 優先使用指定的測試資料；自動資料產生器只補足未指定欄位。
+- Reviewer 逐項核對已接受情境及資料是否真的出現在測試中。
+
+完整 provenance 會寫入 analysis artifact 的 `scenarioCatalog`，Writer 對應結果寫入 `scenarioCoverage`，Reviewer 則輸出 `userScenarioCoverage`。
+
+### 先使用 unit-test-scenarios 產生情境
+
+`unit-test-scenarios` 是獨立的可選前置 Skill，不是四階段 workflow 的第五個角色。需要先分析情境時，分成兩次請求：
+
+第一次只產生情境：
+
+```text
+$unit-test-scenarios
+被測試目標：src/MyApp/Services/OrderService.cs
+方法：ProcessAsync
+測試專案：tests/MyApp.Tests/MyApp.Tests.csproj
+```
+
+第二次把前一次完整 Markdown 產出帶入 Orchestrator：
+
+```text
+$dotnet-testing-orchestrator-unit
+被測試目標：src/MyApp/Services/OrderService.cs
+測試專案：tests/MyApp.Tests/MyApp.Tests.csproj
+
+以下是我指定的 Test Scenarios：
+<貼上 unit-test-scenarios 的完整產出>
+```
+
+若使用者一開始已提供情境或測試資料，不需要也不得強制重新執行 `$unit-test-scenarios`。
 
 ---
 
