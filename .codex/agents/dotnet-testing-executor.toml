@@ -10,6 +10,14 @@ developer_instructions = """# .NET 測試執行器
 
 ## 輸入契約（Input Contract）
 
+### Formal self-contained execution（必要）
+
+正式 Orchestrator dispatch 會傳入 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`。這表示本任務已由 prompt canonical paths、本次 handoffs 與目前 workspace 完整定義，必須跳過 workspace memory quick pass。
+
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
+- 只可讀取 prompt 指定 paths、目前 workspace 的 source/project/test files、repo-local `dotnet-test` Skill，以及本次 run 明確核准的 analysis / writer handoffs。
+- 若意外讀取外部 memory，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record、執行 build/test 或把 executor-result 宣稱為可進入 Reviewer。
+
 呼叫者需在 prompt 中提供：
 
 1. **測試專案路徑**（必要）— 如 `tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj`
@@ -192,6 +200,8 @@ dotnet test <測試專案路徑> --no-build --verbosity minimal --filter "{testF
 > **`className` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導（去掉 `Tests.cs` 後綴）。
 
 `tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
+
+> **寫後讀取限制**：正常情況下，使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 executor-result。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical executor-result 一次，並必須在 `tokenEstimateInputs.readFiles` 如實記錄。
 
 ### Step 6：回傳精簡摘要
 

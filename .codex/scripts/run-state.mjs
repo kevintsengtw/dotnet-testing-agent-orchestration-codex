@@ -18,6 +18,7 @@
 //   node run-state.mjs set    --path P [--phase PH] [--assignment AID]
 //                              [--set key=value]... [--derive field=END-START]...
 //   node run-state.mjs append --path P --array NAME [--set key=value]...
+//   node run-state.mjs validate --path P [--require-complete-timing]
 //   node run-state.mjs now
 //
 // VALUE SENTINELS / COERCION (apply to --set values):
@@ -60,6 +61,7 @@ function parseArgs(argv) {
       case "--array": args.array = argv[++i]; break;
       case "--set": args.set.push(argv[++i]); break;
       case "--derive": args.derive.push(argv[++i]); break;
+      case "--require-complete-timing": args.requireCompleteTiming = true; break;
       case "--help": case "-h": args.help = true; break;
       default: throw new Error(`Unknown argument: ${arg}`);
     }
@@ -73,6 +75,7 @@ function usage() {
     "  node .codex/scripts/run-state.mjs init   --path <run-state.json> --workflow <w> --target <t>",
     "  node .codex/scripts/run-state.mjs set    --path <run-state.json> [--phase <p>] [--assignment <id>] [--set k=v]... [--derive f=END-START]...",
     "  node .codex/scripts/run-state.mjs append --path <run-state.json> --array <name> [--set k=v]...",
+    "  node .codex/scripts/run-state.mjs validate --path <run-state.json> [--require-complete-timing]",
     "  node .codex/scripts/run-state.mjs now",
     "",
     "Value sentinels: @now -> ISO UTC. Numbers/true/false/null are coerced. --set keys may be dotted for nesting.",
@@ -228,6 +231,139 @@ function opAppend(args) {
   return state;
 }
 
+function isIsoTimestamp(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function derivedMilliseconds(end, start) {
+  return isIsoTimestamp(end) && isIsoTimestamp(start)
+    ? Date.parse(end) - Date.parse(start)
+    : null;
+}
+
+function opValidate(args) {
+  if (!args.path) throw new Error("validate requires --path");
+  const state = readState(args.path);
+  const errors = [];
+  let timingComplete = true;
+  const requiredPhases = ["analyzer", "writer", "executor", "reviewer"];
+
+  if (!state.workflow) errors.push("missing workflow");
+  if (!state.target) errors.push("missing target");
+  if (!isIsoTimestamp(state.overallWallClock?.start)) errors.push("overallWallClock.start must be an ISO timestamp");
+  if (!isIsoTimestamp(state.overallWallClock?.end)) errors.push("overallWallClock.end must be an ISO timestamp");
+  const expectedOverall = derivedMilliseconds(state.overallWallClock?.end, state.overallWallClock?.start);
+  if (!Number.isInteger(state.overallWallClock?.durationMs) || state.overallWallClock.durationMs !== expectedOverall) {
+    errors.push("overallWallClock.durationMs must equal end-start");
+  }
+
+  for (const phaseName of requiredPhases) {
+    const phase = state.phases?.[phaseName];
+    if (!phase || !Array.isArray(phase.assignments) || phase.assignments.length === 0) {
+      errors.push(`phases.${phaseName}.assignments must contain at least one assignment`);
+      continue;
+    }
+    if (!isIsoTimestamp(phase.completedAt)) errors.push(`phases.${phaseName}.completedAt must be an ISO timestamp`);
+    const phaseCompletedAtMs = isIsoTimestamp(phase.completedAt) ? Date.parse(phase.completedAt) : null;
+    const dispatchIssuedTimes = [];
+    for (const [index, assignment] of phase.assignments.entries()) {
+      const prefix = `phases.${phaseName}.assignments[${index}]`;
+      for (const field of ["assignmentId", "agentId", "target", "agentDefinitionPath", "expectedArtifactPath", "artifact"]) {
+        if (typeof assignment[field] !== "string" || assignment[field].trim() === "") {
+          errors.push(`${prefix}.${field} must be a non-empty string`);
+        }
+      }
+      if (assignment.contextForkPolicy !== "none") {
+        errors.push(`${prefix}.contextForkPolicy must be none`);
+      }
+      if (assignment.externalMemoryPolicy !== "forbid") {
+        errors.push(`${prefix}.externalMemoryPolicy must be forbid`);
+      }
+      if (!isIsoTimestamp(assignment.dispatchIssuedAt)) errors.push(`${prefix}.dispatchIssuedAt must be an ISO timestamp`);
+      if (!isIsoTimestamp(assignment.dispatchAcceptedAt)) errors.push(`${prefix}.dispatchAcceptedAt must be an ISO timestamp`);
+      if (!isIsoTimestamp(assignment.completedAt)) errors.push(`${prefix}.completedAt must be an ISO timestamp`);
+      if (isIsoTimestamp(assignment.dispatchIssuedAt)) dispatchIssuedTimes.push(Date.parse(assignment.dispatchIssuedAt));
+      const expectedDispatchLatency = derivedMilliseconds(assignment.dispatchAcceptedAt, assignment.dispatchIssuedAt);
+      if (!Number.isInteger(assignment.dispatchAcceptLatencyMs)
+          || assignment.dispatchAcceptLatencyMs !== expectedDispatchLatency
+          || assignment.dispatchAcceptLatencyMs < 0) {
+        errors.push(`${prefix}.dispatchAcceptLatencyMs must equal dispatchAcceptedAt-dispatchIssuedAt`);
+      }
+
+      if (assignment.artifactReadyAt === null) {
+        timingComplete = false;
+        if (assignment.produceSpanMs !== null) errors.push(`${prefix}.produceSpanMs must be null when artifactReadyAt is null`);
+        if (typeof assignment.timingNote !== "string" || assignment.timingNote.trim() === "") {
+          errors.push(`${prefix}.timingNote is required when artifactReadyAt is null`);
+        }
+        if (args.requireCompleteTiming) errors.push(`${prefix}.artifactReadyAt is required by --require-complete-timing`);
+      } else {
+        if (!isIsoTimestamp(assignment.artifactReadyAt)) {
+          errors.push(`${prefix}.artifactReadyAt must be an ISO timestamp or null`);
+        }
+        const expectedProduceSpan = derivedMilliseconds(assignment.artifactReadyAt, assignment.dispatchAcceptedAt);
+        if (!Number.isInteger(assignment.produceSpanMs)
+            || assignment.produceSpanMs !== expectedProduceSpan
+            || assignment.produceSpanMs < 0) {
+          errors.push(`${prefix}.produceSpanMs must equal artifactReadyAt-dispatchAcceptedAt`);
+        }
+        if (isIsoTimestamp(assignment.completedAt)
+            && isIsoTimestamp(assignment.artifactReadyAt)
+            && Date.parse(assignment.artifactReadyAt) > Date.parse(assignment.completedAt)) {
+          errors.push(`${prefix}.artifactReadyAt must not be later than completedAt`);
+        }
+      }
+      if (phaseCompletedAtMs !== null
+          && isIsoTimestamp(assignment.completedAt)
+          && Date.parse(assignment.completedAt) > phaseCompletedAtMs) {
+        errors.push(`${prefix}.completedAt must not be later than phases.${phaseName}.completedAt`);
+      }
+    }
+
+    const phaseDuration = state.phaseDurations?.[phaseName];
+    if (!Number.isInteger(phaseDuration?.durationMs) || phaseDuration.durationMs < 0) {
+      errors.push(`phaseDurations.${phaseName}.durationMs must be a non-negative integer`);
+    }
+    if (phaseDuration?.source !== "run-state") errors.push(`phaseDurations.${phaseName}.source must be run-state`);
+    if (phaseCompletedAtMs !== null && dispatchIssuedTimes.length === phase.assignments.length) {
+      const expectedPhaseDuration = phaseCompletedAtMs - Math.min(...dispatchIssuedTimes);
+      if (phaseDuration?.durationMs !== expectedPhaseDuration) {
+        errors.push(`phaseDurations.${phaseName}.durationMs must equal phase completedAt-earliest dispatchIssuedAt`);
+      }
+    }
+  }
+
+  if (!Array.isArray(state.redispatchEvents)) errors.push("redispatchEvents must be an array");
+  if (!Number.isInteger(state.boundedRedispatchCount)
+      || state.boundedRedispatchCount !== (state.redispatchEvents?.length ?? -1)) {
+    errors.push("boundedRedispatchCount must equal redispatchEvents.length");
+  }
+  for (const field of ["restartCount", "executorFixRounds"]) {
+    if (!Number.isInteger(state[field]) || state[field] < 0) errors.push(`${field} must be a non-negative integer`);
+  }
+
+  const profiling = state.profilingSummary;
+  if (!profiling || typeof profiling !== "object") {
+    errors.push("profilingSummary is required");
+  } else {
+    for (const field of ["timingSource", "bottleneck", "rootCauseCandidate"]) {
+      if (typeof profiling[field] !== "string" || profiling[field].trim() === "" || profiling[field] === "unresolved") {
+        errors.push(`profilingSummary.${field} must be a concrete non-empty value`);
+      }
+    }
+    if (typeof profiling.deferredOptimization !== "boolean") errors.push("profilingSummary.deferredOptimization must be boolean");
+    if (!profiling.bottleneckBreakdown || typeof profiling.bottleneckBreakdown !== "object") {
+      errors.push("profilingSummary.bottleneckBreakdown is required");
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`validation failed:\n- ${errors.join("\n- ")}`);
+  }
+  process.stdout.write(`${JSON.stringify({ status: "valid", timingComplete }, null, 2)}\n`);
+  return state;
+}
+
 function main() {
   const [op, ...rest] = process.argv.slice(2);
   if (!op || op === "--help" || op === "-h") {
@@ -247,7 +383,8 @@ function main() {
     case "init": opInit(args); break;
     case "set": opSet(args); break;
     case "append": opAppend(args); break;
-    default: throw new Error(`Unknown op: ${op}. Expected init|set|append|now.`);
+    case "validate": opValidate(args); break;
+    default: throw new Error(`Unknown op: ${op}. Expected init|set|append|validate|now.`);
   }
 }
 

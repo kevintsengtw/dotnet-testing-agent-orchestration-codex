@@ -75,8 +75,12 @@ Aspire sample AppHost 目前採**拋棄式容器**：SQL Server / Redis **不使
 
 ```text
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-aspire-analyzer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace absolute path>",
   "apiProjectPath": "<被測 WebAPI 專案路徑>",
   "appHostPath": "<AppHost 專案路徑>",
   "targetServiceName": "<AppHost AddProject(\"name\") 服務名>",
@@ -87,38 +91,78 @@ payload: {
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-aspire-writer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace absolute path>",
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
   "apiProjectPath": "<被測 WebAPI 專案路徑>",
   "appHostPath": "<AppHost 專案路徑>",
   "outputPath": "<測試檔案預期輸出路徑>",
-  "writerControls": "<分批/風格/端點範圍/修改模式等最小控制欄位，如有>"
+  "writerResultFilePath": "<本 assignment 唯一 canonical writer result path>",
+  "writerControls": {
+    "writerTopology": "single",
+    "assignmentRole": "full",
+    "endpointScope": "<端點範圍>"
+  }
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-aspire-executor.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace absolute path>",
   "testProjectPath": "<測試專案路徑>",
   "testFilePaths": ["<Writer 產出的測試檔案路徑>"],
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
-  "writerResultFilePath": "<Writer 交接檔案路徑>"
+  "writerResultFilePaths": ["<本 target 全部 Writer 交接檔案路徑>"],
+  "executorResultFilePath": "<canonical executor result path>"
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-aspire-reviewer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace absolute path>",
   "testFilePaths": ["<測試檔案路徑>"],
   "apiProjectPath": "<被測 WebAPI 專案路徑>",
   "appHostPath": "<AppHost 專案路徑>",
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
-  "writerResultFilePath": "<Writer 交接檔案路徑>",
+  "writerResultFilePaths": ["<本 target 全部 Writer 交接檔案路徑>"],
   "executorResultFilePath": "<Executor 交接檔案路徑>",
   "reviewResultFilePath": "<canonical reviewer result path>"
 }
 ```
 
 正式 dispatch 必須維持 Analyzer -> Writer -> Executor -> Reviewer。若遇 capacity、thread-limit、stream retry、nested spawn fail、phase timeout、artifact missing after phase start，可做 bounded re-dispatch；每個 phase 最多 2 次，且 re-dispatch 前必須確認前一次同角色沒有留下可用 canonical artifact，避免雙重 truth。
+
+### Formal context isolation（必要）
+
+- 四個正式 role dispatch 都必須明確使用 `fork_turns: "none"`；不得依賴 runtime default。
+- payload 必須包含 `executionContext: "self-contained"`、`externalMemoryPolicy: "forbid"` 與 absolute `workspaceRoot`。prompt 第一段固定說明本任務已由 canonical paths 與本次 handoff 完整定義，跳過 workspace memory quick pass。
+- roles 禁止讀取 `$CODEX_HOME/memories/**`、`MEMORY.md`、rollout summaries、prior transcript、其他 worktree 或非本次 attempt 的 `.orchestrator` artifacts。
+- run-state 每筆 assignment 必須記錄 `contextForkPolicy=none` 與 `externalMemoryPolicy=forbid`；若 runtime 不支援或 telemetry 顯示越界，判定 `attempt-isolation-violation`，不得納入 token comparator。
+- 每個 canonical artifact ready 後、下一 phase dispatch 前執行 attempt isolation；`--allow-read` 只列本次 run 的 canonical upstream artifacts：
+
+```bash
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow aspire --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {analysisFilePath}
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow aspire --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {writerResultFilePath} --allow-read {analysisFilePath}
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow aspire --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {executorResultFilePath} --allow-read {analysisFilePath} --allow-read {writerResultFilePath} [...]
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow aspire --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {reviewResultFilePath} --allow-read {analysisFilePath} --allow-read {writerResultFilePath} [...] --allow-read {executorResultFilePath}
+```
+
+Analyzer ready 後另執行 minimal read-scope gate；Reviewer ready 後執行 no-self-read gate：
+
+```bash
+node .codex/scripts/validators/validate-aspire-role-read-scope.mjs --role analyzer --workspace-root {workspaceRoot} --agent-definition .codex/agents/dotnet-testing-advanced-aspire-analyzer.toml --artifact {analysisFilePath}
+node .codex/scripts/validators/validate-aspire-role-read-scope.mjs --role reviewer --workspace-root {workspaceRoot} --artifact {reviewResultFilePath}
+```
 
 ### 多目標並行度
 
@@ -147,15 +191,17 @@ run-state 初始化必須包含 `workflow: "aspire"`、`target`、`overallWallCl
 > # 初始化（Phase 0 清理後、啟動 Analyzer 前）
 > node .codex/scripts/run-state.mjs init --path {p} --workflow aspire --target {target}
 > # dispatch 前：記 dispatchIssuedAt（並一併登記 Estimated Token Usage metadata）
-> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath}
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath} --set contextForkPolicy=none --set externalMemoryPolicy=forbid
 > # 收到 agentId：記 agentId/dispatchAcceptedAt，推導 latency
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
 > # artifact 落地：記 artifactReadyAt/artifact，推導 produceSpan
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+> # assignment gate 收斂：逐 assignment 記 completedAt
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set completedAt=@now
 > # phase 收斂：記 completedAt
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
 > # 計數 / 整體：counters 與 overallWallClock.end
-> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now
+> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now --derive overallWallClock.durationMs=overallWallClock.end-overallWallClock.start
 > # bounded re-dispatch 事件：append 一筆
 > node .codex/scripts/run-state.mjs append --path {p} --array redispatchEvents --set phase=writer --set cause=agent-thread-limit --set occurredAt=@now --set waitMs={ms}
 > ```
@@ -172,33 +218,47 @@ run-state 必須記錄：
 - `boundedRedispatchCount`
 - `restartCount`
 - `executorFixRounds`
+- 每筆 assignment 的 `contextForkPolicy=none`、`externalMemoryPolicy=forbid`
 
-**Estimated Token Usage metadata**：`phases` 以 `analyzer` / `writer` / `executor` / `reviewer` 為 key，各含 `assignments[]`。每筆 assignment 除 timing 外，應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`（指向該 phase 的 `.codex/agents/dotnet-testing-advanced-aspire-*.toml`）、`spawnPayloadShape`、`expectedArtifactPath`（該 phase canonical 交接檔路徑）。這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+**Estimated Token Usage metadata**：`phases` 以 `analyzer` / `writer` / `executor` / `reviewer` 為 key，各含 `assignments[]`。每筆 assignment 除 timing 外，應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`（指向該 phase 的 `.codex/agents/dotnet-testing-advanced-aspire-*.toml`）、`spawnPayloadShape`、`expectedArtifactPath`（該 phase canonical 交接檔路徑）、`contextForkPolicy`、`externalMemoryPolicy`。後兩者是 formal isolation gates，其餘欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+
+每個 assignment 的 canonical artifact 與 formal gates 收斂後，先寫 assignment `completedAt`；全部 assignments 收斂後才寫 phase `completedAt`。closeout 必須補上 `phaseDurations.{phase}.durationMs/source=run-state`、`profilingSummary.timingSource=run-state`、concrete bottleneck/root cause、`overallWallClock.end` 與巢狀 duration；不得建立字面 dotted top-level key。
 
 時間一律取自磁碟 run-state，禁止從對話敘述、subagent 回傳文字、hook additionalContext 或人工推估計算耗時。結果呈現時輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
 
 ### Phase 1：Analyzer
 
-Analyzer payload 必須包含 `apiProjectPath`、`appHostPath`、`targetServiceName`、`targetController`、`testProjectPath`、`analysisOutputPath`、`userRequest`。
+Analyzer payload 必須包含 `workspaceRoot`、`executionContext`、`externalMemoryPolicy`、`apiProjectPath`、`appHostPath`、`targetServiceName`、`targetController`、`testProjectPath`、`analysisOutputPath`、`userRequest` 與未改寫的 `userProvidedScenarios`。
 
 Analyzer 必須從 AppHost `Program.cs` 與 `.csproj` 分析 Resource graph，輸出頂層欄位：
 
 - `appHostInfo`（含 `aspireVersion`）
-- `resources[]`
+- `resourceCatalog[]`（穩定 `RES-*` ID、服務關聯與 evidence）
 - `projectReferences[]`
 - `dependencyGraph`
 - `containerLifetime`
 - `dataVolumes`
 - `apiProjectInfo`（含 `endpoints`、`dbContext`、`validators`）
+- `endpointCatalog[]` 與 `endpointsToTest[]`（穩定 `END-*` ID）
+- `scenarioCatalog[]`、`scenarioReviewSummary`、`userProvidedScenarioInput`
 - `existingTestInfrastructure`
 - `requiredSkills`
 - `suggestedTestScenarios`
 - `projectContext`
-- `sourceCodeContext`
+- `sourceFileIndex[]`（path / purpose / compact facts；不得嵌入完整 source）
+- `tokenEstimateInputs`
 
 `projectContext.testFramework` 固定 `"xunit"`；`projectContext.targetFramework` 取自被編排 API 專案。`requiredSkills` 固定 `["aspire-testing"]`。
 
-收到 Analyzer 摘要後，用 Glob 確認 `analysisFilePath` 存在；不存在則更新 run-state 並依 bounded re-dispatch 處理。
+收到 Analyzer 摘要後，用 Glob 確認 `analysisFilePath` 存在；不存在則更新 run-state 並依 bounded re-dispatch 處理。artifact 不得包含 `sourceCodeContext`；不得以固定 scenario 數作 gate，只驗證每個 scenario 的 provenance、endpoint attribution、狀態、evidence 與有效集合一致性。
+
+artifact ready 後立即執行：
+
+```bash
+node .codex/scripts/validators/validate-aspire-scenario-contract.mjs --analysis {analysisFilePath} --analysis-only
+```
+
+靜態 scenario gate、attempt isolation 或 Analyzer read-scope 任一失敗都不得進入 Writer。
 
 #### 階段間主動釋放
 
@@ -206,7 +266,7 @@ Analyzer phase 全部 assignment 完成且 analysis artifact 確認存在後，d
 
 ### Phase 2：Writer
 
-Writer payload 必須包含 `analysisFilePath`、`apiProjectPath`、`appHostPath`、`outputPath`、`writerControls`。
+Writer payload 必須包含 `workspaceRoot`、`executionContext`、`externalMemoryPolicy`、`analysisFilePath`、`apiProjectPath`、`appHostPath`、`outputPath`、`writerResultFilePath` 與 `writerControls`。
 
 **`outputPath` 推導規則（確定性，必用）**：`outputPath` 必須置於測試專案的 **`Integration/` 子目錄**，**禁止**放在以被測 controller 命名的子目錄（例如 `Bookings/`）或測試專案根目錄（與 Aspire Writer 的「目錄結構規範」一致）。
 - `{TestDir}` = 測試專案目錄（取 `projectContext.testProjectPath` 去掉結尾 `.csproj` 檔名後的目錄）。
@@ -245,18 +305,19 @@ Writer 以以下優先序決定端點範圍：
 
 若上層範圍存在，Writer 不得擴大到 sibling endpoints 或 sibling resources。Reviewer 也嚴禁把指定範圍以外的 sibling endpoint / resource 列為覆蓋缺口。
 
-#### 分批啟動判斷
+#### 單一 Writer 策略（必要）
 
-依 scenario 數決定單次或分兩次啟動：
+每個 Controller／endpoint slice 無論 `scenarioCount`、endpoint 數、Resource 數、Aspire 版本或預估輸出大小為何，固定只 dispatch **一個 Writer subagent**，且 `writerControls` 固定為 `writerTopology: "single"`、`assignmentRole: "full"`。正式 workflow 禁止把同一 target 切成 infrastructure／tests 或其他多個 Writer assignments。
 
-| 測試案例數量 | 策略 | 說明 |
-| --- | --- | --- |
-| `scenarioCount <= 15` | 單次啟動 | Writer 產出基礎設施 + 全部測試案例 |
-| `scenarioCount > 15` | 分兩次啟動 | 第一次產基礎設施，第二次產測試案例 + 風格統一指令 |
+此規則只固定 topology，不限制 Analyzer 案例數，也不得刪減任何合理且 in-scope 的 endpoint 或 scenario。唯一 Writer 必須在同一 assignment 完成必要 infrastructure 與全部有效 scenarios，並寫入唯一 canonical writer-result。
+
+單一 Writer 若遇 context／output limit，attempt fail closed 並保留 blocker evidence；不得自動 split、不得刪減 scenarioCatalog，也不得啟動第二個 repair Writer代替原 assignment完成內容。歷史 B1 two-step artifacts只供實驗報告與 validator compatibility，不是正式 runtime topology。
+
+多個 targets 共用同一測試專案時，Writers 依使用者指定順序循序執行；每個 target 的 topology 個別遵守本節規則。後續 Writer 必須重用並以 add-only 方式補充磁碟上既有的 `Infrastructure/`、`GlobalUsings.cs` 與 `.csproj`，不得覆寫先前 target 測試。每個 target 的 Executor 除 target filter 外，還必須執行 project-level regression，確認先前 target 仍通過。不同測試專案才可平行 Writer。
 
 #### Writer Artifact Gate
 
-dispatch Executor 前必須讀取 canonical `writerResultFilePath`，驗證：
+dispatch Executor 前必須讀取本 target 全部 canonical `writerResultFilePaths[]`，驗證：
 
 - `writerResultFilePath`
 - `testFilePaths` 非空
@@ -266,8 +327,17 @@ dispatch Executor 前必須讀取 canonical `writerResultFilePath`，驗證：
 - `testClasses[].filePath`
 - `testClasses[].methodsCovered` 或 `testClasses[].endpointsCovered`
 - `skillsLoaded`
+- `writerTopology`、`assignmentRole`
+- `endpointCoverage`、`scenarioCoverage`
+- `tokenEstimateInputs`
 
-`methodsCovered` / `endpointsCovered` 必須是明確端點或案例清單，不得使用 `All`、`FullController`、空陣列或敘述文字。`skillsLoaded` 應包含 `aspire-testing`，不得包含 unit、TUnit、integration 技能。
+`methodsCovered` / `endpointsCovered` 必須是明確端點或案例清單，不得使用 `All`、`FullController`、空陣列或敘述文字。`skillsLoaded` 應包含 `aspire-testing`，不得包含 unit、TUnit、integration 技能。每個有效 scenario ID 與 endpoint ID 必須恰由測試 assignment 認領一次；infrastructure assignment 不得認領 coverage。
+
+執行正式 artifact gate：
+
+```bash
+node .codex/scripts/validators/validate-aspire-scenario-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} [...] [--require-single-writer]
+```
 
 缺欄位、不可讀或 scope mismatch 時，不得 dispatch Executor；更新 run-state writer phase，必要時 bounded re-dispatch Writer，最多 2 次。
 
@@ -283,7 +353,7 @@ Writer phase 收斂且 gate 通過後，dispatch Executor 前主動關閉已完�
 
 Executor 必須循序執行，不得平行啟動多個 AppHost 測試。
 
-Executor payload 必須包含 `testProjectPath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath`。
+Executor payload 必須包含 `workspaceRoot`、`executionContext`、`externalMemoryPolicy`、`testProjectPath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePaths[]` 與 Orchestrator 預先計算的 exact `executorResultFilePath`。正式陣列長度固定為 1，且只能是本 target 的唯一 `single/full` artifact。
 
 Executor 執行模型：
 
@@ -309,6 +379,19 @@ Executor 必須寫 `{testProjectDir}/.orchestrator/executor-result/{ControllerNa
 - `fixRounds`
 - `fixHistory`
 - `addedPackages`
+- `executionMethod`、`blameHangTimeout`
+- `writerResultFilePaths`、`testFilePaths`
+- `targetServiceName`、`resourceReadinessEvidence`
+- `usesDistributedApplicationTestingBuilder`、`usesWebApplicationFactory`、`usesProgrammaticTestcontainers`
+- `productionBugFixes`、`tokenEstimateInputs`
+
+Executor artifact ready 且 attempt isolation 通過後，執行：
+
+```bash
+node .codex/scripts/validators/validate-aspire-execution-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} [...] --executor {executorResultFilePath} --require-pass --forbid-production-mutation
+```
+
+gate 驗證 xUnit `dotnet test`、版本對應 hang timeout、Writer case accounting、Docker/workload、Aspire-native execution、Resource readiness、服務名稱與零 production/AppHost mutation。任一矛盾都不得以對話摘要覆蓋。
 
 Executor phase 完成且 executor-result 存在後，dispatch Reviewer 前主動關閉已完成 Executor agents。
 
@@ -316,7 +399,7 @@ Executor phase 完成且 executor-result 存在後，dispatch Reviewer 前主動
 
 Reviewer 一律執行，不可因 Executor 第一次全過、0 修正輪次或使用者未明確要求品質審查而跳過。
 
-Reviewer payload 必須包含 `testFilePaths`、`apiProjectPath`、`appHostPath`、`analysisFilePath`、`writerResultFilePath`、`executorResultFilePath`、`reviewResultFilePath`。
+Reviewer payload 必須包含 `workspaceRoot`、`executionContext`、`externalMemoryPolicy`、`testFilePaths`、`apiProjectPath`、`appHostPath`、`analysisFilePath`、`writerResultFilePaths[]`、`executorResultFilePath`、`reviewResultFilePath`。
 
 Reviewer 必須載入 `aspire-testing`，並視需要載入 `test-naming-conventions` / `awesome-assertions`。Reviewer 無 Edit 工具，只審查、不修改。
 
@@ -336,6 +419,20 @@ Reviewer 必須驗證：
 Reviewer 收尾前必須寫 `{testProjectDir}/.orchestrator/reviewer-result/{ControllerName}.reviewer-result.json`。寫失敗即 blocker。
 
 Reviewer 回傳後，Orchestrator 必須用 Glob 確認 `reviewResultFilePath` 落地；不存在即 blocker，不採信回傳文字。
+
+reviewer-result 必須包含 `gateDecision`、`overallRating`、`score`、`endpointAcceptance`、`scenarioAcceptance`、Aspire compliance evidence 與 canonical `tokenEstimateInputs`。artifact、attempt isolation、no-self-read gates 通過後執行：
+
+```bash
+node .codex/scripts/validators/validate-aspire-scenario-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} [...] --reviewer {reviewResultFilePath} --require-review-pass [--require-single-writer]
+```
+
+`gateDecision` 只允許 `pass`、`pass_with_warnings`、`fail`、`blocked`。有效 scenario missing、endpoint missing、mismatch 或 fail/blocked 都使 final gate 失敗；Executor 全綠不得覆蓋 Reviewer acceptance。
+
+所有 phase closeout、`phaseDurations`、`profilingSummary` 與 `overallWallClock.end` 寫入後，final report 前必須執行：
+
+```bash
+node .codex/scripts/run-state.mjs validate --path {p} --require-complete-timing
+```
 
 ### Phase 5：保留 artifacts
 

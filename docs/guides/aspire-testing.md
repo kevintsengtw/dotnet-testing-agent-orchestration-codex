@@ -94,7 +94,7 @@ AppHost 服務名: bookingapi
 
 - Analyzer 產出 `validators` 與端點 `errorResponses`
 - Writer 用 `.And.Satisfy<ValidationProblemDetails>(...)` 驗證 `Errors` 字典的 key 存在性 + 錯誤訊息內容；`GET /health` 預期 200 OK
-- 若 WebApi 未註冊 Health Checks 導致 `GET /health` 404，Executor 可在 production 窄例外授權下加 `AddHealthChecks()` + `MapHealthChecks("/health")`，並記入 `fixHistory` 與生產 Bug/修改紀錄
+- 若 WebApi 未註冊 Health Checks 導致 `GET /health` 404，回報 `AppHost 非測試就緒` / `requiresUserApproval`；Executor 不修改 production / AppHost
 
 ---
 
@@ -196,7 +196,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 
 **說明**：Aspire 13.1.0+ Redis TLS 預設啟用，測試連線出現 TLS / SSL 憑證錯誤。
 
-**解法**：在 AppHost / fixture 對 Redis resource 加 `.WithoutHttpsCertificate()`。此為 Executor 三類 production 窄例外之一，會記入 `fixHistory` 與生產 Bug/修改紀錄。
+**解法**：Aspire 13.1+ 由 test fixture 在 `BuildAsync()` 前對 Redis resource 加 `.WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma）。不得修改 AppHost / production；net8 / net9 不產生此段。
 
 ---
 
@@ -204,7 +204,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 
 **症狀**：`TimeoutException` / Resource readiness timeout / `HttpRequestException`，AppHost + 容器啟動過慢。
 
-**解法**：對容器 resource 加 `.WithLifetime(ContainerLifetime.Session)`（Aspire 9.0+），讓容器在整個測試 session 共用而非每測試重啟。此為 Executor 三類 production 窄例外之一。必要時搭配 `WaitFor` 確認服務就緒。
+**解法**：fixture 使用有界 `WaitForResourceHealthyAsync` 與通用持久化 sanitizer，逾時點名 Resource 並快速失敗。sample AppHost 採拋棄式容器，不因缺少 `ContainerLifetime.Session` 或 data volume 判錯，也不修改 production / AppHost。
 
 ---
 
@@ -253,19 +253,20 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 ### Phase 1：Analyzer 分析
 
 - 從 AppHost `Program.cs` 與 `.csproj` 解析 Resource graph，**不讀** Controller 細節以外的無關原始碼
-- 輸出 `appHostInfo`（含 `aspireVersion`）、`resources[]`、`projectReferences[]`、`dependencyGraph`、`containerLifetime`、`dataVolumes`
+- 輸出 `appHostInfo`（含 `aspireVersion`）、`resourceCatalog[]`、`projectReferences[]`、`dependencyGraph`、`containerLifetime`、`dataVolumes`
 - `apiProjectInfo`（含 `endpoints`、`dbContext`、`validators`）以 HTTP endpoint 為粒度識別待測端點
-- `existingTestInfrastructure`、`suggestedTestScenarios`、`projectContext`、`sourceCodeContext`
+- `endpointCatalog[]`、`scenarioCatalog[]`、`scenarioReviewSummary`、`userProvidedScenarioInput`、`existingTestInfrastructure`、`suggestedTestScenarios`、`projectContext`、`sourceFileIndex[]`
+- 正式 analysis 禁止嵌入完整 `sourceCodeContext`；下游只按需讀 target-relevant source
 - `projectContext.testFramework` 固定 `"xunit"`；`projectContext.targetFramework` 取自被測 API 專案；`requiredSkills` 固定 `["aspire-testing"]`
 - 產出 compact JSON 寫入 `.orchestrator/analysis/{ControllerName}.analysis.json`
 
 ### Phase 2：Writer 撰寫
 
 - 先讀 analysis.json，再載入 `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`（**不得**載 unit / TUnit / integration 技能）
-- **必用**：`DistributedApplicationTestingBuilder`、`app.CreateHttpClient("servicename")`、`AspireAppFixture` + `IAsyncLifetime`、`[CollectionDefinition]` + `ICollectionFixture<T>`、必要時 `ContainerLifetime.Session` / Respawn / `App.GetConnectionStringAsync("resourceName")`
+- **必用**：`DistributedApplicationTestingBuilder`、`app.CreateHttpClient("servicename")`、`AspireAppFixture` + `IAsyncLifetime`、`[CollectionDefinition]` + `ICollectionFixture<T>`、有界 Resource readiness、通用 sanitizer、必要時 Respawn / `App.GetConnectionStringAsync("resourceName")`
 - **不得用**：`WebApplicationFactory`、程式化 Testcontainers、`IConfiguration.GetConnectionString()`、`<OutputType>Exe</OutputType>`
 - 端點範圍硬邊界（P3）：prompt 端點 > Analyzer `suggestedTestScenarios` / `endpoints` > 整個 Controller；不得擴大到 sibling
-- `scenarioCount > 15` 時分兩批（先基礎設施、後測試案例 + 風格統一指令）
+- 每個 target 固定一個 `single/full` Writer，同時完成 infrastructure 與全部有效 scenarios；不依 `scenarioCount` split，案例數不受限制，失敗時 fail closed
 - P4 版本政策：既有 `.csproj` 套件不升不降，Aspire 系套件版本對齊 AppHost（8.x / 9.x / 13.x 不混），缺套件才 add 最低版
 - 寫 `writer-result.json`；Orchestrator 讀實體檔做 artifact gate（`endpointsCovered` 須為明確清單，`skillsLoaded` 含 `aspire-testing`；缺欄 / scope mismatch 可 bounded re-dispatch 最多 2 次）
 
@@ -274,13 +275,13 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 - Step 0 `docker info`（Docker 必要，無退路）→ Step 0.5 `dotnet workload list`（NuGet `Aspire.AppHost.Sdk` 可免 workload）→ `dotnet build -p:WarningLevel=0 /clp:ErrorsOnly` → **`dotnet test --no-build --blame-hang-timeout <10m|15m>`**
 - 多目標時 Executor **循序執行**（AppHost 啟動與 Docker 容器不可並行互搶）
 - 解讀 xUnit 通過 / 失敗 / 略過數（來自實際輸出，禁編造）
-- 修正迴圈最多 **5 輪**；原則上只改測試碼；production 窄例外僅三類：**Health Checks 缺失、`ContainerLifetime.Session`、Redis TLS**，須記入 `fixHistory` 與 final report
+- 修正迴圈最多 **5 輪**且只改測試專案；任何 production / AppHost 修改都回報 blocker / `requiresUserApproval`
 - 寫 `executor-result.json`（`dockerStatus` / `aspireWorkloadStatus` / `buildResult` / `testResult` / 通過數 / `fixRounds` / `fixHistory` / `addedPackages`）
 
 ### Phase 4：Reviewer 審查
 
 - 載入 `aspire-testing`，視需要載 `test-naming-conventions` / `awesome-assertions`；Reviewer 無 Edit，只審查不修改
-- 驗證：`DistributedApplicationTestingBuilder` 正確使用且無 `WebApplicationFactory`；`CreateHttpClient("name")` 與 AppHost `AddProject("name")` 一致；Collection Fixture / `IAsyncLifetime` / `ContainerLifetime.Session` / Respawn 合理；執行方式為 `dotnet test`（非 `dotnet run`）；csproj 含 `Microsoft.NET.Test.Sdk` + `xunit` + `Aspire.Hosting.Testing` 且無 `OutputType=Exe`；端點覆蓋只針對 P3 範圍
+- 驗證：`DistributedApplicationTestingBuilder` 正確使用且無 `WebApplicationFactory`；服務名一致；有界就緒 / sanitizer / Redis TLS test-side 中和符合版本；sample 拋棄式容器不要求 Session/data volume；執行方式為 `dotnet test`；endpoint/scenario acceptance 完整且無 production mutation
 - 寫 `reviewer-result.json`（`overallRating` / `issues` / `missingTestCases` / `endpointCoverage` / `qualityGates`）；Orchestrator 用 Glob 確認落地，不採信回傳文字
 
 ---
@@ -290,7 +291,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 修改流程**禁止自動觸發**。Orchestrator 呈現完整 Reviewer 結果後**等待使用者決定**是否啟動修改、要套用哪些建議。使用者同意後：
 
 1. 只 dispatch Writer 或 Executor 做測試側修改。
-2. 若需 production code（`src/**`、constructor、public API、加 seam），必須先標記 `requiresUserApproval` 並通過批准閘門；唯三類 Aspire 窄例外（**Health Checks / `ContainerLifetime.Session` / Redis TLS**）可由 Executor 在窄例外授權下做最小修改。
+2. 若需 production / AppHost code（`src/**`、constructor、public API、加 seam、Health Checks、volume、lifetime、Redis TLS），必須先標記 `requiresUserApproval` 並通過批准閘門；Executor 沒有自動 production 窄例外。
 3. 修改後更新 `writer-result` / `executor-result`。
 4. Reviewer 以 re-review 模式確認前次 issues 是否解決，不展開無限新增審查。
 

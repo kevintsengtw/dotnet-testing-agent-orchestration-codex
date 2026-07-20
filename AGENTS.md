@@ -20,7 +20,7 @@ dotnet-testing Agent Orchestration for Codex。提供 **Codex 原生 Subagent** 
 - `.codex/agents/` — 16 個自訂 Subagent 定義檔（`.toml`）：unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`（analyzer / writer / executor / reviewer）
 - `.codex/skills/` — 4 個 Orchestrator Skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）+ 測試執行器 Skill（`dotnet-test`）+ 固定上游版本的測試情境 Skill（`unit-test-scenarios`）
 - `.codex/config.toml` — Codex workspace 設定（啟用 `multi_agent`、設定 agent thread 上限與 runtime 上限）
-- `.codex/scripts/` — Estimated Token Usage 估算器（零相依、自含；需 Node.js）
+- `.codex/scripts/` — `run-state`、Estimated Token Usage 與四工作流程 runtime validators（零相依、自含；需 Node.js）
 
 > 技術型 Agent Skills（`dotnet-testing-*`）由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需另行安裝（直接複製到 `.codex/skills/`）。
 
@@ -31,8 +31,20 @@ Unit workflow 接受使用者以任意格式提供測試情境與資料。合理
 Orchestrator Skill 載入主對話後，透過 Codex 原生 **SpawnAgent** 依序調度 4 個 Subagent。
 工作流程額外產出 `run-state.json`（可稽核的狀態檔），記錄各階段 wall-clock 時間與結果，為官方階段耗時與整體耗時的唯一真實來源。
 
+正式執行契約：
+
+- 四角色使用 fresh/self-contained context，不讀 prior-attempt artifacts、workspace 外部 memory 或未核准 handoffs。
+- 每個 target 固定一個 Writer，不依 method、scenario、endpoint、Resource 或輸出大小 split。
+- Analyzer scenario 數不設上限；唯一 Writer 必須完整承接。遇到 context/output limit 時 fail closed，不恢復 split、不刪減案例。
+- Executor artifact 是 build/test runtime truth；Reviewer 審查品質與跨 artifact 一致性，不自行重跑測試覆蓋 Executor evidence。
+- 正式流程不使用 RAG；canonical artifacts、isolation、read scope、scenario/endpoint acceptance、strict timing 與 production mutation 都是正式 gates。
+
+## 測試專案邊界
+
+`samples/*/tests/` 是可重複使用的空白起點。工作流程產生的測試檔、fixtures、`.orchestrator/`、`bin/`、`obj/`、`TestResults/` 與 csproj 修改是 byproduct，不得 commit。驗證完成後應還原，再以 `git status` 確認乾淨。
+
 ## 與 Claude 版的差異
 
 - **Token 用量：估算版（非 billing）** — Codex native SpawnAgent subagent 的全流程**真實** token 無可靠 truth source（實證確認），故不回報正式用量。改提供 optional **`Estimated Token Usage`**：四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project <測試專案>`，以**零相依的內建 `chars-heuristic`** 對各 subagent 的 visible context 做估算，**僅供相對成本比較，明確排除 hidden framing / internal reasoning / cached input / provider billing，不可用於計費或任何 correctness gate**；estimator 缺檔/失敗時優雅降級為 unavailable，不阻塞工作流程。細節見 [docs/guides/token-usage-estimation.md](docs/guides/token-usage-estimation.md)。
 - **Dispatch 機制**：Codex 原生 SpawnAgent（非 Claude Agent tool）；額外產出 `run-state.json` 可稽核狀態檔。
-- **產出非決定性**：同一輸入下，測試數 / 分割分組 / skill 選擇有 run-to-run 波動，屬 Codex 多 subagent dispatch 的已知限制。
+- **產出非決定性**：同一輸入下，Analyzer scenario 數、測試數、技術型 Skill 選擇與 wall-clock 可能有 run-to-run 波動；Writer topology 固定為每 target 一個，不屬於可波動項目。

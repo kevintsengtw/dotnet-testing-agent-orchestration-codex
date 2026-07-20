@@ -40,7 +40,7 @@ Analyzer 讀原始碼，識別目標類型、依賴與 TUnit 功能需求，產�
 | 類型 | 特徵 | 處理 |
 |---|---|---|
 | Service | 有可注入依賴（Repository / TimeProvider / IFileSystem / 介面）| 正常 mock 流程 |
-| Validator | `AbstractValidator<T>` | `forbidWriterSplit: true`，永不分割；展開巢狀 Validator 與 CrossField 規則 |
+| Validator | `AbstractValidator<T>` | 保留 `forbidWriterSplit: true` 相容性 metadata；正式 topology 與其他 target 相同，皆為單一 Writer；展開巢狀 Validator 與 CrossField 規則 |
 
 > 目標類型由繼承鏈判定：繼承 `AbstractValidator<T>` → `"validator"`，其餘 → `"service"`。Validator 跳過方法簽章分析（規則在建構子中），但仍做建構子依賴分析（如注入的 `TimeProvider`）。
 
@@ -62,6 +62,12 @@ Analyzer 從 `.csproj` 取得 `<TargetFramework>`，再向上查找方案檔，*
 | `net9.0` | **不含**版本後綴的 `.slnx`（如 `Practice.TUnit.slnx`）|
 | `net10.0` | 含 `Net10` 的 `.slnx`（如 `Practice.TUnit.Net10.slnx`）|
 
+### 3.2 Minimal read scope 與 token-efficiency gate
+
+Analyzer 的搜尋根固定在 assigned source project 與 test project，不得從 workspace root 搜尋 `coverageInputs`、artifact schema 或下游 contract。除了 run-state 已計入的 assigned Analyzer definition，其他 `.codex/agents/**`、任何 `dotnet-testing-orchestrator-*` Skill 與 workflow definitions 都不是被測目標分析輸入；即使位於同一 fresh workspace，也由 `validate-tunit-role-read-scope.mjs --role analyzer` 拒絕並停止 Writer dispatch。
+
+被測 source/project/test files、solution／集中式 project configuration、明確 migration input 與實際需要的技術型 Skills 仍可讀取。技術型 Skill 載入會隨 target 實作與模型判斷變動，因此不以「一律禁止 Skill」換取較低 token 數；gate 只排除可明確判定與 Analyzer 任務無關的 orchestration reads。
+
 確認存在的相對路徑填入 `projectContext.solutionPath`，供 Executor 建置使用；找不到時設 `"UNKNOWN"` 並警告。
 
 ### 3.2 Matrix 與 Arguments 的 TUnit 限制
@@ -82,42 +88,29 @@ Writer 在 Step 0 讀 analysis.json，按 `requiredSkills` 載入 Agent Skills�
 **斷言**：優先用 AwesomeAssertions（`.Should()`）；Validator 用 FluentValidation TestHelper（`ShouldHaveValidationErrorFor` / `ShouldNotHaveValidationErrorFor`）。
 **TUnit 硬規則**：所有 `[Test]` 方法為 `async Task`（無 await 時尾端補 `await Task.CompletedTask`）；`.csproj` 設 `<OutputType>Exe</OutputType>`、**禁** `Microsoft.NET.Test.Sdk` / `xunit` / `<OutputType>Library</OutputType>`；生命週期用 `[Before(Test)]` / `[After(Test)]`。
 
-### 4.1 大型類別 Writer 分割策略
+### 4.1 單一 Writer 策略
 
-**觸發條件**（須同時滿足）：`methodCount > 5` 或 `scenarioCount > 20`，**且** `forbidWriterSplit != true`。觸發後啟動**最多 2 個平行 Writer**。
+每個 target 固定只 dispatch **一個 Writer subagent**，不受方法數、scenario 數、`targetType` 或 `forbidWriterSplit` 影響。Analyzer 仍可產出任意數量的合理情境；單一 Writer 必須完整處理全部有效 `scenarioCatalog`、`methodScenarioCounts` 與 constructor guards，不得刪減或交給第二個 Writer。
 
-**分組規則（greedy 均衡）：**
+預設產出 `{ClassName}Tests.cs`。若因組織需要，同一 Writer 可以產生多個測試檔，但所有檔案、methods、scenario coverage 與 telemetry 必須集中在唯一的 `{ClassName}.writer-result.json`。
 
-1. 將 `methodScenarioCounts` 按 scenario 數量由多至少排序。
-2. 貪婪地將方法分配至兩組，讓兩組 scenario 總數盡量均衡。
-3. Writer 1 負責第一組、Writer 2 負責第二組；同一方法的所有測試案例絕不跨組。
-4. 兩個 Writer **平行**啟動（單一 Agent tool 呼叫 message）。
+若 Writer 遇到 context / output limit，phase 必須 fail closed 並保留 blocker；不得臨時退回 split，也不得靜默縮減測試範圍。
 
-**輸出檔案命名：** Writer 1（主要組）`{ClassName}Tests.cs`；Writer 2（分割組）`{ClassName}_{代表方法/群組}Tests.cs`。
+### 4.2 單一 Writer 多檔一致性
 
-### 4.2 多 Writer 風格統一指令（分割時加入每個 Writer prompt）
-
-這是 Codex 版針對「split 多檔風格漂移」的強化。分割時所有 Writer 必守逐檔一致：
-
-- **例外斷言**：統一 `.Throw<T>()`，禁 `.ThrowExactly<T>()`
-- **lambda 委派**：統一 `var act = () =>`，禁 `Action act = () =>`
-- **物件比較**：統一 `BeEquivalentTo()`
-- **FakeTimeProvider 欄位命名**：統一 `_timeProvider`（禁混用 `_fakeTimeProvider`）
-- **`using` 排列順序**：AwesomeAssertions → AutoFixture → TimeProvider → NSubstitute → 介面 → Model → Service
-
-> 跨檔案一致性由 **Writer 風格統一指令 + Orchestrator artifact gate** 強制，並由 Reviewer §4h（多 Writer 分割時）顯式把關。
+同一 Writer 產生多個測試檔時，仍由 Writer 自我檢查與 Reviewer §4h 驗證 `_timeProvider` 命名、例外斷言、物件比較、using 排序與共用 fixture 一致性。只有一個測試檔時略過跨檔檢查。
 
 ### 4.3 方法範圍硬約束（Codex 強化）
 
-Writer Step 0.5 建立 `effectiveMethodsToTest`（來源優先序：split assignment 方法清單 > prompt `methodsToTest` / `methodName` / `assignedMethods` / `writerControls.methods` > Analyzer artifact `methodsToTest` > 全類別）。若非空，只能撰寫這些方法的測試，method-scope 不得擴寫成整個 class。建構子 null-guard 只有 assignment 明確含 `Constructor` 的 Writer 可寫，split 時不得各自重複。`effectiveMethodsToTest` 必須落到 `testClasses[].methodsCovered`。
+Writer Step 0.5 建立 `effectiveMethodsToTest`（來源優先序：prompt `methodsToTest` / `methodName` / `assignedMethods` / `writerControls.methods` > Analyzer artifact `methodsToTest` > 全類別）。若非空，只能撰寫這些方法的測試，method-scope 不得擴寫成整個 class。全類別 workflow 的單一 Writer 負責全部 constructor null guards；method-scope 只有明確包含 `Constructor` 時才處理。`effectiveMethodsToTest` 必須落到 `testClasses[].methodsCovered`。
 
 ### 4.4 Writer Artifact 完整性 Gate
 
-Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writer-result.json` 驗欄位齊全（`writerResultFilePath`、`testFilePaths`、`testCaseCount`、`testMethodCount`、`testClasses[].className/filePath/methodsCovered`、`skillsLoaded`）+ 方法範圍檢查（`methodsCovered` 必為明確方法名清單，不得用 `All`/`FullClass`/空陣列/敘述文字；split / method-scope 不得溢寫；ctor 測試只能在單一 assignment）。缺欄 / 不一致 → 不進 Executor，可 **bounded re-dispatch Writer 最多 2 次**（只補缺漏，**不重啟整個 workflow**），仍不行則判 blocker。
+Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writer-result.json` 驗欄位齊全（`writerResultFilePath`、`testFilePaths`、`testCaseCount`、`testMethodCount`、`testClasses[].className/filePath/methodsCovered`、`skillsLoaded`、`scenarioCoverage`）+ 方法與情境範圍。`methodsCovered` 不得用 `All`/`FullClass`/空陣列/敘述文字；全類別時 scenario coverage 必須恰好等於全部有效 catalog。缺欄 / 不一致 → 不進 Executor，可 **bounded re-dispatch 同一 Writer 最多 2 次**（只補缺漏，**不重啟整個 workflow**），仍不行則判 blocker。
 
 ### 4.5 階段間主動釋放 agent（Codex 強化）
 
-Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **主動關閉已完成 Writer agents**，釋放後續 phase 的 runtime thread slots（Analyzer→Writer、Executor→Reviewer 同樣處理）。若 runtime 不支援主動關閉已完成 agent，Orchestrator 須停手並回報，不得改用限制 Writer 並行數或 serialize Writer 作為替代。此舉只釋放已完成 agent，不改測試 / 分割 / correctness。
+Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **主動關閉已完成 Writer agents**，釋放後續 phase 的 runtime thread slots（Analyzer→Writer、Executor→Reviewer 同樣處理）。多 target 時每個 target 各一個 Writer 可平行；同一 target 永遠只有一個正式 Writer assignment。此舉只釋放已完成 agent，不改測試、topology 或 correctness。
 
 ---
 
@@ -137,7 +130,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 
 ## 6. Phase 4 Reviewer
 
-讀測試碼 + 三個交接檔（analysis/writer-result/executor-result），品質審查。Reviewer 一律執行，不因 Executor 全綠而跳過；有完整審查 / re-review 兩模式。Reviewer **無 `Edit` 工具**，只記錄不修改。
+讀測試碼 + 三個交接檔（analysis/writer-result/executor-result），品質審查。Reviewer 一律執行，不因 Executor 全綠而跳過；有完整審查 / re-review 兩模式。Reviewer **無 `Edit` 工具**，只記錄不修改。寫入 reviewer-result 前完成 schema 自我驗證，Write／apply_patch／shell write 沒有 error 即視為成功；不得因工具沒有額外成功訊息而讀回自己的 artifact。`validate-tunit-role-read-scope.mjs --role reviewer` 會拒絕這項非必要 self-read，但不改寫 artifact-backed correctness 結論。
 
 **reviewer.toml 明文 7 大審查面向**：
 
@@ -151,7 +144,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | 4f 並行與執行控制 | `[NotInParallel]` / `[Retry]` / `[Timeout]` 合理性 |
 | 4g 覆蓋率 | Happy / 邊界 / 例外 / 分支；建構子 null-guard；§4g-scope 只針對 `methodsToTest`；§4g-2 Validator 巢狀 + CrossField 覆蓋 |
 
-> §4h 跨檔案一致性（`_timeProvider` 命名、`.Throw<T>()`、`var act = () =>`、`BeEquivalentTo()`、`using` 排序）僅在多 Writer 分割時檢查。
+> §4h 跨檔案一致性（`_timeProvider` 命名、例外斷言、`BeEquivalentTo()`、`using` 排序）在單一 Writer 產生多個測試檔時檢查。
 
 **修改流程（post-review approval gate）**：Reviewer 回傳後 Orchestrator 呈現完整報告（`overallScore` / `issues` / `missingTestCases`）並**等待使用者明確指示**才啟動修改流程（Writer 修改 → Executor → Reviewer re-review）。**禁止自動觸發、禁止預先授權**（即使初始請求含「跑完後套用全部建議」，後半段只視為意圖說明）。
 
@@ -172,7 +165,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | 交接檔 | 寫入者 | 路徑 |
 |---|---|---|
 | `{ClassName}.analysis.json` | Analyzer | `.orchestrator/analysis/` |
-| Writer artifact（逐 assignment 唯一）| Writer | `.orchestrator/writer-result/`；split 時每個 assignment 各自一份可獨立 poll 的 canonical artifact，路徑須能回溯該 assignment 與其 `testFilePath`|
+| `{ClassName}.writer-result.json` | Writer | `.orchestrator/writer-result/`；每 target 唯一，包含單一 Writer 產出的全部測試檔與 coverage |
 | `*.executor-result.json` | Executor | `.orchestrator/executor-result/` |
 | `{ClassName}.reviewer-result.json` | Reviewer | `.orchestrator/reviewer-result/` |
 | `run-state.json` | Orchestrator | `.orchestrator/` |
@@ -195,12 +188,12 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | 階段 | 執行方式 | 原因 |
 |---|---|---|
 | Analyzer | 平行（逐 target）| 互不依賴 |
-| Writer | 平行（逐 target，且各 target 仍可 per-class 分割）| dispatch 單位是「Writer assignment」非 target，故多目標可產生 > target 數的 Writer |
+| Writer | 平行（逐 target，每 target 恰為一個 Writer）| 不同 target 可平行；同一 target 不再 split |
 | Executor | 循序 | 同方案 `dotnet build` / `dotnet run` 不可並行 |
 | Reviewer | 平行（逐 target）| 獨立審查 |
 
 - 並行 SpawnAgent 數受 `.codex/config.toml` `[agents] max_threads` 限制。
-- **thread-ceiling 自癒**：分割使並行 Writer 變多時可能逼近 agent thread limit；遇已知 runtime 不穩定家族時做 **bounded re-dispatch**（每 phase 最多 2 次，re-dispatch 前須確認前一次同角色 dispatch 沒留下可用 canonical artifact 避免雙重 truth，`restartCount=0`），`run-state.redispatchEvents` 記錄。配合 §4.5 階段間主動釋放降低撞限機率。
+- **thread-ceiling 自癒**：多 target 平行 assignment 仍可能逼近 agent thread limit；遇已知 runtime 不穩定家族時做 **bounded re-dispatch**（每 phase 最多 2 次，re-dispatch 前須確認前一次同角色 dispatch 沒留下可用 canonical artifact 避免雙重 truth，`restartCount=0`），`run-state.redispatchEvents` 記錄。配合 §4.5 階段間主動釋放降低撞限機率。
 - **多目標 Step 0**：使用者未提供檔案路徑時，Orchestrator 先用 `Grep` 定位目標（指定版本變體則限定對應目錄）；找不到不得自行撰寫程式碼。
 
 ---

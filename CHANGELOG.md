@@ -4,6 +4,66 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.1.0] - 2026-07-19
+
+本版在不改變 Analyzer → Writer → Executor → Reviewer 四階段入口與主要功能的前提下，完成 Unit、TUnit、Integration、Aspire 四套工作流程的 Token Usage 最佳化、Single Writer 統一與 correctness contract 強化。
+
+### 重大變更
+
+- **四工作流程統一 Single Writer topology**：每個 target 固定一個 `single`／`full` Writer；不再依 public method、scenario、endpoint、Resource 或預估輸出大小 split。多 target 仍可各有一個 Writer，但同一 target 不再拆成多個 Writer assignments
+- **Analyzer 案例數不設上限**：取消 split 不代表限制案例數。Writer 必須承接本次 Analyzer 接受的全部 scenarios；若遇到 context／output limit，attempt 必須 fail closed，不得恢復 split 或刪減案例
+- **Fresh/self-contained dispatch**：四角色固定 `fork_turns: "none"`、`contextForkPolicy=none`、`externalMemoryPolicy=forbid`，並以 attempt-isolation 與 role-read-scope validators 拒絕 prior-attempt、archive、外部 memory、未核准 handoff 與 unrelated orchestration reads
+- **Canonical artifact truth chain**：Analyzer、Writer、Executor、Reviewer 必須產生可解析的 canonical JSON；scenario／endpoint／Resource provenance、runtime evidence、Reviewer acceptance 與 `run-state.json` timing 需跨 artifact 對得起來
+- **Reviewer 不重跑 runtime**：Executor artifact 是 build/test truth；Reviewer 審查完整性、品質與契約一致性，不以自行重跑測試覆蓋 Executor evidence
+- **正式流程不使用 RAG**：角色只讀 prompt 指定的 source/project、repo-local Skills 與本次核准 handoffs；過去 RAG/MCP 探索只保留在歷史研究文件
+
+### 各工作流程差異
+
+- **Unit**：每 target 一個 Writer；保留使用者提供 scenarios／test data 的優先權、constructor guards、完整 scenario mapping 與多 target correctness gate
+- **TUnit**：每 target 一個 Writer；Executor 仍使用 SourceGenerated / Microsoft.Testing.Platform 的 `dotnet run`，不改成 `dotnet test`；Validator 與 data-driven cases 的完整度由 TUnit-specific contract 驗證
+- **Integration**：每個 Controller／target 一個 Writer，同一測試專案的多 target Writers 為避免 shared infrastructure ownership 衝突而循序執行；Executor 仍使用 xUnit `dotnet test`、Docker／Testcontainers 與 project-level regression
+- **Aspire**：每個 Controller／endpoint slice 一個 `single/full` Writer；保留 AppHost Resource graph、`DistributedApplicationTestingBuilder`、Resource readiness、Docker hard prerequisite 與版本對應的 blame hang timeout
+
+### Estimated Token Usage 實驗結果
+
+| 工作流程 | 正式比較範圍 | End-to-end estimate | Writer estimate／input | 品質結論 |
+| --- | --- | ---: | ---: | --- |
+| Unit | Net10 multi-target valid-pair median | **-16.58%** | Writer **-32.75%** | Candidate scenario median 與 executed-test median 均在 attribution 門檻內；Reviewer missing 0 |
+| TUnit | Net10 `ReservationService` Split B1 vs Single Writer S1 | **-15.7%** | Writer **-26.4%** | 53/53 passed；Reviewer A；missing 0 |
+| Integration | Net9 `OrdersController` two-step B1 vs single S1 | **-28.568%** | Writer **-49.153%** | endpoints/scenarios/methods 相同；49/49 passed；missing 0 |
+| Aspire | Net9 `BookingsController` B1 vs S1 | raw total **-24.91%** | Writer **-45.05%**；Writer input **-49.86%** | 所有 accepted scenarios 均實作；Reviewer A/97；scenario breadth 不同，raw total 不全部歸因於 topology |
+
+以上數字均為 `.codex/scripts/estimate-token-usage.mjs` 對 subagent **visible context** 的相對估算，不含 hidden framing、internal reasoning、cached input accounting 或 provider billing usage；不可作為帳務用量、固定節省承諾或 correctness gate。
+
+### Correctness 與品質
+
+- 四工作流程的正式 candidate、multi-target／scale 與 net8/net9/net10 portability gates 均保留真實 build/run evidence、Reviewer acceptance、strict timing、attempt isolation 與 production mutation 檢查
+- 沒有觀察到因移除 split 而造成 Analyzer 已接受 scenario 遺漏、runtime 測試縮減或 Reviewer 品質退化
+- Analyzer scenario 數與技術型 Skill 選擇仍可能因 target 實作與模型非決定性變動；正式 acceptance 檢查本次有效 scenario 的完整承接，不以固定案例數判定成功
+- `run-state.json` 仍是官方 wall-clock timing 的唯一 truth source；Estimated Token Usage 只作 optional telemetry
+
+### 公開執行資產
+
+- 將 10 個正式 runtime validators 移入 `.codex/scripts/validators/`，與 `run-state.mjs`、`estimate-token-usage.mjs` 一起隨 `.codex/` 發布
+- 四個 Orchestrator 不再引用 public repo 未發布的根目錄 `scripts/`；修正 v1.0.4 public bundle 中 unit scenario validator 路徑缺檔問題
+- 新增 public release asset validator，檢查 16 個 Agents、6 個內建 Skills、runtime scripts、Orchestrator `node` references 與 sample byproducts
+
+### 相容性與升級
+
+- 四個 Orchestrator Skill 名稱、使用者呼叫方式、Analyzer → Writer → Executor → Reviewer 四階段與各 framework runner 均維持不變，故版本升為向下相容的 minor release `v1.1.0`
+- 升級時應完整更新本 repo 發布的 `.codex/agents/`、4 個 Orchestrator Skills、`.codex/scripts/` 與 `.codex/config.toml`；不要只替換單一 `SKILL.md`，否則會缺少新的 runtime validators 與 isolation contract
+- 外部 `dotnet-testing-agent-skills` 仍需另行安裝；本版未修改其正式規則來源
+- `samples/*/tests/` 仍是空白練習起點；工作流程生成的測試、`.orchestrator/`、`bin/obj/TestResults` 與 csproj 修改不屬於發布內容
+
+### 驗證
+
+- Node regression **149/149**、目前工作樹 `.mjs` syntax **40/40**、16 個 Agent TOML parse 全數通過
+- strict public-sync preview 驗證 16 agents、6 built-in skills、12 runtime scripts、80 個 Orchestrator runtime reference occurrences（22 unique）與 34 個 public Markdown links 全部可解析
+- fresh public-preview smoke：Unit Net10 `SubscriptionService` **50/50**、TUnit Net10 `ReservationService` **55/55**、Integration Net9 `OrdersController` **37/37**、Aspire Net9 `BookingsController` **60/60**，合計 **202/202 passed、0 failed、0 skipped**
+- 四套均為每 target 唯一 `single/full` Writer，canonical missing scenarios 為 0；Integration／Aspire production source hash 零漂移
+- Aspire 首個 60/60 Executor attempt 因讀取 workspace 外 memory 被 isolation gate 拒絕；fresh self-contained Executor 完整重跑後仍為 60/60、0 fix，證明 gate 不以 runtime 綠燈取代執行邊界
+- 所有 smoke byproducts 均留在 ignored fresh workspaces，正式 `samples/*/tests/` 維持初始 scaffold
+
 ## [v1.0.4] - 2026-07-13
 
 新增:單元測試工作流程支援使用者以任意格式提供測試情境與測試資料，並整合固定版本的 `unit-test-scenarios` Skill 作為無輸入時的情境產生來源。

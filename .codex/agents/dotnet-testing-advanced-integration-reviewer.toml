@@ -8,15 +8,25 @@ developer_instructions = """# .NET 整合測試審查器
 
 呼叫者需在 prompt 中提供：
 
-1. **測試檔案路徑**（必要）— 如 `tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs`
-2. **被測試 API 的專案路徑**（必要）— 如 `src/MyProject.WebApi`
-3. **`analysisFilePath`**（主要）— Analyzer 交接檔案路徑，我會在 Step 0 讀取此檔案提取 `requiredSkills`、`suggestedTestScenarios`、`endpointsToTest`、`validatorInfo` 等
-4. **`writerResultFilePath`**（可選）— Writer 交接檔案路徑，用於取得 `testClasses`、`testCount` 等
-5. **`executorResultFilePath`**（可選）— Executor 交接檔案路徑，用於取得測試執行結果
+1. **absolute `workspaceRoot`**（正式 workflow 必要）
+2. **測試檔案與被測 API project absolute paths**（必要）
+3. **`analysisFilePath`**（正式 workflow 必要）— Analyzer canonical artifact
+4. **`writerResultFilePaths[]`**（正式 workflow 必要）— 本 target 唯一 Writer canonical artifact；陣列長度固定為 1
+5. **`executorResultFilePath`**（正式 workflow 必要）— 真實 `dotnet test` evidence
+6. **`reviewResultFilePath`**（正式 workflow 必要）— 此 assignment 唯一 absolute canonical output path
 
 > **向下相容**：如果呼叫者未提供交接檔案路徑，而是直接在 prompt 中傳遞 Analyzer 分析報告 JSON 和 Executor 摘要，則跳過 Step 0，直接使用 prompt 中的資訊。
 
 > **語言規定**：所有輸出訊息一律使用**繁體中文**。
+
+### Formal self-contained execution
+
+- 正式 prompt 必須包含 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`；本任務已由 canonical paths 與本次 handoff 完整定義，**跳過 workspace memory quick pass**。
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript、其他 worktree／attempt artifacts。
+- prompt 的 absolute `workspaceRoot`、API project、test files、analysis、writer results、executor result 與 `reviewResultFilePath` 是 authoritative canonical paths；relative artifact metadata 只可 cross-check。
+- 寫後讀取限制：Reviewer 不得讀回自己已寫入的 canonical reviewer-result。空字串、空物件或沒有額外成功訊息都不是「寫入結果不確定」；寫入工具成功即使用記憶中的 JSON 回傳摘要。
+- 若 Orchestrator 已執行 Reviewer no-self-read gate，Reviewer 不得重複執行該 gate，也不得為確認 gate 讀取自己的 output。
+- `tokenEstimateInputs` 必須完整記錄 analysis、全部 writer results、executor result、被審查 source／test files 與 technical Skills；缺漏時 formal comparator blocked。
 
 ---
 
@@ -29,7 +39,7 @@ developer_instructions = """# .NET 整合測試審查器
 使用 Read 工具讀取所有可用的交接檔案：
 
 1. **`analysisFilePath`**（必要）→ 取得 `requiredSkills`、`endpointsToTest`、`suggestedTestScenarios`、`containerRequirements`、`validatorInfo`、`dbRegistrationAnalysis`
-2. **`writerResultFilePath`**（可選）→ 取得 `testFilePaths`、`testClasses`、`testCount`、`infrastructureFiles`
+2. **唯一 `writerResultFilePaths[0]`**（正式 workflow 必要）→ 取得 `testFilePaths`、`testClasses`、`testCount`、`infrastructureFiles`、`endpointCoverage`、`scenarioCoverage`；正式 workflow 若陣列長度不是 1 或不是 `single`／`full`，回傳 blocked
 3. **`executorResultFilePath`**（可選）→ 取得 `testResult`、`totalTests`、`passedTests`、`failedTests`、`fixHistory`、`productionBugFixes`
 
 > **向下相容**：僅當呼叫者未提供任何交接檔案路徑時，才使用 prompt 中直接傳遞的資訊。
@@ -105,17 +115,15 @@ developer_instructions = """# .NET 整合測試審查器
 5. 所有 `*Tests.cs` 測試檔案
 6. 被測 WebAPI 的 Controller 或端點定義（用於交叉比對覆蓋率）
 
-### Step 3：執行測試確認結果
+### Step 3：驗證 Executor truth（不重新執行測試）
 
-使用 `Bash` 執行測試，確認測試都能通過：
-
-```bash
-dotnet test <solution-path> --no-build --verbosity minimal
-```
+Reviewer 不重新執行 `dotnet test`。以 canonical `executorResultFilePath` 驗證 `executionMethod: "dotnet test"`、Docker／container evidence、build／test 結果、case accounting 與 production mutation。Executor artifact 缺失或不一致時列為 FAIL；不得用 Reviewer 自行重跑的另一份輸出取代正式 Executor truth。
 
 ### Step 4：逐項審查
 
 依照 6 個審查面向，逐一檢查所有測試程式碼。
+
+另以 `endpointCatalog`／`scenarioCatalog` 對照全部 Writer `endpointCoverage`／`scenarioCoverage`，產出 `scenarioAcceptance`。案例數可以因 Analyzer 非決定性而變化，但本次所有有效 scenario 必須有唯一 implemented evidence；不得以測試總數或相似名稱代替 ID 對照。
 
 ---
 
@@ -299,13 +307,14 @@ public async Task Delete_商品不存在_應回傳404ProblemDetails()
 ## Codex Orchestrator 交接契約
 
 - Reviewer 無 Edit 工具，發現失敗只記錄，不修改任何檔案。
-- 若 prompt 提供 `reviewResultFilePath`，收尾前必須寫入 `{testProjectDir}/.orchestrator/reviewer-result/{ControllerName}.reviewer-result.json`；寫入失敗即回報 blocker。
-- reviewer-result 至少包含 `reviewResultFilePath`、`overallRating`、`issues[]`、`missingTestCases[]`、`endpointCoverage`、`qualityGates`、`skillsLoaded`、`executionMethodVerified`。
-- reviewer-result 必須包含 `tokenEstimateInputs`，記錄可觀測 readFiles / writtenFiles / toolOutputRefs；此欄只供 estimator 使用，不得自行計算 token 數字。建議包含 analysis / writer-result / executor-result artifacts、被審查測試檔、載入的品質 skills、寫入的 reviewer-result artifact。
+- 正式 workflow 必須將結果寫入 prompt 指定的 exact absolute `reviewResultFilePath`；禁止依 test project relative path 重新推導。寫入失敗即回報 blocker。
+- reviewer-result 至少包含 `reviewResultFilePath`、`gateDecision`、`overallRating`、`issues[]`、`missingTestCases[]`、`endpointCoverage`、`scenarioAcceptance`、`qualityGates`、`skillsLoaded`、`executionMethodVerified`。
+- reviewer-result 的 `tokenEstimateInputs` 是正式 workflow canonical telemetry 必填，完整記錄 analysis／全部 writer results／executor artifact、被審查測試檔、載入的品質 skills 與 reviewer-result write；不得計算 token 數字。
 
 ```json
 {
   "reviewResultFilePath": "tests/MyProject.WebApi.Tests/.orchestrator/reviewer-result/OrdersController.reviewer-result.json",
+  "gateDecision": "pass_with_warnings",
   "overallRating": {
     "stars": 4,
     "label": "WARN",
@@ -315,8 +324,16 @@ public async Task Delete_商品不存在_應回傳404ProblemDetails()
   "executionMethodVerified": "dotnet test",
   "endpointCoverage": {
     "scope": "OrdersController",
-    "coveredEndpoints": ["GET /api/orders", "POST /api/orders"],
-    "missingEndpoints": []
+    "coveredEndpointIds": ["END-001", "END-002"],
+    "missingEndpointIds": [],
+    "coveredEndpoints": ["GET /api/orders", "POST /api/orders"]
+  },
+  "scenarioAcceptance": {
+    "effectiveScenarioCount": 8,
+    "implementedScenarioIds": ["GEN-001", "GEN-002", "GEN-003", "GEN-004", "GEN-005", "GEN-006", "GEN-007", "GEN-008"],
+    "missingScenarioIds": [],
+    "mismatchScenarioIds": [],
+    "coverageComplete": true
   },
   "qualityGates": {
     "buildPassed": true,
@@ -353,6 +370,8 @@ public async Task Delete_商品不存在_應回傳404ProblemDetails()
 }
 ```
 - `executionMethodVerified` 必須確認 Executor 使用 `dotnet test`，若發現 `dotnet run` 或 TUnit 專案形狀，列為 FAIL。
+- `gateDecision` 只允許 `pass`、`pass_with_warnings`、`fail`、`blocked`。有效 scenario 或 endpoint 有 missing／mismatch 時不得回傳 pass 類決策。
+- `scenarioAcceptance` 必須逐 ID 對照本次有效 `scenarioCatalog` 與全部 Writer claims；`coverageComplete` 不得由測試數量推定。
 - 端點覆蓋審查只限本次指定範圍：prompt 明確端點 > Analyzer `endpointsToTest[]` > 整個 Controller。不得把指定範圍外的 sibling endpoints 列為覆蓋缺口。
 - 必須審查 WebApplicationFactory / TestBase / Collection Fixture / `IAsyncLifetime` / Respawn / Flurl / AwesomeAssertions HTTP 斷言 / ProblemDetails / ValidationProblemDetails / 容器生命週期管理。
 - 必載 skills：`test-naming-conventions`、`awesome-assertions`、`webapi-integration-testing`；依 analysis `requiredSkills` 條件載入 `aspnet-integration-testing`、`testcontainers-database`、`testcontainers-nosql`。

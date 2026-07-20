@@ -4,7 +4,8 @@ import path from "node:path";
 import process from "node:process";
 
 const ESTIMATOR_NAME = "visible-context-token-estimator";
-const ESTIMATOR_VERSION = 2;
+const ESTIMATOR_VERSION = 4;
+const OUTPUT_SCHEMA_VERSION = 2;
 const ESTIMATE_METHOD = "chars-heuristic";
 const CHARS_PER_TOKEN = 3.6;
 const OVERHEAD_FACTORS = {
@@ -31,6 +32,8 @@ function parseArgs(argv) {
       args.workspaceRoot = argv[++i];
     } else if (arg === "--workflow") {
       args.workflow = argv[++i];
+    } else if (arg === "--orchestrator-contract") {
+      args.orchestratorContract = argv[++i];
     } else if (arg === "--help" || arg === "-h") {
       args.help = true;
     } else {
@@ -42,11 +45,12 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    "Usage: node .codex/scripts/estimate-token-usage.mjs --test-project <path> [--workspace-root <path>] [--workflow <label>]",
+    "Usage: node .codex/scripts/estimate-token-usage.mjs --test-project <path> [--workspace-root <path>] [--workflow <label>] [--orchestrator-contract <path>]",
     "",
     "Writes <test-project-dir>/.orchestrator/token-usage-estimate.json.",
     "",
     "--workflow is an optional output label fallback only; estimator behavior is driven by run-state and artifact metadata.",
+    "--orchestrator-contract optionally measures the main-thread orchestrator contract separately from the existing subagent total.",
   ].join("\n");
 }
 
@@ -168,27 +172,168 @@ function phaseEntries(runState) {
     phases[String(key).toLowerCase()] = value;
   }
   const entries = [];
-  for (const phaseName of ["analyzer", "writer", "executor", "reviewer"]) {
-    const phase = phases[phaseName];
+  const assignmentsFor = (phase) => {
     if (!phase) {
-      entries.push([phaseName, []]);
-      continue;
+      return [];
     }
     if (Array.isArray(phase.assignments)) {
-      entries.push([phaseName, phase.assignments]);
-      continue;
+      return [...phase.assignments];
     }
     if (Array.isArray(phase)) {
-      entries.push([phaseName, phase]);
-      continue;
+      return [...phase];
     }
-    entries.push([phaseName, [phase]]);
+    return [phase];
+  };
+  for (const phaseName of ["analyzer", "writer", "executor", "reviewer"]) {
+    const phase = phases[phaseName];
+    const assignments = assignmentsFor(phase);
+    if (phaseName === "writer") {
+      assignments.push(...assignmentsFor(phases.writerrepair));
+    }
+    entries.push([phaseName, assignments]);
   }
   return entries;
 }
 
+function detectOverwrittenWriterRepairArtifact(runState) {
+  const rawPhases = runState?.phases ?? {};
+  const phases = {};
+  for (const [key, value] of Object.entries(rawPhases)) {
+    phases[String(key).toLowerCase()] = value;
+  }
+  const writerAssignments = asArray(phases.writer?.assignments);
+  const repairAssignments = asArray(phases.writerrepair?.assignments);
+  if (writerAssignments.length === 0 || repairAssignments.length === 0) {
+    return null;
+  }
+
+  const originalPaths = new Set(writerAssignments
+    .map((assignment) => assignment?.expectedArtifactPath ?? assignment?.artifact)
+    .filter(Boolean)
+    .map(normalizeSlashes));
+  const overwrittenPath = repairAssignments
+    .map((assignment) => assignment?.expectedArtifactPath ?? assignment?.artifact)
+    .filter(Boolean)
+    .map(normalizeSlashes)
+    .find((artifactPath) => originalPaths.has(artifactPath));
+
+  return overwrittenPath ?? null;
+}
+
 function workflowLabelFor(runState, explicitWorkflow) {
   return runState?.workflow ?? runState?.workflowKind ?? explicitWorkflow ?? "unknown";
+}
+
+function orchestratorContractPathFor(workspaceRoot, testProjectDir, runState, explicitPath) {
+  const candidates = [
+    explicitPath,
+    runState?.orchestratorDefinitionPath,
+    runState?.orchestratorContractPath,
+    runState?.orchestrator?.definitionPath,
+    runState?.orchestrator?.contractPath,
+  ];
+  for (const candidate of candidates) {
+    const resolved = resolvePath(workspaceRoot, testProjectDir, candidate);
+    if (resolved && isFile(resolved)) {
+      return {
+        path: resolved,
+        source: candidate === explicitPath ? "cli" : "run-state",
+      };
+    }
+  }
+  return { path: null, source: "unavailable" };
+}
+
+function makeFileReuseTracker() {
+  const files = new Map();
+  let skippedDedupedOccurrences = 0;
+  const dedupedOccurrencesByReason = new Map();
+
+  function record({ filePath, tokens, status, category, phase, assignmentId }) {
+    if (typeof status === "string" && status.startsWith("deduped-")) {
+      skippedDedupedOccurrences += 1;
+      dedupedOccurrencesByReason.set(status, (dedupedOccurrencesByReason.get(status) ?? 0) + 1);
+      return;
+    }
+    if (!filePath || status !== "counted" || tokens <= 0) {
+      return;
+    }
+    const key = normalizeSlashes(filePath);
+    const current = files.get(key) ?? {
+      path: key,
+      occurrences: 0,
+      occurrenceTokensEstimated: 0,
+      tokensPerOccurrenceEstimated: tokens,
+      categories: new Set(),
+      phases: new Set(),
+      assignments: new Set(),
+    };
+    current.occurrences += 1;
+    current.occurrenceTokensEstimated += tokens;
+    current.tokensPerOccurrenceEstimated = Math.max(current.tokensPerOccurrenceEstimated, tokens);
+    current.categories.add(category);
+    current.phases.add(phase);
+    current.assignments.add(assignmentId);
+    files.set(key, current);
+  }
+
+  function summarize() {
+    const details = [...files.values()]
+      .map((item) => ({
+        path: item.path,
+        occurrences: item.occurrences,
+        repeatedOccurrences: Math.max(0, item.occurrences - 1),
+        tokensPerOccurrenceEstimated: item.tokensPerOccurrenceEstimated,
+        uniqueTokensEstimated: item.tokensPerOccurrenceEstimated,
+        repeatedTokensEstimated: Math.max(0, item.occurrenceTokensEstimated - item.tokensPerOccurrenceEstimated),
+        occurrenceTokensEstimated: item.occurrenceTokensEstimated,
+        categories: [...item.categories].sort(),
+        phases: [...item.phases].sort(),
+        assignments: [...item.assignments].sort(),
+      }))
+      .sort((left, right) => right.repeatedTokensEstimated - left.repeatedTokensEstimated || left.path.localeCompare(right.path));
+
+    return {
+      scope: "subagent-visible-file-occurrences",
+      semantics: "Observation only. Repeated tokens are not deducted from summary totals and do not represent provider cache accounting.",
+      countedOccurrences: details.reduce((sum, item) => sum + item.occurrences, 0),
+      uniqueFiles: details.length,
+      repeatedOccurrences: details.reduce((sum, item) => sum + item.repeatedOccurrences, 0),
+      occurrenceTokensEstimated: details.reduce((sum, item) => sum + item.occurrenceTokensEstimated, 0),
+      uniqueTokensEstimated: details.reduce((sum, item) => sum + item.uniqueTokensEstimated, 0),
+      repeatedTokensEstimated: details.reduce((sum, item) => sum + item.repeatedTokensEstimated, 0),
+      skippedDedupedOccurrences,
+      dedupedOccurrencesByReason: Object.fromEntries([...dedupedOccurrencesByReason.entries()].sort()),
+      files: details,
+    };
+  }
+
+  return { record, summarize };
+}
+
+function dedupeOwnedFile(counts, ownedPath, status) {
+  if (!ownedPath) {
+    return { ...counts, dedupedTokensEstimated: 0 };
+  }
+  const normalizedOwnedPath = normalizeSlashes(ownedPath);
+  let dedupedTokensEstimated = 0;
+  const details = counts.details.map((item) => {
+    if (item.status !== "counted" || normalizeSlashes(item.path ?? "") !== normalizedOwnedPath) {
+      return item;
+    }
+    dedupedTokensEstimated += item.tokens;
+    return {
+      ...item,
+      tokens: 0,
+      status,
+      dedupedTokensEstimated: item.tokens,
+    };
+  });
+  return {
+    total: counts.total - dedupedTokensEstimated,
+    details,
+    dedupedTokensEstimated,
+  };
 }
 
 function looksLikeAgentDefinitionPath(value) {
@@ -348,7 +493,21 @@ function aggregateConfidence(values) {
     .find(([, rank]) => rank === min)?.[0] ?? "unavailable";
 }
 
-async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }) {
+function buildOrchestratorContractEstimate({ tokenizer, workspaceRoot, testProjectDir, runState, explicitPath }) {
+  const resolved = orchestratorContractPathFor(workspaceRoot, testProjectDir, runState, explicitPath);
+  const count = countFile(tokenizer, resolved.path);
+  return {
+    estimateKind: count.status === "counted" ? "estimated" : "unavailable",
+    path: relativeOrNull(workspaceRoot, resolved.path),
+    source: resolved.source,
+    tokensEstimated: count.tokens,
+    status: count.status,
+    includedInSubagentSummaryTotal: false,
+    note: "Main-thread orchestrator contract only; excludes conversation, tool calls, hidden framing, reasoning, and other main-thread context.",
+  };
+}
+
+async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow, explicitOrchestratorContract }) {
   const tokenizer = makeCounter();
   const testProjectPath = path.resolve(workspaceRoot, testProjectArg);
   const testProjectDir = isDirectory(testProjectPath) ? testProjectPath : path.dirname(testProjectPath);
@@ -358,6 +517,13 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
 
   const runStatePath = path.join(orchestratorDir, "run-state.json");
   const runState = readJsonIfFile(runStatePath);
+  const orchestratorContractEstimate = buildOrchestratorContractEstimate({
+    tokenizer,
+    workspaceRoot,
+    testProjectDir,
+    runState,
+    explicitPath: explicitOrchestratorContract,
+  });
   if (!runState) {
     return {
       outputPath,
@@ -367,6 +533,22 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
         reason: "run-state.json not found or unreadable",
         tokenizer,
         workflow: explicitWorkflow,
+        orchestratorContractEstimate,
+      }),
+    };
+  }
+
+  const overwrittenWriterArtifact = detectOverwrittenWriterRepairArtifact(runState);
+  if (overwrittenWriterArtifact) {
+    return {
+      outputPath,
+      estimate: unavailableEstimate({
+        workspaceRoot,
+        runStatePath,
+        reason: `writer repair overwrote original tokenEstimateInputs: ${overwrittenWriterArtifact}`,
+        tokenizer,
+        workflow: workflowLabelFor(runState, explicitWorkflow),
+        orchestratorContractEstimate,
       }),
     };
   }
@@ -378,6 +560,7 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
   let outputTotal = 0;
   let visibleTotal = 0;
   let highRangeTotal = 0;
+  const fileReuseTracker = makeFileReuseTracker();
 
   for (const [phaseName, assignments] of phaseEntries(runState)) {
     phases[phaseName] = { assignments: [] };
@@ -388,6 +571,7 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
     // artifactPath; each assignment still counts its own agentToml + payload.
     const seenArtifacts = new Set();
     for (const [index, assignment] of assignments.entries()) {
+      const assignmentId = assignmentIdFor(phaseName, assignment, index);
       const artifactPath = artifactPathFor(workspaceRoot, testProjectDir, assignment);
       const artifactJson = artifactPath && isFile(artifactPath) ? readJsonIfFile(artifactPath) : null;
       const inputs = collectTokenEstimateInputs(artifactJson);
@@ -403,13 +587,29 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
       }
       const dedupeCounts = (counts) => ({
         total: 0,
-        details: counts.details.map((item) => ({ ...item, tokens: 0, status: "deduped-shared-artifact" })),
+        details: counts.details.map((item) => ({
+          ...item,
+          dedupedTokensEstimated: item.tokens,
+          tokens: 0,
+          status: "deduped-shared-artifact",
+        })),
+        dedupedTokensEstimated: counts.total,
       });
       const readCountsRaw = countFileRefs(tokenizer, workspaceRoot, testProjectDir, readRefs);
       const writeCountsRaw = countFileRefs(tokenizer, workspaceRoot, testProjectDir, writeRefs);
       const toolOutputRaw = countToolOutputRefs(tokenizer, artifactJson, inputs?.toolOutputRefs ?? []);
-      const readCounts = sharedArtifactDeduped ? dedupeCounts(readCountsRaw) : readCountsRaw;
-      const writeCounts = sharedArtifactDeduped ? dedupeCounts(writeCountsRaw) : writeCountsRaw;
+      const sharedReadCounts = sharedArtifactDeduped ? dedupeCounts(readCountsRaw) : readCountsRaw;
+      const sharedWriteCounts = sharedArtifactDeduped ? dedupeCounts(writeCountsRaw) : writeCountsRaw;
+      const readCounts = dedupeOwnedFile(
+        sharedReadCounts,
+        relativeOrNull(workspaceRoot, agentPath),
+        "deduped-contract-owned",
+      );
+      const writeCounts = dedupeOwnedFile(
+        sharedWriteCounts,
+        artifactPath ? relativeOrNull(workspaceRoot, artifactPath) : null,
+        "deduped-canonical-artifact",
+      );
       const toolOutput = sharedArtifactDeduped ? dedupeCounts(toolOutputRaw) : toolOutputRaw;
       const skillTokens = readCounts.details
         .filter((item) => item.path?.includes(".codex/skills/"))
@@ -419,7 +619,7 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
         ? 0
         : (artifactPath && isFile(artifactPath) ? countFile(tokenizer, artifactPath).tokens : 0);
       const missingFileCount = [...readCounts.details, ...writeCounts.details, { status: agentToml.status }]
-        .filter((item) => item.status !== "counted" && item.status !== "deduped-shared-artifact").length;
+        .filter((item) => item.status !== "counted" && !item.status?.startsWith("deduped-")).length;
       const inputSubtotal = payloadTokens + agentToml.tokens + nonSkillReadTokens + skillTokens + toolOutput.total;
       const outputSubtotal = writeCounts.total + artifactTokens;
       const totalEstimated = inputSubtotal + outputSubtotal;
@@ -436,8 +636,45 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
       highRangeTotal += Math.ceil(totalEstimated * overhead);
       confidenceValues.push(confidence);
 
+      fileReuseTracker.record({
+        filePath: relativeOrNull(workspaceRoot, agentPath),
+        tokens: agentToml.tokens,
+        status: agentToml.status,
+        category: "agent-toml",
+        phase: phaseName,
+        assignmentId,
+      });
+      for (const item of readCounts.details) {
+        fileReuseTracker.record({
+          filePath: item.path,
+          tokens: item.tokens,
+          status: item.status,
+          category: "read-file",
+          phase: phaseName,
+          assignmentId,
+        });
+      }
+      for (const item of writeCounts.details) {
+        fileReuseTracker.record({
+          filePath: item.path,
+          tokens: item.tokens,
+          status: item.status,
+          category: "written-file",
+          phase: phaseName,
+          assignmentId,
+        });
+      }
+      fileReuseTracker.record({
+        filePath: artifactPath ? relativeOrNull(workspaceRoot, artifactPath) : null,
+        tokens: artifactTokens,
+        status: sharedArtifactDeduped ? "deduped-shared-artifact" : (artifactPath && isFile(artifactPath) ? "counted" : "missing"),
+        category: "handoff-artifact",
+        phase: phaseName,
+        assignmentId,
+      });
+
       phases[phaseName].assignments.push({
-        assignmentId: assignmentIdFor(phaseName, assignment, index),
+        assignmentId,
         agentId: assignment?.agentId ?? null,
         target: assignment?.target ?? null,
         artifactPath: artifactPath ? normalizeSlashes(path.relative(workspaceRoot, artifactPath) || artifactPath) : null,
@@ -463,6 +700,11 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
         confidence,
         tokenEstimateInputsStatus: inputs ? "provided" : "artifact-fallback",
         sharedArtifactDeduped,
+        accountingDedupe: {
+          agentDefinitionReadTokens: readCounts.dedupedTokensEstimated ?? 0,
+          canonicalArtifactWriteTokens: writeCounts.dedupedTokensEstimated ?? 0,
+          totalTokens: (readCounts.dedupedTokensEstimated ?? 0) + (writeCounts.dedupedTokensEstimated ?? 0),
+        },
         method: ESTIMATE_METHOD,
         countedFiles: {
           agentToml: {
@@ -486,7 +728,11 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
   return {
     outputPath,
     estimate: {
-      schemaVersion: 1,
+      schemaVersion: OUTPUT_SCHEMA_VERSION,
+      schemaCompatibility: {
+        minimumReaderVersion: 1,
+        additiveOnlyFromVersion: 1,
+      },
       runStatePath: normalizeSlashes(path.relative(workspaceRoot, runStatePath) || runStatePath),
       estimateGeneratedAt: new Date().toISOString(),
       estimator: {
@@ -497,6 +743,7 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
       },
       workflow,
       summary: {
+        measurementScope: "subagent-visible-context",
         estimateKind: visibleTotal > 0 ? "estimated" : "unavailable",
         inputTokensEstimated: inputTotal,
         outputTokensEstimated: outputTotal,
@@ -507,15 +754,23 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow }
         },
         confidence: aggregateConfidence(confidenceValues),
       },
+      orchestratorContractEstimate,
+      observations: {
+        fileReuse: fileReuseTracker.summarize(),
+      },
       phases,
       knownMissing: KNOWN_MISSING,
     },
   };
 }
 
-function unavailableEstimate({ workspaceRoot, runStatePath, reason, tokenizer, workflow }) {
+function unavailableEstimate({ workspaceRoot, runStatePath, reason, tokenizer, workflow, orchestratorContractEstimate }) {
   return {
-    schemaVersion: 1,
+    schemaVersion: OUTPUT_SCHEMA_VERSION,
+    schemaCompatibility: {
+      minimumReaderVersion: 1,
+      additiveOnlyFromVersion: 1,
+    },
     runStatePath: normalizeSlashes(path.relative(workspaceRoot, runStatePath) || runStatePath),
     estimateGeneratedAt: new Date().toISOString(),
     estimator: {
@@ -526,6 +781,7 @@ function unavailableEstimate({ workspaceRoot, runStatePath, reason, tokenizer, w
     },
     workflow: workflow ?? "unknown",
     summary: {
+      measurementScope: "subagent-visible-context",
       estimateKind: "unavailable",
       inputTokensEstimated: 0,
       outputTokensEstimated: 0,
@@ -533,6 +789,10 @@ function unavailableEstimate({ workspaceRoot, runStatePath, reason, tokenizer, w
       range: { low: 0, high: 0 },
       confidence: "unavailable",
       reason,
+    },
+    orchestratorContractEstimate,
+    observations: {
+      fileReuse: makeFileReuseTracker().summarize(),
     },
     phases: {},
     knownMissing: KNOWN_MISSING,
@@ -550,6 +810,7 @@ async function main() {
     workspaceRoot,
     testProjectArg: args.testProject,
     explicitWorkflow: args.workflow,
+    explicitOrchestratorContract: args.orchestratorContract,
   });
   fs.writeFileSync(outputPath, `${JSON.stringify(estimate, null, 2)}\n`, "utf8");
   console.log(normalizeSlashes(path.relative(workspaceRoot, outputPath) || outputPath));

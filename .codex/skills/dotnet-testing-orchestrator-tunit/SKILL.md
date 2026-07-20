@@ -95,44 +95,91 @@ description: ".NET TUnit 測試指揮中心 — 分析被測目標、決定 TUni
 
 ```text
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-tunit-analyzer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
   "filePath": "<被測試目標檔案路徑>",
   "targetName": "<類別名稱或方法名稱>",
   "testProjectPath": "<測試專案路徑>",
   "analysisOutputPath": "<canonical analysis path>",
-  "userRequest": "<使用者特殊需求，如有>"
+  "userRequest": "<使用者特殊需求，如有>",
+  "userProvidedScenarios": "<使用者提供的測試情境與測試資料完整原文，如有>"
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-tunit-writer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
   "filePath": "<被測試目標檔案路徑>",
   "outputPath": "<測試檔案預期輸出路徑>",
-  "writerControls": "<分割/風格/方法範圍/修改模式等最小控制欄位，如有>"
+  "writerResultFilePath": "<canonical writer result path>",
+  "writerControls": "<方法範圍/修改模式等最小控制欄位，如有>"
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-tunit-executor.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace 絕對路徑>",
   "testProjectPath": "<測試專案路徑>",
   "testFilePaths": ["<Writer 產出的測試檔案路徑>"],
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
-  "writerResultFilePath": "<Writer 交接檔案路徑>"
+  "writerResultFilePath": "<單一 Writer canonical 交接檔案路徑>",
+  "executorResultFilePath": "<canonical executor result path>"
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-tunit-reviewer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
   "testFilePaths": ["<測試檔案路徑>"],
   "filePath": "<被測試目標檔案路徑>",
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
-  "writerResultFilePath": "<Writer 交接檔案路徑>",
+  "writerResultFilePath": "<單一 Writer canonical 交接檔案路徑>",
   "executorResultFilePath": "<Executor 交接檔案路徑>",
   "reviewResultFilePath": "<canonical reviewer result path>"
 }
 ```
+
+### Formal context isolation（必要）
+
+- Analyzer、Writer、Executor、Reviewer 的正式 dispatch 必須明確使用 `fork_turns: "none"`；禁止依賴 runtime default 或繼承主對話。
+- 每個正式 payload 必須傳入 `executionContext: "self-contained"` 與 `externalMemoryPolicy: "forbid"`，並明確指示跳過 workspace memory quick pass。
+- 正式 role 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或 workspace 外部歷史摘要。
+- 若角色意外讀取外部 memory，必須在 artifact `tokenEstimateInputs.readFiles` 如實保留並回傳 blocked；Orchestrator 將 phase 記為 `attempt-isolation-violation` 後停止，不得刪除 read record、repair 或繼續下游。
+- run-state 每筆 assignment 必須寫入 `contextForkPolicy=none` 與 `externalMemoryPolicy=forbid`；strict gate 會拒絕缺失或其他值。
+- 每個 canonical artifact ready 後、下一 phase dispatch 前，執行共用 isolation validator；`--allow-read` 只列本次 run 核准的上游 canonical handoffs：
+
+```bash
+# Analyzer
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow tunit --test-project {testProjectPath} --artifact {analysisFilePath}
+node .codex/scripts/validators/validate-tunit-role-read-scope.mjs --role analyzer --workspace-root {workspaceRoot} --agent-definition .codex/agents/dotnet-testing-advanced-tunit-analyzer.toml --artifact {analysisFilePath} [--allow-read {migrationSourcePath} ...]
+
+# Writer（每 target 固定一份 writer-result）
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow tunit --test-project {testProjectPath} --artifact {writerResultFilePath} --allow-read {analysisFilePath}
+
+# Executor / Reviewer
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow tunit --test-project {testProjectPath} --artifact {artifactPath} --allow-read {currentRunArtifactPath} [...]
+
+# Reviewer token-efficiency scope
+node .codex/scripts/validators/validate-tunit-role-read-scope.mjs --role reviewer --workspace-root {workspaceRoot} --artifact {reviewResultFilePath}
+```
+
+同一角色精確讀回自己剛寫出的 canonical artifact，只在 artifact path 與 read path 完全相同、目錄與 suffix 符合 `.orchestrator/{analysis|writer-result|writer-repair-result|executor-result|reviewer-result}/` 時放行。Sibling artifact、其他 `.orchestrator` root、prior-attempt、archive、retained 仍 fail closed。正常路徑不得把 self-read 當固定步驟。
+
+共用 attempt-isolation 只處理 workspace／artifact containment；TUnit role read-scope validator 另處理 token-efficiency boundary：
+
+- Analyzer 只能讀 assigned source/test project、project context、run-state 已計入的 assigned Analyzer definition、明確 migration input 與必要技術型 Skills；其他 `.codex/agents/**`、任何 orchestrator Skill 或其他 workflow definition 一律拒絕。失敗時將 Analyzer phase 記為 `analyzer-read-scope-violation` 並停止，不得 dispatch Writer。
+- Reviewer 不得讀回自己剛寫出的 canonical reviewer-result。此 gate 失敗不改寫 artifact-backed `gateDecision` 或 Executor correctness truth，但該 attempt 不得納入 token comparator，final report 必須分開呈現 correctness 與 token-efficiency 結論。
 
 ❌ 禁止：`Bash(claude --print ...)` — 不會載入 agent 定義和 Skills
 
@@ -160,6 +207,14 @@ payload: {
 >
 > Orchestrator prompt 只需傳：**交接檔案路徑 + 摘要數字**（methodCount、scenarioCount、testMethodCount、testCaseCount 等）+ 必要的控制參數（風格統一指令、modification request 等）。
 
+每個正式 role prompt 第一段固定加入：
+
+```text
+executionContext: self-contained
+externalMemoryPolicy: forbid
+本任務已由 canonical paths 與本次 handoff 完整定義；跳過 workspace memory quick pass，不得讀取 workspace 外部 memory、MEMORY.md、rollout summaries 或 prior session transcript。
+```
+
 ---
 
 ## 核心工作流程
@@ -184,22 +239,27 @@ Phase 0 清理完成後、**啟動 Analyzer 之前**，以 `node .codex/scripts/
 
 **傳給 Analyzer 的 prompt 必須包含：**
 
-- 被測試目標的檔案路徑（如果使用者提供的話；若未提供，Orchestrator 須先用 `Grep` 搜尋）
+- **`workspaceRoot`**：本次 assignment fresh workspace 的絕對路徑
+- 被測試目標的絕對檔案路徑（如果使用者提供相對路徑，Orchestrator 必須相對 `workspaceRoot` 正規化）
 - 被測試目標的類別名稱 / 方法名稱
-- 測試專案的路徑（讓 Analyzer 能掃描既有測試基礎設施）
+- 測試專案的絕對路徑（讓 Analyzer 能掃描既有測試基礎設施）
 - **`analysisOutputPath`**：由 Orchestrator 預先計算好的交接檔案完整路徑，格式為 `{testProjectDir}/.orchestrator/analysis/{ClassName}.analysis.json`
 - 使用者的特殊需求（如果有的話）
+- 使用者提供的測試情境與測試資料完整原文（如果有的話，以 `userProvidedScenarios` 傳入，不得摘要）
 - 框架偵測需求（新專案 or 從 xUnit/NUnit 遷移）
 
 **精簡 prompt 範例**：
 ```
 請分析 TUnit 測試目標並產出結構化分析報告。
-被測試目標檔案路徑：src/MyProject.Core/Services/ProductService.cs
-測試專案路徑：tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj
-analysisOutputPath: tests/MyProject.Core.Tests/.orchestrator/analysis/ProductService.analysis.json
+executionContext: self-contained
+externalMemoryPolicy: forbid
+workspaceRoot: C:\fresh-workspace
+被測試目標檔案路徑：C:\fresh-workspace\src\MyProject.Core\Services\ProductService.cs
+測試專案路徑：C:\fresh-workspace\tests\MyProject.Core.Tests\MyProject.Core.Tests.csproj
+analysisOutputPath: C:\fresh-workspace\tests\MyProject.Core.Tests\.orchestrator\analysis\ProductService.analysis.json
 ```
 
-> ⚠️ `analysisOutputPath` 必須由 Orchestrator 計算並提供。計算方式：從測試專案路徑去掉 `.csproj` 檔名，拼接 `.orchestrator/analysis/{ClassName}.analysis.json`。Analyzer **不需要自行推導路徑**。
+> ⚠️ `workspaceRoot` 與全部 formal paths 都必須是同一 fresh workspace 內的 absolute paths。`analysisOutputPath` 由 Orchestrator 從測試專案路徑去掉 `.csproj` 檔名後拼接 `.orchestrator/analysis/{ClassName}.analysis.json`；Analyzer **不需要自行推導路徑**，也不得依賴 subagent 預設 cwd。
 
 **等候 Analyzer 回傳精簡摘要**，包含：
 
@@ -207,42 +267,34 @@ analysisOutputPath: tests/MyProject.Core.Tests/.orchestrator/analysis/ProductSer
 - `requiredSkills`、`tunitFeatureRequirements`
 - `analysisFilePath`：Analyzer 實際寫入的交接檔案路徑（應與 `analysisOutputPath` 一致）
 - `projectContext`
+- `userScenarioSummary`：provided / accepted / merged / rejected / supplemented；沒有使用者輸入時回傳零值摘要
 
-**驗證交接檔案**：收到 Analyzer 摘要後，使用 Glob 確認 `analysisFilePath` 指向的檔案確實存在。若不存在，說明 Analyzer 未正確寫入，需排查問題。
+**驗證交接檔案**：收到 Analyzer 摘要後，確認 `analysisFilePath` 存在並讀取實體 JSON。下列任一 gate 不通過時不得進入 Writer：
+
+- `tokenEstimateInputs.readFiles` 與 `tokenEstimateInputs.writtenFiles` 都存在且為 array，並通過 `--workflow tunit` attempt-isolation；任一 workspace 外 read/write（包含已刪除暫存檔）都判 `attempt-isolation-violation`。
+- `projectContext.sourceProjectPath` 與 `projectContext.testProjectPath` 都存在；analysis artifact 必須通過 `validate-tunit-role-read-scope.mjs --role analyzer`。除了 `--agent-definition` 精確指定且已由 run-state 計入的 assigned Analyzer contract，任何其他 `.codex/agents/**`、orchestrator Skill、其他 workflow definition 或未明確核准的 migration source read 都判 `analyzer-read-scope-violation`，不得進入 Writer。
+- `userProvidedScenarioInput`、`scenarioCatalog`、`scenarioReviewSummary` 存在；沒有 user input 時仍須使用完整 GEN fallback schema。
+- 每個 `USR-*` 都逐項記錄，`rejected` 使用允許的 reason code 且附具體 evidence。
+- 所有有效 catalog `normalizedName` 依序等於 `suggestedTestScenarios`，並可直接作為合法 C# identifier。
+- `scenarioReviewSummary.effective`、`suggestedTestScenarios.length`、`scenarioCount` 與 `methodScenarioCounts` 加總一致。
 
 #### 階段間主動釋放（Analyzer → Writer 必要）
 
-Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認存在，且準備 dispatch Writer phase 前，Orchestrator 必須主動關閉所有已完成 Analyzer agents，釋放 Codex runtime agent thread slots。若 runtime 不支援主動關閉已完成 agent，Orchestrator 必須停手並回報「runtime 不支援主動關閉已完成 agent」，不得改用限制 Writer 並行數或 serialize Writer 作為替代方案。
+Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認存在，且準備 dispatch Writer phase 前，Orchestrator 必須主動關閉所有已完成 Analyzer agents，釋放 Codex runtime agent thread slots。
+
+關閉 completed Analyzer agents 後，每個 target 仍只 dispatch 一個 Writer；多 target 時，各 target 的單一 Writer 可一次性平行 dispatch。若 runtime 不支援主動關閉已完成 agent，Orchestrator 必須停手並回報「runtime 不支援主動關閉已完成 agent」，不得改變正式 phase 順序或 Writer topology 作為替代方案。
 
 ### 階段 2：啟動撰寫（TUnit Writer）
 
 使用 `SpawnAgent target=".codex/agents/dotnet-testing-advanced-tunit-writer.toml" payload={...}` 將分析結果交給 **dotnet-testing-advanced-tunit-writer** subagent 撰寫測試。
 
-#### Writer 分割決策
+#### 單一 Writer 策略（必要）
 
-依據 Analyzer 摘要判斷是否啟動多個 Writer：
+每個 target 無論 `methodCount`、`scenarioCount`、`targetType` 或 `forbidWriterSplit` 為何，固定只 dispatch **一個 Writer subagent**。禁止依方法、scenario、setup 或預估輸出大小分割成多個 Writer assignments。
 
-**觸發條件（必須同時滿足以下全部條件才觸發分割）**：
-- `methodCount > 5` 或 `scenarioCount > 20`
-- **且** `forbidWriterSplit != true`（Validator 類別永不分割）
+此規則只固定 Writer topology，不限制 Analyzer 應產生的測試情境數量，也不刪減任何合理且 in-scope 的案例。單一 Writer 必須處理 Analyzer artifact 中完整的 `suggestedTestScenarios`、有效 `scenarioCatalog`、`methodScenarioCounts` 與 constructor guards。Validator 的 `forbidWriterSplit` 只保留為相容性 metadata，不再參與 topology 決策。
 
-**Validator 類別永不分割**：當 `targetType === "validator"` 或 `forbidWriterSplit === true` 時，無論 scenarioCount 多大，都使用單一 Writer。CrossField 規則與一般規則必須由同一個 Writer 處理，防止重複測試。
-
-**分割策略（greedy 分組）**：
-1. 將 `methodScenarioCounts` 按 scenario 數量由多至少排序
-2. 貪婪地將方法分配至兩組，讓兩組的 scenario 總數盡量均衡
-3. Writer 1 負責第一組方法，Writer 2 負責第二組方法
-4. 兩個 Writer **平行**啟動（單一 Agent tool 呼叫 message）
-
-**多 Writer 風格統一指令**（分割時加入每個 Writer prompt）：
-```
-風格統一指令（多 Writer 分割執行）：
-- 例外斷言：統一使用 .Throw<T>()，禁止使用 .ThrowExactly<T>()
-- lambda 委派：統一使用 var act = () =>，禁止使用 Action act = () =>
-- 物件比較：統一使用 BeEquivalentTo()
-- FakeTimeProvider 欄位命名：統一使用 _timeProvider
-- using 排列順序：AwesomeAssertions → AutoFixture → TimeProvider → NSubstitute → 介面 → Model → Service
-```
+若單一 Writer 因 context / output limit 無法完成，必須將該次 phase 記為 blocker 並保留失敗證據；不得臨時改用 split、不得靜默刪減 scenarios，也不得把未完成 scope 交給第二個 Writer。後續若要恢復其他 topology，必須另立實驗與取得使用者明確同意。
 
 **傳給 Writer 的 prompt（依照 Writer 的輸入契約）：**
 
@@ -251,8 +303,9 @@ Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認�
 3. **測試檔案的預期輸出路徑** — 必須**鏡射被測類別在 `src/` 下的相對子目錄**到測試專案，**禁止**放在測試專案根目錄。推導規則：
    - `{TestDir}` = 測試專案目錄（取 `projectContext.testProjectPath` 去掉結尾的 `.csproj` 檔名後的目錄）。
    - 一般規則：被測類別位於 `src/<Proj>/<SubDir>/<Class>.cs` 時，測試檔放 `{TestDir}/<SubDir>/<Class>Tests.cs`（鏡射 `<SubDir>`）。本練習專案的 service 類別位於 `Services/`，故對應 `{TestDir}/Services/{ClassName}Tests.cs`。
-   - 非分割：`{TestDir}/Services/{ClassName}Tests.cs`
-   - 分割（多 Writer）：每個 Writer 各自一個輸出路徑，皆位於 `{TestDir}/Services/` 下，例如 `{TestDir}/Services/{ClassName}{群組語意}Tests.cs`；不得有任一分割檔落在測試專案根目錄。
+   - 預設：`{TestDir}/Services/{ClassName}Tests.cs`
+   - 單一 Writer 因檔案組織需要時可產生多個測試檔，但全部檔案都必須位於鏡射子目錄、列入同一份 writer-result，且不得將 coverage 拆成另一個 Writer assignment。
+4. **`writerResultFilePath`** — Orchestrator 預先計算的唯一 canonical path：`{testProjectDir}/.orchestrator/writer-result/{ClassName}.writer-result.json`
 
 > ⚠️ **禁止在 Writer prompt 中嵌入任何分析內容**（targetClasses、tunitFeatureRequirements、requiredSkills、suggestedTestScenarios、existingTestInfrastructure 等）。Writer 的 Step 0 會讀取交接檔案取得全部資訊。**如果你在 prompt 中提供了這些內容，Writer 可能跳過 Step 0 不讀交接檔案，導致下游交接斷裂。**
 
@@ -262,8 +315,9 @@ Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認�
 analysisFilePath: {analysisFilePath}
 被測試目標的檔案路徑: {filePath}
 測試檔案的預期輸出路徑: {outputPath}
+writerResultFilePath: {writerResultFilePath}
 ```
-分割模式時額外加入：負責的方法清單、測試類別名稱、風格統一指令（見上方）。
+有 `scenarioCatalog` 時不需另傳 scenario 子集合；單一 Writer 從 analysis artifact 讀取並處理全部有效項目。method-scope 模式時才額外加入 `methodsToTest` / `methodName`，並明確限制不得擴寫 scope 外 public methods。
 
 **等候 Writer 回傳精簡摘要**：`testFilePaths`、`testMethodCount`、`testCaseCount`、`skillsLoaded`、`writerResultFilePath`
 
@@ -280,12 +334,18 @@ Writer 回傳後，Orchestrator 不得只採信回覆摘要。必須使用 canon
 - `testClasses[].filePath`
 - `testClasses[].methodsCovered`
 - `skillsLoaded`
+- `scenarioCoverage`
+- `tokenEstimateInputs`
 
 方法範圍檢查：
 
 - `methodsCovered` 必須是明確方法名稱清單，不得使用 `All`、`FullClass`、空陣列或敘述文字替代。
-- 若本次是 method-scope 或 split assignment，`methodsCovered` 必須是指定方法清單的子集合或完全相同，不得包含其他 public methods。
-- 若 assignment 負責建構子 guard，`methodsCovered` 必須包含 `"Constructor"`；未負責建構子 guard 的 split assignment 不得包含 `"Constructor"`。
+- method-scope workflow 的 `methodsCovered` 必須是指定方法清單的子集合或完全相同，不得包含其他 public methods；全類別 workflow 則必須涵蓋 Analyzer 的全部 public methods。
+- 若 Analyzer artifact 有 constructor guards 或 `methodScenarioCounts.Constructor > 0`，`methodsCovered` 必須包含 `"Constructor"`；單一 Writer 負責全部 constructor guard 測試。
+- `scenarioCoverage` 必須恰好涵蓋 analysis 的全部有效 scenario IDs，任何 missing、duplicate 或越界都失敗；不得只認領部分 methods 或 scenarios。
+- `scenarioCoverage.status` 只可為 `implemented`、`blocked`、`limitation`；後兩者必須有具體 note。
+- `scenarioCoverage.normalizedName` 必須逐字等於 catalog，`implemented.testMethodNames` 必須包含該名稱。
+- `testCaseCount` 必須反映 `[Arguments]`／`[MethodDataSource]` 預期展開數，不得只複製 scenario 數。
 
 若 writer-result 缺欄位、不可讀、或方法範圍不一致：
 
@@ -304,18 +364,24 @@ Writer phase 全部 assignment 收斂且 writer-result artifact gate 通過後�
 
 **傳給 Executor 的 prompt（依照 Executor 的輸入契約）：**
 
-1. **測試專案路徑**
-2. **Writer 產出的測試檔案路徑**
-3. **`analysisFilePath`** — Analyzer 交接檔案路徑
-4. **`writerResultFilePath`** — Writer 交接檔案路徑
+1. **`workspaceRoot`** — 本次 assignment workspace 的絕對路徑
+2. **`testProjectPath`** — 測試專案絕對路徑
+3. **`testFilePaths`** — Writer 產出的測試檔案絕對路徑
+4. **`analysisFilePath`** — Analyzer canonical 交接檔案絕對路徑
+5. **`writerResultFilePath`** — 本 target 單一 Writer canonical 交接檔案絕對路徑
+6. **`executorResultFilePath`** — Orchestrator 預先計算的 canonical executor-result 絕對路徑
+
+正式 dispatch 前，Orchestrator 必須確認以上 paths 全部位於同一 `workspaceRoot`，且 `executorResultFilePath` 位於 `testProjectPath` 所屬專案的 `.orchestrator/executor-result/`。不符合時停止並回報 `workspace-containment-violation`；不得依賴 subagent 目前 cwd 或 analysis 中的 relative `projectContext.*` 修正路徑。
 
 **Executor prompt 模板**（嚴格照用）：
 ```
 請建置並執行 TUnit 測試。
-測試專案路徑：{testProjectPath}
-Writer 產出的測試檔案路徑：{testFilePaths}
+workspaceRoot: {workspaceRoot}
+testProjectPath: {testProjectPath}
+testFilePaths: {testFilePaths}
 analysisFilePath: {analysisFilePath}
 writerResultFilePath: {writerResultFilePath}
+executorResultFilePath: {executorResultFilePath}
 ```
 > ⚠️ 禁止在 Executor prompt 中嵌入測試程式碼、NuGet 套件清單等內容。
 
@@ -325,12 +391,22 @@ writerResultFilePath: {writerResultFilePath}
 
 Executor 回傳後，Orchestrator 必須讀取 `executorResultFilePath`，確認：
 
+- 回傳與實體 artifact path 必須逐字等於 dispatch 前登記的 absolute `executorResultFilePath`，且仍位於相同 `workspaceRoot`；若 artifact 出現在其他 cwd/worktree，立即判定 `attempt-isolation-violation`，不得搬移後繼續。
 - `executionMethod` 必須是 `"dotnet run"`。
 - `engineMode` 或同義欄位必須記錄 `SourceGenerated`；若 TUnit 輸出無法提供，需在 result 內明確寫出 `engineModeEvidence`。
 - 通過/失敗/略過數量必須來自 TUnit `✓` / `x` / `↓` 輸出或 TUnit run summary，不得套用 xUnit `dotnet test` parser。
 - `fixRounds` / `executorFixRounds` 必須落入 run-state，不得只寫在對話摘要。
+- `tokenEstimateInputs` 必須存在並通過 isolation；缺少 canonical telemetry 時該 attempt 不得納入 token comparator。
 
 若 executor-result 顯示使用 `dotnet test`，該 phase 判定為 blocker，不得進入成功報告。
+
+以 deterministic TUnit adapter 驗證單一 Writer artifact、case accounting 與 runtime truth。Validator 仍支援多個 `--writer` 參數，只用於讀取歷史實驗 artifacts；正式 workflow 必須只傳一份：
+
+```bash
+node .codex/scripts/validators/validate-tunit-execution-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} --executor {executorResultFilePath} --require-pass
+```
+
+此 gate 失敗時記錄 Executor correctness failure，仍必須依核心四階段規則執行 Reviewer；最終結果不得標為通過，也不得納入 baseline/candidate comparator。
 
 #### 階段間主動釋放（Executor → Reviewer）
 
@@ -345,7 +421,7 @@ Executor phase 完成且 executor-result artifact gate 通過後，dispatch Revi
 1. **測試檔案路徑**
 2. **被測試目標的檔案路徑**
 3. **`analysisFilePath`** — Analyzer 交接檔案路徑
-4. **`writerResultFilePath`** — Writer 交接檔案路徑
+4. **`writerResultFilePath`** — 本 target 單一 Writer canonical 交接檔案路徑
 5. **`executorResultFilePath`** — Executor 交接檔案路徑
 6. **`reviewResultFilePath`** — Orchestrator 預先計算的 Reviewer 交接檔案完整路徑，格式為 `{testProjectDir}/.orchestrator/reviewer-result/{ClassName}.reviewer-result.json`
 
@@ -360,7 +436,31 @@ executorResultFilePath: {executorResultFilePath}
 reviewResultFilePath: {reviewResultFilePath}
 ```
 
+Reviewer payload 必須明確提醒：`userScenarioCoverage` 只計 analysis 中 `source: "user"` 的有效／拒絕情境；`GEN-*` 永遠不得放入 accepted／implemented user arrays。沒有 user scenarios 時五個 ID arrays 全空且 `coverageComplete: true`，但仍審查全部 GEN scenarios 與 TUnit 品質。
+
 **驗證 Reviewer 交接檔案**：Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath` 指向的檔案確實存在且可讀取。若檔案未落地，不得只採信 Reviewer 回傳訊息；必須將該 phase 判定為 blocker，分類為 `artifact 一直沒出現`，並更新 `run-state.json` 中 reviewer phase：`artifactReadyAt: null`、`artifact: null`、`failure` 填入原始症狀。
+
+Reviewer artifact ready 後，先執行 token-efficiency read-scope gate：
+
+```bash
+node .codex/scripts/validators/validate-tunit-role-read-scope.mjs --role reviewer --workspace-root {workspaceRoot} --artifact {reviewResultFilePath}
+```
+
+此 read-scope gate 拒絕 Reviewer 讀回自己的 canonical reviewer-result。失敗時保留 Reviewer correctness artifact 與 `gateDecision`，但將本次 token comparison 判為 ineligible，不得用 estimator total 作 keep 證據。
+
+接著以 analysis、單一 writer-result 與 reviewer-result 執行正式 acceptance gate：
+
+```bash
+node .codex/scripts/validators/validate-unit-scenario-contract.mjs --workflow tunit --analysis {analysisFilePath} --writer {writerResultFilePath} --reviewer {reviewResultFilePath} --require-review-pass
+```
+
+若 gate 失敗，workflow 最終結論必須為 fail；不得因 `dotnet run` 全綠改寫成通過。四階段 timing 與 overall closeout 寫入完成後、final report 前執行：
+
+```bash
+node .codex/scripts/run-state.mjs validate --path {p} --require-complete-timing
+```
+
+strict run-state gate 失敗時不得宣稱 timing evidence 完整，也不得把該 attempt 納入 baseline/candidate comparator；禁止事後以推測 timestamp 補值。
 
 ### Phase 5：後置清理
 
@@ -376,11 +476,13 @@ reviewResultFilePath: {reviewResultFilePath}
 > # 初始化（Phase 0 清理後、啟動 Analyzer 前）
 > node .codex/scripts/run-state.mjs init --path {p} --workflow tunit --target {target}
 > # dispatch 前：記 dispatchIssuedAt（並一併登記 Estimated Token Usage metadata）
-> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath}
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath} --set contextForkPolicy=none --set externalMemoryPolicy=forbid
 > # 收到 agentId：記 agentId/dispatchAcceptedAt，推導 latency
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
 > # artifact 落地：記 artifactReadyAt/artifact，推導 produceSpan
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+> # assignment gate 完成：逐筆記 completedAt，不得只寫 phase-level 值
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set completedAt=@now
 > # phase 收斂：記 completedAt
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
 > # 計數 / 整體：counters 與 overallWallClock.end
@@ -406,12 +508,12 @@ run-state 寫入規則：
 1. **初始化檔案**：Phase 0 清理完成且啟動 Analyzer 前，以 `run-state.mjs init --path {p} --workflow tunit --target {target}` 建立 `{testProjectDir}/.orchestrator/run-state.json`；腳本自動含 `workflow: "tunit"`、`target`、`overallWallClock.start`、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
 2. **dispatch 邊界**：每個 phase 發出 SpawnAgent 之前，先以 `run-state.mjs set --path {p} --phase {phase} --assignment {assignmentId} --set dispatchIssuedAt=@now` 記錄該 assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即以 `run-state.mjs set ... --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt` 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`（時間戳由腳本內部以系統時鐘產生，毫秒差由腳本推導）。
 3. **不得批次補 stamp**：平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
-   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；以 dispatch 邊界的同一個 `run-state.mjs set` 呼叫一併 `--set target=...`、`--set agentDefinitionPath=...`、`--set expectedArtifactPath=...` 登記（`assignmentId` 由 `--assignment` 自動帶入）。這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；以 dispatch 邊界的同一個 `run-state.mjs set` 呼叫一併 `--set target=...`、`--set agentDefinitionPath=...`、`--set expectedArtifactPath=...`、`--set contextForkPolicy=none`、`--set externalMemoryPolicy=forbid` 登記。兩個 policy 是 correctness gates；其餘欄位供 estimator 使用。
 4. **artifact gate 邊界**：每個 canonical artifact 通過 Glob/Read 驗證後，立即以 `run-state.mjs set ... --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt` 寫入 `artifactReadyAt`、`artifact` 並推導 `produceSpanMs`。
-5. **phase complete 邊界**：phase artifact gate 全部通過或 blocker 判定完成後，寫入 `completedAt` 與 phase status。
+5. **assignment / phase complete 邊界**：每個 assignment artifact、isolation 與 schema gate 完成時逐筆寫入 assignment `completedAt`；全部收斂後才寫 phase `completedAt` 與 status。不得只寫 phase-level 值，也不得在 closeout 時把 phase timestamp 複製回 assignments。
 6. **duration 摘要**：整體流程完成或中止時，以 run-state 寫入機制補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`。
 
-若某 phase 內有多個平行 assignment（例如多 target Analyzer、split Writer、多 Reviewer），run-state 必須保留每個 assignment 的 timing evidence，不得只記一個彙總時間。
+若某 phase 內有多個平行 assignment（例如多 target Analyzer、每 target 各一個 Writer、多 Reviewer），run-state 必須保留每個 assignment 的 timing evidence，不得只記一個彙總時間。同一 target 的 Writer phase 必須只有一個正式 assignment。
 
 ## 執行進度顯示規範
 
@@ -440,6 +542,7 @@ run-state 寫入規則：
 1. **測試檔案連結**：列出 Writer 產出的所有測試檔案路徑。**不需在 chat 中嵌入完整測試程式碼**，使用者可透過檔案路徑直接查看
 2. **執行結果摘要**：Executor 的執行結果（通過/失敗數、執行方式）
 3. **品質審查摘要**：Reviewer 的整體評級和關鍵發現
+   - 必須同時呈現 artifact-backed `gateDecision` 與 `userScenarioCoverage`；不可只呈現星等或 Executor 全綠
 4. **改善建議**（如果有的話）：Reviewer 的遺漏測試案例和嚴重問題
 5. **使用的 Skills 組合**：列出 Writer 載入了哪些 Skills
 6. **Executor 修正紀錄**（如果有的話）
@@ -459,7 +562,7 @@ run-state 寫入規則：
 | **總計**        | **M 分 S 秒** |
 ```
 
-> 各階段耗時必須讀取 `{testProjectDir}/.orchestrator/run-state.json`，再從該檔的 `dispatchIssuedAt`、`artifactReadyAt`、`completedAt` 計算。若多個 Writer 並行，階段 2 耗時取最長的一個。總計為四個階段之和。
+> 各階段耗時必須讀取 `{testProjectDir}/.orchestrator/run-state.json`，再從該檔的 `dispatchIssuedAt`、`artifactReadyAt`、`completedAt` 計算。多 target 時 Writer phase 取各 target 單一 Writer 中最長的一個。總計為四個階段之和。
 
 耗時表格後，**必須**輸出 timing evidence 表，讓使用者能人工對回 `run-state.json`。不得只列漂亮的耗時摘要。
 
@@ -469,7 +572,7 @@ run-state 寫入規則：
 | Phase | Source | dispatchIssuedAt | artifactReadyAt | completedAt | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Analyzer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | single agent |
-| Writer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | split/no split |
+| Writer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | one Writer per target |
 | Executor | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | dotnet run |
 | Reviewer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | reviewer-result verified |
 ```
@@ -616,3 +719,4 @@ node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}
 6. **`requiredSkills` 組合** — `tunit-fundamentals` 必載，`tunit-advanced` 依 Analyzer 判斷條件載入
 7. **`suggestedTestScenarios` 必須是中文** — Analyzer 產出的建議測試命名必須使用中文三段式格式
 8. **版本相依性** — TUnit 0.6.123 與 Testing.Platform 版本鏈鎖必須遵守
+9. **單一 Writer topology** — 每 target 固定一個 Writer；不得依案例數分割，也不得在失敗時自動退回 split

@@ -14,17 +14,28 @@ developer_instructions = """# .NET Aspire 整合測試分析器
 
 ## 輸入契約（Input Contract）
 
-呼叫者只需在 prompt 中提供：
+呼叫者在正式 prompt 中提供：
 
-1. **被測試 API 的專案路徑**（必要）— 如 `src/MyProject.WebApi`
-2. **AppHost 專案路徑**（必要）— 如 `src/MyProject.AppHost`
-3. **測試專案路徑**（必要）— 如 `tests/MyProject.AppHost.Tests/MyProject.AppHost.Tests.csproj`
-4. **Controller 名稱與端點資訊**（必要）— 如 `OrdersController 有 5 個端點`
-5. **`analysisOutputPath`**（必要）— 交接檔案的完整寫入路徑，如 `tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json`
-6. **使用的資源**（可選）— 如 `SQL Server + Redis`
-7. **使用者的特殊需求**（可選）
+1. **`workspaceRoot`**（必要）— 本次 fresh workspace absolute path
+2. **被測試 API 的專案路徑**（必要、absolute）
+3. **AppHost 專案路徑**（必要、absolute）
+4. **測試專案路徑**（必要、absolute）
+5. **`targetServiceName`**（必要）— AppHost `AddProject("name")` 的精確服務名稱
+6. **Controller 名稱與端點範圍**（必要）
+7. **`analysisOutputPath`**（必要）— 本次 test project `.orchestrator/analysis/` 下的 absolute canonical path
+8. **`executionContext: self-contained`、`externalMemoryPolicy: forbid`**（正式 workflow 必要）
+9. **使用者的特殊需求**（可選）
 
-我會自行讀取 AppHost Resource 結構、Controller 原始碼、產出完整分析報告 JSON。
+我會自行讀取 AppHost Resource 結構與 target-relevant source，產出 compact structured analysis JSON。
+
+## Formal self-contained execution（正式 workflow 必遵守）
+
+- 正式 prompt 已由 absolute canonical paths 完整定義；跳過 workspace memory quick pass。
+- 禁止讀取 `$CODEX_HOME/memories/**`、其他 clone/worktree、prior attempt、archive 或 sibling `.orchestrator` artifacts。
+- 第一個 source read 前，驗證 workspaceRoot、AppHost、API、test project 與 analysisOutputPath 全部位於同一 workspace；任何越界立即回傳 `blocked`／`workspace-containment-violation`。
+- 只讀 AppHost/API/test project、project context、assigned agent definition 與唯一 `aspire-testing` 技術 Skill；不得搜尋 unit／TUnit／integration／其他 Aspire agent 或 orchestrator definitions。
+- 所有實際 reads/writes 都必須如實記錄在 `tokenEstimateInputs`。canonical telemetry 缺漏時 formal comparator blocked。
+- 寫後讀取限制：正常以記憶中的 JSON 回傳摘要；只有確認 exact canonical artifact 成功時可讀回自己的 analysisOutputPath，不得讀 sibling artifact。
 
 ---
 
@@ -64,6 +75,8 @@ developer_instructions = """# .NET Aspire 整合測試分析器
 4. **將結果寫入輸出**：
    - `projectContext.targetFramework`：被編排的 API 專案的 TargetFramework（非 AppHost 的版本）
    - `projectContext.testFramework`：固定為 `"xunit"`
+   - `projectContext.workspaceRoot`、`appHostProjectPath`、`apiProjectPath`、`testProjectPath`：全部使用 prompt 的 absolute canonical paths
+   - `projectContext.solutionPath`：本次版本對應的 `.sln`／`.slnx` absolute path
    - `appHostInfo.aspireVersion`：保持不變（來自 AppHost `.csproj` 的 Aspire 版本號）
 
 ### Step 2：解析 Resource 定義
@@ -147,38 +160,40 @@ Aspire Analyzer **固定輸出單一 Skill**：
 "requiredSkills": ["aspire-testing"]
 ```
 
-### Step 6：收集 sourceCodeContext（前向傳遞用）
+### Step 6：建立 compact sourceFileIndex
 
-> 此步驟的目的是將你在 Step 1-4 中已讀取的原始碼檔案內容，**原封不動地收錄至輸出報告**，供下游 Writer 和 Reviewer 直接使用，避免重複讀取。
+正式 analysis artifact **禁止**嵌入 `sourceCodeContext` 或任何完整原始碼內容。將已讀檔案以 compact `sourceFileIndex[]` 記錄：
 
-將已讀取檔案的**完整內容**收錄至 `sourceCodeContext` 欄位：
+```json
+"sourceFileIndex": [
+  { "path": "<absolute AppHost Program.cs>", "purpose": "resource graph", "facts": ["bookingapi", "sql", "cache"] },
+  { "path": "<absolute Controller.cs>", "purpose": "target endpoints", "facts": ["GET /api/bookings/{id}"] }
+]
+```
 
-| 欄位 | 來源步驟 | 說明 |
-|------|---------|------|
-| `appHostProgramCs` | Step 1 | AppHost `Program.cs` 完整內容 |
-| `appHostCsproj` | Step 1 | AppHost `.csproj` 完整內容 |
-| `apiProgramCs` | Step 3 | 被編排 API 的 `Program.cs` 完整內容 |
-| `apiCsproj` | Step 1.2 | 被編排 API 的 `.csproj` 完整內容 |
-| `controllers[]` | Step 3 | 所有 Controller / Minimal API 端點檔案的完整內容 |
-| `models[]` | Step 3 | 所有 Model、DTO、Request/Response 類別的完整內容 |
-| `dbContext` | Step 3 | DbContext 類別的完整內容（如有） |
-| `validators[]` | Step 3 | 所有 Validator 類別的完整內容（如有） |
-| `testCsproj` | Step 4 | 測試專案 `.csproj` 完整內容 |
-| `existingTestFiles[]` | Step 4 | 既有測試檔案的完整內容（如有） |
+`facts` 只保留 Writer／Reviewer 需要的結構化推導，不複製檔案本文。下游若需要精確簽章，依 sourceFileIndex 按需讀取該 target-relevant 檔案。這避免大型 analysis artifact 在 Writer／Executor／Reviewer 重複傳遞，同時保留可稽核 provenance。
 
-**重要**：`content` 欄位必須包含檔案的**完整原始內容**（非摘要），因為 Writer 需要根據確切的型別定義、方法簽章、驗證規則來撰寫測試。
+### Step 6.1：建立 Resource、endpoint 與 scenario provenance
+
+- `resourceCatalog[]`：穩定 `RES-001` 起算，包含 `resourceId`、`name`、`type`、`requiredForTarget` 與 evidence。
+- `endpointCatalog[]`：穩定 `END-001` 起算，包含 `endpointId`、controller、action、HTTP method、route、serviceName、resourceIds 與 evidence。
+- `endpointsToTest[]` 必須引用 endpointId，集合與 endpointCatalog 完全一致。
+- `scenarioCatalog[]`：使用者情境以 `USR-001`、Analyzer 情境以 `GEN-001` 起算；包含 endpointId、source、status、normalizedName、scenarioType 與 evidence。
+- 有效 status 為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation`；`merged`／`rejected` 保留 provenance 但不交 Writer 實作。
+- `suggestedTestScenarios` 必須依序等於有效 scenario 的 normalizedName；scenarioCount 與 scenarioReviewSummary.effective 必須相等。
+- `userProvidedScenarioInput` 固定使用共用 schema：沒有輸入時為 `{ "present": false, "rawContent": null, "detectedFormat": null }`；有輸入時 `present: true` 並完整保留 `rawContent`，不得改用 `provided` 或摘要原文。
 
 ---
 
 ## 回傳格式
 
-你**必須**以結構化 JSON 格式回傳分析報告，包含以下頂層欄位：`appHostInfo`、`resources`、`projectReferences`、`dependencyGraph`、`apiProjectInfo`（含 `endpoints`、`dbContext`、`validators`）、`existingTestInfrastructure`、`requiredSkills`、`suggestedTestScenarios`、`projectContext`、`sourceCodeContext`。`tokenEstimateInputs` 為 optional telemetry，應盡量寫入，但缺漏不得阻塞 analysis 輸出。
+你**必須**以結構化 JSON 格式回傳分析報告，包含：`targetServiceName`、`appHostInfo`、`resourceCatalog`、`projectReferences`、`dependencyGraph`、`apiProjectInfo`、`endpointCatalog`、`endpointsToTest`、`scenarioCatalog`、`scenarioReviewSummary`、`userProvidedScenarioInput`、`existingTestInfrastructure`、`requiredSkills`、`suggestedTestScenarios`、`projectContext`、`sourceFileIndex` 與 `tokenEstimateInputs`。正式 artifact 不得包含 `sourceCodeContext`。
 
 ---
 
-## tokenEstimateInputs（optional telemetry，只記錄可觀測材料）
+## tokenEstimateInputs（formal canonical telemetry）
 
-交接 analysis JSON 應盡量加入頂層 `tokenEstimateInputs`，供共用估算器 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算。此欄只記錄你實際讀取 / 寫入的可觀測檔案，**不計算任何 token 數字**，也不得作為任何 correctness 判斷。若資料一時無法完整整理，仍要寫入 analysis artifact，不得因 `tokenEstimateInputs` 缺漏而停止、重試或要求 re-dispatch。
+正式交接 analysis JSON 必須包含頂層 `tokenEstimateInputs`，完整記錄實際讀取／寫入的可觀測材料，供共用估算器做 visible-context 估算。此欄不自行計算 token，也不進 correctness；但缺漏時該 attempt 不得作 token comparator。
 
 ```json
 "tokenEstimateInputs": {
@@ -210,10 +225,11 @@ Aspire Analyzer **固定輸出單一 Skill**：
 1. **scenarioCount 加總比對**：`suggestedTestScenarios` 陣列長度合理（≥ endpointCount × 1，涵蓋 Happy Path）
 2. **必填欄位不為空**：`projectContext.testProjectPath`、`appHostInfo.aspireVersion`（非空字串）、`requiredSkills`（固定為 `["aspire-testing"]`）
 3. **resource 名稱一致性**：`projectReferences[].name` 必須與 AppHost `AddProject("name")` 中的字串參數完全一致
-4. **sourceCodeContext 完整性**：`appHostProgramCs` 和 `apiProgramCs` 的 `content` 欄位不得為空字串
-5. **tokenEstimateInputs best-effort**：盡量列出實際讀取的 AppHost / API / Controller / 測試專案檔，以及寫入的 analysis artifact。此欄只記錄可觀測材料，不計算 token；若缺漏，不得阻塞 analysis 輸出，也不得觸發 correctness gate 或 re-dispatch。
+4. **compact artifact**：不得有 `sourceCodeContext`；`sourceFileIndex` 非空且不含完整 source content。
+5. **provenance**：resourceId、endpointId、scenarioId 唯一；endpoint/service/resource 關聯一致；scenarioCount 等於有效 scenario 數。
+6. **tokenEstimateInputs canonical telemetry**：readFiles／writtenFiles 完整列出實際 I/O；缺漏時回傳 blocked，不得假裝 comparator telemetry 完整。
 
-若發現第 1-4 項不一致，修正後再進入 Step 7。`tokenEstimateInputs` 僅供 optional telemetry，缺漏時仍要寫入 analysis artifact，讓 estimator 走 fallback / unavailable。
+若發現不一致，修正後再進入 Step 7。
 
 ---
 
@@ -227,19 +243,17 @@ Aspire Analyzer **固定輸出單一 Skill**：
 
 呼叫者會在 prompt 中提供 `analysisOutputPath`（完整的交接檔案路徑）。你只需要：
 
-1. **建立目錄**：使用 Bash 從 `analysisOutputPath` 提取目錄部分並執行 `mkdir -p`
-2. **寫入檔案**：使用 Write 工具將完整分析 JSON 寫入 `analysisOutputPath` 指定的路徑
+1. **驗證路徑**：analysisOutputPath 是 prompt 提供的 absolute canonical path，且位於 assigned test project `.orchestrator/analysis/`
+2. **建立目錄並寫入**：使用 shell 建立父目錄，使用 `apply_patch` 以 absolute path 寫入 compact JSON
 
 ```
 範例：呼叫者提供 analysisOutputPath: tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json
 → mkdir -p tests/MyProject.AppHost.Tests/.orchestrator/analysis/
-→ Write(tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json)
+→ apply_patch(absolute analysisOutputPath)
 ```
 
 > ⚠️ **你不需要自行計算路徑**。直接使用呼叫者提供的 `analysisOutputPath`。
 > 如果呼叫者未提供 `analysisOutputPath`，則不寫入交接檔案，僅回傳完整 JSON。
-
-> **Write 工具使用限制**：Write 工具**僅限**用於 `.orchestrator/` 目錄下的 JSON 檔案。**禁止**用於修改任何原始碼或測試檔案。
 
 ---
 
@@ -278,7 +292,8 @@ Aspire Analyzer **固定輸出單一 Skill**：
 7. **requiredSkills 固定** — Aspire Analyzer 固定輸出 `["aspire-testing"]`
 8. **服務名稱精確** — `projectReferences[].name` 必須與 AppHost 中 `AddProject("name")` 的名稱參數完全一致，這會影響 `CreateHttpClient("name")` 的正確性
 9. **Aspire 版本記錄** — 從 `.csproj` 中擷取 Aspire 版本，需處理兩種 csproj 格式：**(A) 分離 SDK 格式**（`<Sdk Name="Aspire.AppHost.Sdk" Version="X.Y.Z" />`，適用 Aspire 8.x/9.x）：版本以 `Aspire.Hosting.AppHost` 套件版本為準（當 SDK 版本與套件版本不同時，以套件版本為權威來源）；**(B) Project SDK 格式**（`<Project Sdk="Aspire.AppHost.Sdk/X.Y.Z">`，適用 Aspire 13.x）：此格式無獨立 `Aspire.Hosting.AppHost` 套件參考，版本從 SDK 屬性取得
-10. **sourceCodeContext 完整性** — 所有在 Step 1-4 中讀取的原始碼檔案必須收錄至 `sourceCodeContext`，供下游 Writer 和 Reviewer 直接使用，避免重複讀取。`content` 欄位必須是完整檔案內容，不可是摘要或節錄
+10. **compact source provenance** — 正式 artifact 只保留 `sourceFileIndex` 與結構化 facts，禁止嵌入完整 source content
+11. **Formal isolation** — absolute workspace containment、external memory prohibition、minimal read scope、canonical telemetry 與寫後讀取限制不可省略
 
 ## Tools
 

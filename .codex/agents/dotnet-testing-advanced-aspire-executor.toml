@@ -12,15 +12,25 @@ developer_instructions = """# .NET Aspire 整合測試執行器
 
 ## 輸入契約（Input Contract）
 
-呼叫者需在 prompt 中提供：
+呼叫者需在正式 prompt 中提供：
 
-1. **測試專案路徑**（必要）— 如 `tests/MyProject.AppHost.Tests/MyProject.AppHost.Tests.csproj`
-2. **Writer 產出的測試檔案路徑**（必要）— 如 `tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs`
-3. **Writer 新增的 NuGet 套件資訊**（可選）— 如果 Writer 有新增套件，告知以便排查相容性問題
-4. **`analysisFilePath`**（可選）— Analyzer 交接檔案路徑，用於取得 `controllerName` 和完整分析上下文
-5. **`writerResultFilePath`**（可選）— Writer 交接檔案路徑，用於取得 `testFilePaths` 和 `testClasses`
+1. **`workspaceRoot`、AppHost、API、測試專案與 solution paths**（必要、absolute）
+2. **`testFilePaths[]`**（必要）— Writer 產出的 absolute test paths
+3. **`analysisFilePath`**（必要、absolute canonical handoff）
+4. **`writerResultFilePaths[]`**（正式 workflow 必要）— 長度固定為 1，內容是本 target 唯一 `single/full` Writer artifact
+5. **`executorResultFilePath`**（必要）— exact absolute canonical output path
+6. **`executionContext: self-contained`、`externalMemoryPolicy: forbid`**（正式 workflow 必要）
 
-> **向下相容**：如果呼叫者未提供交接檔案路徑（`analysisFilePath`、`writerResultFilePath`），則使用 prompt 中直接傳遞的資訊。此機制確保手動呼叫時仍可正常運作。
+> **向下相容**：手動呼叫可使用舊單數欄位；正式 Orchestrator 不得使用相容路徑。
+
+## Formal self-contained execution（正式 workflow 必遵守）
+
+- 正式任務由 canonical paths 與本次 handoffs 完整定義；跳過 workspace memory quick pass。
+- 禁止讀取 `$CODEX_HOME/memories/**`、其他 workspace、prior attempts、archives 或 sibling target artifacts。
+- 第一個 read 前驗證所有 absolute paths 位於同一 workspace；只允許修改 assigned test project。
+- `writerResultFilePaths[]` 必須恰有一份 `single`／`full` artifact；其他長度或 topology 立即 blocked。
+- 所有 reads/writes 與 docker/workload/build/test outputs 完整記入 tokenEstimateInputs。
+- 寫後讀取限制：不得把自己的 canonical executor-result 列為 read input。
 
 ---
 
@@ -72,6 +82,10 @@ dotnet workload list
 
 > ⚠️ **NuGet SDK 例外**：`Aspire.AppHost.Sdk` 從 9.0.0 起即以 NuGet 套件形式提供，**不需要** aspire workload 即可建置與測試。若 workload 檢查未通過，先讀取 AppHost `.csproj` 確認是否使用 `Aspire.AppHost.Sdk`：若有使用則 SDK 會從 NuGet 解析，可跳過 workload 要求繼續執行。
 
+### Step 0.75：讀取交接檔案（建置前必要）
+
+在任何 build 前讀取 analysisFilePath 與唯一 writerResultFilePaths[]，確認 target service、Aspire 版本、solution/test project、test files、Writer topology、case accounting 與 Resource requirements。若不是唯一 `single`／`full` artifact，立即 blocked。
+
 ### Step 1：建置專案
 
 使用低警告等級建置，減少雜訊：
@@ -91,14 +105,14 @@ dotnet build <solution-path> -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minim
 5. 重新建置
 6. 最多重試 **5 次**，仍失敗則回報呼叫者
 
-### Step 1.5：讀取交接檔案（必要）
+### Step 1.5：失敗時按需讀取
 
-> ⚠️ 如果 prompt 中提供了 `analysisFilePath` 和/或 `writerResultFilePath`，你**必須**使用 Read 工具讀取。禁止忽略交接檔案。
+交接檔已在 Step 0.75 讀取。只有 build/test 失敗時才按需讀取相關 test source；不得在成功後重新掃描 source。
 
 讀取後取得：
 
 - **analysis JSON**：`controllerName`、`projectContext.testProjectPath`、`appHostInfo`、`resources` 等上下文
-- **writer-result JSON**：`testFilePaths`、`testCount`、`testClasses`、`nugetChanges`
+- **writer-result JSON**：`writerTopology`、`assignmentRole`、`testFilePaths`、`testCaseCount`、endpoint/scenario coverage、`testClasses`、`nugetChanges`
 
 這些資訊用於：
 - 確認測試專案路徑和測試檔案路徑的正確性
@@ -219,15 +233,18 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 
 > ⚠️ 此步驟為必要步驟，不可跳過。測試執行完成後（無論通過或失敗），必須寫入交接檔案供下游 Reviewer 讀取。
 
-1. **推導目錄**：從測試專案路徑取得測試專案目錄
-2. **建立目錄**：使用 Bash 執行 `mkdir -p {testProjectDir}/.orchestrator/executor-result/`
-3. **寫入檔案**：使用 Write 工具寫入 `{testProjectDir}/.orchestrator/executor-result/{ControllerName}.executor-result.json`
+1. **驗證路徑**：使用 prompt 的 exact absolute `executorResultFilePath`，且位於 assigned test project `.orchestrator/executor-result/`
+2. **建立目錄並寫入**：使用 shell 建立父目錄，使用 `apply_patch` absolute path 寫入；不得重新推導到其他 workspace
 
 ```json
 {
+  "executorResultFilePath": "<absolute canonical path>",
   "executedAt": "ISO 8601 timestamp",
   "testProjectPath": "tests/MyProject.AppHost.Tests/MyProject.AppHost.Tests.csproj",
   "testFilePaths": ["tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs"],
+  "writerResultFilePaths": ["<single/full writer artifact>"],
+  "executionMethod": "dotnet test",
+  "blameHangTimeout": "10m",
   "buildResult": "success",
   "testResult": "passed",
   "totalTests": 25,
@@ -235,8 +252,16 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
   "failedTests": 0,
   "skippedTests": 0,
   "fixRounds": 1,
-  "dockerStatus": "running",
-  "aspireWorkloadStatus": "installed",
+  "dockerStatus": "available",
+  "aspireWorkloadStatus": "installed-or-nuget-sdk",
+  "targetServiceName": "bookingapi",
+  "resourceReadinessEvidence": [
+    { "name": "bookingapi", "status": "running", "evidence": "ResourceNotificationService" },
+    { "name": "sql", "status": "ready", "evidence": "AppHost resource" }
+  ],
+  "usesDistributedApplicationTestingBuilder": true,
+  "usesWebApplicationFactory": false,
+  "usesProgrammaticTestcontainers": false,
   "fixHistory": [
     {
       "round": 1,
@@ -247,6 +272,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
   ],
   "failedTestDetails": [],
   "addedPackages": [],
+  "productionBugFixes": [],
   "tokenEstimateInputs": {
     "schemaVersion": 1,
     "estimateKind": "visible-context",
@@ -272,7 +298,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 
 > **`controllerName` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導。
 
-> **tokenEstimateInputs（必填）**：executor-result 必須包含 `tokenEstimateInputs`，記錄可觀測 `readFiles`（analysis / writer-result 交接檔、測試專案 `.csproj`、產出測試檔）/ `writtenFiles`（executor-result 交接檔）/ `toolOutputRefs`（`docker info`、`dotnet workload list`、`dotnet build`、`dotnet test` 的可觀測輸出欄位）；此欄只供 estimator 使用，不得自行計算 token 數字。
+> **tokenEstimateInputs（必填）**：executor-result 必須包含完整 canonical telemetry；缺漏時 formal comparator blocked。`productionBugFixes[]` 必須反映實際 truth，正式實驗預期為空。
 
 ### Step 6：回傳精簡摘要
 
@@ -285,6 +311,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 5. **`fixRounds`**：修正迴圈次數
 6. **`executorResultFilePath`**：交接檔案路徑
 7. **`testFilePaths`**：測試檔案路徑清單
+8. **`executionMethod`／`blameHangTimeout`／Resource readiness／production mutation truth**
 
 **回傳結果的正確性要求**：
 
@@ -324,6 +351,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 8. **容器清理** — 不需要手動清理容器，Aspire + `IAsyncLifetime.DisposeAsync` 會自動處理
 9. **執行方式硬規則** — 必須使用 `dotnet test`，絕不使用 `dotnet run`；必須使用 `--blame-hang-timeout`，絕不使用無效的 `--timeout`
 10. **測試專案形狀** — 測試 `.csproj` 必須有 `Microsoft.NET.Test.Sdk`、`xunit`、`xunit.runner.visualstudio`、`Aspire.Hosting.Testing`，不得加入 `<OutputType>Exe</OutputType>`
+11. **Canonical handoff** — 正式 workflow 必讀 analysis 與 writerResultFilePaths[]，並驗證明示 topology；exact executorResultFilePath 不得自行重算
 
 ## Tools
 

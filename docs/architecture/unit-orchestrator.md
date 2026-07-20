@@ -38,7 +38,7 @@ Analyzer 讀原始碼，識別目標類型與依賴，產出 `analysis.json`。
 | 類型 | 特徵 | 處理 |
 |---|---|---|
 | Service | 有可注入依賴（Repository / TimeProvider / IFileSystem / 介面）| 正常 mock 流程 |
-| Validator | `AbstractValidator<T>` | `forbidWriterSplit: true`，永不分割 |
+| Validator | `AbstractValidator<T>` | 保留 `forbidWriterSplit: true` 相容性 metadata；正式 topology 與其他 target 相同，皆為單一 Writer |
 | Legacy | 靜態依賴、裸靜態呼叫，難以隔離 | Characterization Test；需 seam 時走 production-code 邊界 |
 
 **Analyzer 輸出（回傳摘要 + 寫入 analysis.json）：**
@@ -77,41 +77,36 @@ Writer 在 Step 0 讀 analysis.json，按 `requiredTechniques` 載入 Agent Skil
 **測試命名**：中文三段式 `方法名_情境描述_預期結果`。
 **斷言**：必用 AwesomeAssertions（`.Should()`），禁 `Assert.Equal` 等 xUnit 內建斷言。
 
-### 4.1 大型類別 Writer 分割策略
+### 4.1 每 Target 單一 Writer 策略
 
-**觸發條件**（須同時滿足）：`methodCount > 5` 或 `scenarioCount > 20`，**且** `forbidWriterSplit` 不為 `true`。觸發後啟動**最多 2 個平行 Writer**（agent 數固定為 2，不因平衡而增減）。
+每個 target 固定只 dispatch **一個 Writer subagent**，不受 `methodCount`、`scenarioCount`、`targetType` 或 `forbidWriterSplit` 影響。正式流程不再依方法、scenario、setup 或預估輸出大小切割 Writer。
 
-**分組規則（setup 親和優先，非純貪心）：**
+這項 topology 決策不限制 Analyzer 應產生的案例數量，也不設定「正常案例」上限。單一 Writer 必須處理 analysis artifact 中全部有效的 `suggestedTestScenarios`、`scenarioCatalog` 與 `constructorGuards`。
 
-1. **setup 親和優先**：先依 dependency / requiredTechniques / suggestedTestScenarios 判斷每個方法需要的 SUT / mock / TimeProvider / AutoFixture / 資料建構設定，**將共用同一套 setup 的方法盡量分到同一組**；`methodScenarioCounts` 僅作**次要**平衡。
-2. **不為了 scenario 數平均而拆散共用 setup 的方法**；同一方法的所有測試案例絕不跨組。
-3. **建構子 null-guard 測試集中單一檔**：若有 `constructorGuards[]`，`Constructor` 測試完整放入單一 assignment（預設 Writer 1 / 主要組），不分散、不重複。
+單一 Writer 可依可讀性產生一個或多個測試檔，但這些檔案仍屬同一 assignment，並由同一份 writer-result 回溯 `testFilePaths`、`testClasses[].filePath`、`methodsCovered` 與 `scenarioCoverage`。
 
-**輸出檔案命名：**
+若 Writer 因 context 或 output limit 無法完成，該 phase 必須保留證據並回報 blocker；不得臨時回退 split，也不得靜默刪減 scenarios。Split topology 僅保留在歷史實驗資料與比較器中，不是正式 runtime fallback。
 
-- Writer 1（主要組）：`{ClassName}Tests.cs`
-- Writer 2（分割組）：1～2 方法 → `{ClassName}_{代表方法}Tests.cs`；3+ 方法 → 語意化群組名 `{ClassName}_{Group}Tests.cs`
+### 4.2 多檔輸出一致契約
 
-### 4.2 跨檔 fixture 一致契約（Codex 強化，分割時所有 Writer 必守）
+單一 Writer 若為同一 target 產出多個測試檔，仍須維持逐檔一致：
 
-這是 Codex 版針對「split 多檔 fixture 漂移」的強化（上游 Claude 版有此問題）。風格統一指令要求 split 出的多檔**逐檔一致**：
+- **時間錨**：使用一致的具名常數或固定時間策略，避免一檔 inline、一檔具名
+- **AutoFixture 遞迴行為**：所有檔案採一致設定
+- **欄位/區域變數命名**：`_fixture`、`_timeProvider`、`_sut` 與 per-test 時間變數維持一致
+- **SUT 建構模式一致**；未使用的 fixture、欄位與 using 不得保留
 
-- **時間錨**：用**具名常數**（如 `private static readonly DateTimeOffset InitialNow = ...`），所有 split 檔同名同值；禁一檔 inline、一檔具名
-- **AutoFixture 遞迴行為**：所有 Writer 一致（先移除 `ThrowingRecursionBehavior` 再加 `OmitOnRecursionBehavior`）；禁一檔只加 Omit、另一檔做完整清理
-- **欄位/區域變數命名**：`_fixture`/`_timeProvider`/`_sut`、per-test 時間變數（兩檔都 `now` 或都 `currentTime`）逐檔一致
-- **SUT 建構模式一致**；**未使用的 fixture 禁止宣告**（不留 dead field/using）
-
-> 以上完整一致性由 **Writer / Orchestrator 契約**強制（Writer 風格統一指令 + Orchestrator artifact gate）。Reviewer 目前的明文 checklist 涵蓋部分項目（見 §6），尚未逐條列出全部 fixture 一致面向；如需 Reviewer 端完整顯式把關，須先補強 `dotnet-testing-reviewer.toml`。
+Writer-result 與 final report 必須逐檔列出對應的方法範圍，讓多檔輸出仍可稽核。
 
 ### 4.3 建構子 null-guard 覆蓋（Codex 強化）
 
-若 analysis 有 `constructorGuards[]`，負責 `Constructor` 的 Writer 必須**為每個 guarded 依賴**寫一個 null-guard 測試：`new XxxService(...該依賴傳 null...)` 應 `Throw<ArgumentNullException>().WithParameterName("<dep>")`。guard 本就存在於 production，**不需修改 production code**。
+若 analysis 有 `constructorGuards[]`，該 target 的單一 Writer 必須**為每個 guarded 依賴**寫一個 null-guard 測試：`new XxxService(...該依賴傳 null...)` 應 `Throw<ArgumentNullException>().WithParameterName("<dep>")`。guard 本就存在於 production，**不需修改 production code**。
 
 ### 4.4 Writer Artifact 完整性 Gate
 
-Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writer-result.json` 驗欄位齊全（`testFilePaths`、`testCaseCount`、`testClasses[].methodsCovered`、`skillsLoaded` 等）+ 方法範圍檢查（method-scope 不得溢寫全類別；split assignment 的 `methodsCovered` 可回溯；ctor 測試只能在單一檔）。缺欄/不一致 → 不進 Executor，可 **bounded re-dispatch Writer 最多 2 次**（只補缺漏，**不重啟整個 workflow**），仍不行則判 blocker。
+Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writer-result.json` 驗欄位齊全（`testFilePaths`、`testCaseCount`、`testClasses[].methodsCovered`、`skillsLoaded` 等）+ 方法範圍檢查（method-scope 不得溢寫全類別；每個輸出檔的 `methodsCovered` 必須可回溯；建構子 guard 不得遺漏）。缺欄/不一致 → 不進 Executor，可 **bounded re-dispatch Writer 最多 2 次**（只補缺漏，**不重啟整個 workflow**），仍不行則判 blocker。
 
-analysis 有 `scenarioCatalog` 時，每個 Writer assignment 另帶 `scenarioIds`。有效 `USR-*` 必須恰好分派一次，Writer 優先實作並優先採用使用者指定資料。writer-result 的 `scenarioCoverage[]` 記錄 scenario ID、測試檔／方法、`implemented|blocked|limitation` 及 `exact|partial|generated|not-applicable` 資料使用狀態；任何有效使用者情境都不得靜默略過。
+analysis 有 `scenarioCatalog` 時，單一 Writer 讀取全部有效 scenario。每個有效 `USR-*` 必須在 `scenarioCoverage[]` 恰好出現一次，Writer 優先實作並優先採用使用者指定資料。writer-result 記錄 scenario ID、測試檔／方法、`implemented|blocked|limitation` 及 `exact|partial|generated|not-applicable` 資料使用狀態；任何有效使用者情境都不得靜默略過。
 
 Writer artifact gate 也會逐 ID 比對 catalog `normalizedName`、`testMethodNames` 與 `testDataEvidence`。這可在 Executor 前攔截「ID 數量正確、但實際配到另一個情境」的錯誤。Reviewer 完成後再以 `--require-review-pass` 執行正式 acceptance；coverage incomplete 或 Reviewer fail 不得被全綠測試結果覆蓋。
 
@@ -119,7 +114,7 @@ Reviewer 的 missing-test 判定嚴格受 `methodsToTest` 限制；method-scope 
 
 ### 4.5 階段間主動釋放 agent（Codex 強化）
 
-Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **主動關閉已完成 Writer agents**，釋放後續 phase 的 runtime thread slots（Analyzer→Writer、Executor→Reviewer 同樣處理）。此舉是 thread-ceiling 的單點優化，只釋放已完成 agent，不改測試/分割/correctness。
+Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **主動關閉已完成 Writer agents**，釋放後續 phase 的 runtime thread slots（Analyzer→Writer、Executor→Reviewer 同樣處理）。此舉是 thread-ceiling 的單點優化，只釋放已完成 agent，不改測試、Single Writer topology 或 correctness contract。
 
 ---
 
@@ -138,7 +133,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 
 有使用者情境時，Reviewer 先以 `scenarioCatalog` 的有效 `USR-*` 集合作 coverage 權威，交叉驗證 writer-result `scenarioCoverage` 與實際測試碼。它必須檢查指定測試資料與預期結果是否落實、排除已拒絕情境、確認 merged 情境由目標情境承接，並輸出 `userScenarioCoverage`。缺少 P0 使用者情境視為 error；coverage 不完整不得評為 A/A+。
 
-> 註：§4.2 的完整跨檔 fixture 一致面向（`InitialNow` 具名常數、AutoFixture 遞迴行為、`_fixture`/`_sut` 命名、SUT 建構模式、per-test 時間變數命名）目前主要由 **Writer 風格統一指令 + Orchestrator artifact gate** 保證；reviewer.toml 尚未逐條顯式列出全部。若要 Reviewer 端完整把關，須補強該 toml。
+> 註：單一 Writer 產生多檔時，§4.2 的跨檔 fixture 一致面向主要由 **Writer 契約 + Orchestrator artifact gate** 保證；Reviewer 仍負責以實際測試碼檢查品質與 coverage。
 
 **修改流程（post-review approval gate）**：Reviewer 回傳後 Orchestrator 呈現完整報告（`overallScore` / `issues` / `missingTestCases`）並**等待使用者明確指示**才啟動修改流程（Writer 修改 → Executor → Reviewer re-review）。**禁止自動觸發、禁止預先授權**。
 
@@ -160,7 +155,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | 交接檔 | 寫入者 | 路徑 |
 |---|---|---|
 | `{ClassName}.analysis.json` | Analyzer | `.orchestrator/analysis/` |
-| Writer artifact（逐 assignment 唯一）| Writer | `.orchestrator/writer-result/`；**每個 Writer assignment 各自一份可獨立 poll 的 canonical artifact**，路徑須能回溯該 assignment 與其 `testFilePath`（split 時非單一 `{ClassName}.writer-result.json`）|
+| `{ClassName}.writer-result.json` | Writer | `.orchestrator/writer-result/`；每 target 一份 canonical artifact，可列出一個或多個 `testFilePaths` |
 | `*.executor-result.json` | Executor | `.orchestrator/executor-result/` |
 | `{ClassName}.reviewer-result.json` | Reviewer | `.orchestrator/reviewer-result/` |
 | `run-state.json` | Orchestrator | `.orchestrator/` |
@@ -182,12 +177,12 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | 階段 | 執行方式 | 原因 |
 |---|---|---|
 | Analyzer | 平行（逐 target）| 互不依賴 |
-| Writer | 平行（逐 target，且各 target 仍可 per-class 分割）| 獨立撰寫；dispatch 單位是「Writer assignment」非 target，故三目標可產生 > 3 個 Writer |
+| Writer | 平行（逐 target）| 每 target 固定一個 Writer；三目標最多產生 3 個正式 Writer assignments |
 | Executor | 循序 | 同專案 `dotnet build` 不可並行 |
 | Reviewer | 平行（逐 target）| 獨立審查 |
 
 - 並行 SpawnAgent 數受 `.codex/config.toml` `[agents] max_threads` 限制。
-- **thread-ceiling 自癒**：分割使並行 Writer 變多時可能逼近 agent thread limit；遇到時做 **bounded re-dispatch**（關閉已完成 agents 後補派，`restartCount=0`），`run-state.redispatchEvents` 記錄該事件。配合 §4.5 階段間主動釋放降低撞限機率。
+- **thread-ceiling 自癒**：多 target 平行 dispatch 仍可能逼近 agent thread limit；遇到時做 **bounded re-dispatch**（關閉已完成 agents 後補派，`restartCount=0`），`run-state.redispatchEvents` 記錄該事件。配合 §4.5 階段間主動釋放降低撞限機率，且不得改成同 target split。
 
 ---
 

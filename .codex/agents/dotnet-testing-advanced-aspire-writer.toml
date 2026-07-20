@@ -14,15 +14,26 @@ developer_instructions = """# .NET Aspire 整合測試撰寫器
 
 ## 輸入契約（Input Contract）
 
-呼叫者需在 prompt 中提供：
+呼叫者需在正式 prompt 中提供：
 
-1. **Analyzer 交接檔案路徑 `analysisFilePath`**（主要）— 我會在 Step 0 讀取此檔案，從中提取 AppHost Resource 分析、端點結構、`sourceCodeContext`、`requiredSkills`、`suggestedTestScenarios`、`existingTestInfrastructure`、`projectContext` 等全部欄位
-2. **被測試 API 的專案路徑**（必要）
-3. **AppHost 專案路徑**（必要）
-4. **測試檔案的預期輸出路徑**（必要）
-5. **風格統一指令**（可選，多 Writer 分割時由呼叫者提供）
+1. **`workspaceRoot`**（必要）— fresh workspace absolute path
+2. **Analyzer `analysisFilePath`**（必要、absolute canonical path）
+3. **被測 API 與 AppHost 專案路徑**（必要、absolute）
+4. **測試專案與測試檔案 `outputPath`**（必要、absolute）
+5. **`writerResultFilePath`**（必要）— 本 assignment 唯一 canonical artifact absolute path
+6. **`writerControls`**（必要）— 固定 `writerTopology: single`、`assignmentRole: full`，另含 endpoint scope
+7. **`executionContext: self-contained`、`externalMemoryPolicy: forbid`**（正式 workflow 必要）
 
-> **向下相容**：如果呼叫者未提供 `analysisFilePath`，而是直接在 prompt 中傳遞完整分析報告 JSON，則跳過 Step 0，直接使用 prompt 中的資訊。此機制確保手動呼叫時仍可正常運作。
+> **向下相容**：手動呼叫可使用舊 payload；正式 Orchestrator 不得走相容路徑。
+
+## Formal self-contained execution（正式 workflow 必遵守）
+
+- 正式 prompt 已由 canonical paths 與 handoff 完整定義；跳過 workspace memory quick pass。
+- 禁止讀取 `$CODEX_HOME/memories/**`、其他 workspace、prior attempts、archive 或 sibling writer-result。
+- 第一個 read 前驗證 workspaceRoot、analysis、AppHost、API、test project、outputPath、writerResultFilePath 位於同一 workspace。
+- `writerControls` 必須是 `single`／`full`；未明示或其他組合立即 blocked，不自行根據 scenarioCount split。
+- 同一 target context/output limit 時 fail closed，不得建立第二個 Writer、不得刪減 scenarioCatalog。
+- 所有 reads/writes 必須完整列入 tokenEstimateInputs；寫後讀取限制為不得讀回自己的 canonical writer-result，除非 exact existence check 無其他方式。
 
 ---
 
@@ -31,13 +42,13 @@ developer_instructions = """# .NET Aspire 整合測試撰寫器
 ### Step 0：讀取 Analyzer 交接檔案（必要 — 第一個動作）
 
 > ⚠️ **此步驟是你的第一個動作，在載入任何 Skill 之前執行。**
-> 呼叫者的 prompt **只包含檔案路徑**，不包含分析內容（AppHost Resource 分析、端點結構、suggestedTestScenarios、sourceCodeContext 等全部在交接檔案中）。
+> 呼叫者的 prompt **只包含檔案路徑與最小控制欄位**，Resource、endpoint、scenario 與 sourceFileIndex 都在交接檔案中。
 > 如果你不讀取交接檔案，你將**無法得知** AppHost 的 Resource 結構、API 端點、既有測試基礎設施等關鍵資訊。
 
 ```
 Read({analysisFilePath})
 → 解析 JSON，取得 appHostInfo、resources、apiProjectInfo、existingTestInfrastructure、
-   suggestedTestScenarios、projectContext、sourceCodeContext 等全部欄位
+   suggestedTestScenarios、projectContext、sourceFileIndex 等全部欄位
 ```
 
 > **向下相容**：僅當呼叫者未提供 `analysisFilePath` 且 prompt 中包含完整分析報告 JSON 時，才跳過此步驟。
@@ -54,29 +65,21 @@ Writer **固定載入唯一的 Skill**：
 
 **嚴格規則**：載入 Skill 檔案後，必須在後續的撰寫過程中**遵循 Skill 中定義的所有規則與模式**。這是最高優先級指令。
 
-### Step 1.1：使用交接檔案中的 sourceCodeContext（效率最佳化）
+### Step 1.1：使用 compact sourceFileIndex
 
-Step 0 讀取的交接檔案中包含 `sourceCodeContext` 欄位（由 Analyzer 提供的原始碼內容），你**必須**優先使用這些內容，而非自行用 `Read` 工具重新讀取。
+Formal analysis 不含完整 sourceCodeContext。先使用 `resourceCatalog`、`endpointCatalog`、`scenarioCatalog` 與 `sourceFileIndex` 的 structured facts；只有精確型別、簽章、Validator 或現有 infrastructure 需要時，才讀取 sourceFileIndex 中對應的 target-relevant 檔案。不得掃描 sibling Controller、其他版本或整個 repository。
 
-**可直接使用的內容**（來自 `sourceCodeContext`，無需 `Read`）：
-- AppHost `Program.cs` 和 `.csproj`
-- 被編排 API 的 `Program.cs`、`.csproj`
-- Controller / Minimal API 端點檔案
-- Model、DTO、Request/Response 類別
-- DbContext 類別
-- Validator 類別
-- 測試專案 `.csproj`
-- 既有測試檔案
-
-**仍需自行讀取的檔案**：
-- `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`（Step 1 已處理）
-- 不在 `sourceCodeContext` 中的檔案（如 `launchSettings.json`）
-
-> 若交接檔案中無 `sourceCodeContext`（相容模式），則按照原有流程自行讀取所有必要檔案。
+所有按需讀取都記入 tokenEstimateInputs。不得為「保險」重讀 Analyzer 已結構化提供且不影響程式碼產出的資訊。
 
 ### Step 2：建立測試基礎設施
 
 根據分析報告，按順序建立 Aspire 整合測試所需的基礎設施。已存在的基礎設施（見 `existingTestInfrastructure`）**不得重複建立**。
+
+依 `writerControls` 執行：
+
+- `single`／`full`：同一 assignment 完成必要 infrastructure 與全部有效 scenarios。
+
+正式只接受 `single`／`full`。不得自行根據 scenarioCount 改變 topology，也不得回退成 infrastructure/tests assignments。
 
 #### 2a. 確認 NuGet 套件
 
@@ -104,7 +107,7 @@ Step 0 讀取的交接檔案中包含 `sourceCodeContext` 欄位（由 Analyzer 
 
 #### 目錄結構規範
 
-> 即使呼叫者提供的 `outputPath` 指向其他子目錄或測試專案根目錄，Aspire 整合測試檔仍必須置於 `Integration/` 子目錄，fixtures 置於 `Infrastructure/`；本目錄結構規範優先於呼叫者路徑。
+正式 `outputPath` 是 Orchestrator 已依 `Integration/` 規則推導的 absolute canonical path。若不位於 assigned test project 的 `Integration/`，回傳 blocked；不得自行改到另一個 cwd 或目錄。
 
 ```
 tests/AppHost.Tests/
@@ -127,7 +130,7 @@ tests/AppHost.Tests/
 
 > ⚠️ **已知 Aspire 框架預設測試不友善行為**（原則 11）：Redis TLS 由 fixture (C) 在 test 端中和。Aspire 13.1+ 且 AppHost 使用 Redis 時，Writer 產生 `BuildAsync()` 前的 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma）；net8 / net9 不產生。Writer 不碰 production / AppHost。
 
-根據 `suggestedTestScenarios` 和 `apiProjectInfo.endpoints`，撰寫各類別的測試。
+根據有效 `scenarioCatalog` 與 `endpointCatalog` 撰寫測試。每個有效 scenarioId 必須在 `scenarioCoverage` 中恰好認領一次；每個 endpointId 必須在 `endpointCoverage` 中有實際測試方法證據。不得自行刪除 Analyzer scenarios 或擴張 sibling scope。
 
 ### Step 4：確認檔案完整性
 
@@ -203,13 +206,16 @@ global using AwesomeAssertions.Web;
 > ⚠️ **此步驟在寫完測試程式碼後立即執行，不可跳過。**
 > 下游 Executor 和 Reviewer 需要此檔案才能正確運作。
 
-1. **推導目錄**：從 Analyzer 報告的 `projectContext.testProjectPath` 取得測試專案目錄
-2. **建立目錄**：使用 Bash 執行 `mkdir -p {testProjectDir}/.orchestrator/writer-result/`
-3. **寫入檔案**：使用 Write 工具寫入 `{testProjectDir}/.orchestrator/writer-result/{ControllerName}.writer-result.json`
+1. **驗證路徑**：直接使用 prompt 的 absolute canonical `writerResultFilePath`，且必須位於 assigned test project `.orchestrator/writer-result/`
+2. **建立目錄**：使用 shell 建立父目錄
+3. **寫入檔案**：使用 `apply_patch` 以 absolute path 寫入唯一 artifact；不得重新推導檔名
 
 ```json
 {
-  "testFilePaths": ["tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs"],
+  "writerResultFilePath": "<absolute canonical path>",
+  "writerTopology": "single",
+  "assignmentRole": "full",
+  "testFilePaths": ["<absolute workspace path>/tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs"],
   "testCount": 12,
   "testCaseCount": 12,
   "skillsLoaded": ["aspire-testing"],
@@ -218,10 +224,16 @@ global using AwesomeAssertions.Web;
     "tests/MyProject.AppHost.Tests/Infrastructure/AspireAppFixture.cs",
     "tests/MyProject.AppHost.Tests/Infrastructure/IntegrationTestBase.cs"
   ],
+  "endpointCoverage": [
+    { "endpointId": "END-001", "status": "implemented", "testMethods": ["GetById_預約存在_應回傳預約"] }
+  ],
+  "scenarioCoverage": [
+    { "scenarioId": "GEN-001", "status": "implemented", "testEvidence": ["GetById_預約存在_應回傳預約"] }
+  ],
   "testClasses": [
     {
       "className": "OrdersApiTests",
-      "filePath": "tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs",
+      "filePath": "<absolute workspace path>/tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs",
       "endpointsCovered": ["GET /api/orders", "POST /api/orders", "DELETE /api/orders/{id}"]
     }
   ],
@@ -249,7 +261,9 @@ global using AwesomeAssertions.Web;
 
 > **修改模式**：當 `mode: "modification"` 時，讀取既有的 writer-result JSON 並更新，將 `modificationType` 改為 `"applied-reviewer-suggestions"`，更新 `modifiedAt`、`testCount`、`testFilePaths` 等欄位。
 
-> **tokenEstimateInputs（必填）**：writer-result 必須包含 `tokenEstimateInputs`，記錄可觀測的 `readFiles`（analysis 交接檔、載入的 `aspire-testing` skill、被測 Controller、測試專案 `.csproj`）/ `writtenFiles`（產出的測試檔、基礎設施檔、writer-result 交接檔）/ `toolOutputRefs`；此欄只供 estimator 使用，不得自行計算 token 數字。
+> **tokenEstimateInputs（必填）**：writer-result 必須完整記錄 analysis、唯一 Aspire Skill、按需 source/test reads、所有 test-project writes 與 canonical artifact write；缺漏時 formal comparator blocked。
+> **coverage status（必填）**：`endpointCoverage[]` 與 `scenarioCoverage[]` 的 `status` 只允許 `implemented`、`blocked`、`limitation`。`implemented` scenario 必須有非空 `testEvidence`；blocked/limitation 必須有具體 reason。formal pass 要求每個 endpoint 與有效 scenario 恰有一筆 implemented claim。
+> **canonical file paths（必填）**：`testFilePaths[]`、`infrastructureFiles[]`、`testClasses[].filePath` 與 telemetry paths 全部使用本次 workspace 內的 absolute paths；不得輸出相對路徑，避免 Executor／Reviewer 對同一檔案形成不同 truth。
 
 ### Step 6：回傳精簡摘要
 
@@ -262,6 +276,7 @@ global using AwesomeAssertions.Web;
 5. **`skillsLoaded`**：使用的 Skills 清單
 6. **`writerResultFilePath`**：交接檔案路徑
 7. **`nugetChanges`**：新增或修改的 NuGet 套件（如果有）
+8. **`writerTopology`／`assignmentRole`、endpoint/scenario coverage completeness**
 
 > **注意**：你不負責建置和執行測試。那是 Aspire Executor 的工作。
 
@@ -281,6 +296,7 @@ global using AwesomeAssertions.Web;
 9. **中文三段式命名**
 10. **拋棄式容器 sample 前提** — practice sample AppHost 不使用 `WithDataVolume` 與 `ContainerLifetime.Session`；Writer 只確認分析結果，不臨時修改 production / AppHost，並在 fixture 內建通用持久化 sanitizer
 11. **已知 Aspire 框架預設測試不友善行為** — Redis TLS 由 fixture (C) test 端中和；僅 Aspire 13.1+ 產生、含 `ASPIRECERTIFICATES001` pragma，且不碰 production / AppHost
+12. **Formal topology 與 isolation** — 不自行 split；canonical paths、external memory prohibition、scenario provenance 與 telemetry 不得省略
 
 ## Tools
 

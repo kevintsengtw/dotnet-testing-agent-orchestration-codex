@@ -42,17 +42,20 @@ Analyzer 以 **AppHost `Program.cs`** 為主要入口（非 WebAPI `Program.cs`�
 - **`appHostInfo`（含 `aspireVersion`）**：須處理兩種 csproj 格式 —
   - **(A) 分離 SDK 格式**（`<Sdk Name="Aspire.AppHost.Sdk" Version="X.Y.Z" />`，Aspire 8.x / 9.x）：版本**以 `Aspire.Hosting.AppHost` 套件版本為權威來源**（SDK 版本與套件版本不同時以套件版本為準；8.x 可能用 SDK 9.0.0 但 runtime 套件為 8.x）。
   - **(B) Project SDK 格式**（`<Project Sdk="Aspire.AppHost.Sdk/X.Y.Z">`，Aspire 13.x）：無獨立 `Aspire.Hosting.AppHost` 套件參考，**版本從 SDK 屬性取得**。
-- **`resources[]`**：所有 `builder.Add*` 呼叫（類型、名稱、方法、映像、資料卷）。
+- **`resourceCatalog[]`**：所有 target-relevant `builder.Add*` Resource，以穩定 `RES-*` ID 記錄名稱、類型、是否為目標必要資源與 evidence。
 - **`projectReferences[]`**：被編排專案（名稱、類型、依賴 Resources、`WaitFor` 關係）；`name` 必須與 AppHost `AddProject("name")` 字串參數**完全一致**（影響 `CreateHttpClient("name")` 正確性）。
 - **`dependencyGraph`**：服務依賴圖（`WithReference` / `WaitFor` 關係）。
 - **`containerLifetime`**：是否有 `WithLifetime(ContainerLifetime.Session)`。
 - **`dataVolumes`**：`WithDataVolume` 名稱。
 - **`apiProjectInfo`**：含 `endpoints`、`dbContext`、`validators`（**不需** `dbRegistrationAnalysis` — Aspire 自動管理 DB 連線，無 descriptor 移除策略）。
+- **`endpointCatalog[]` / `endpointsToTest[]`**：以穩定 `END-*` ID 記錄 Controller、action、HTTP method、route、服務名、Resource 關聯與 evidence。
+- **`scenarioCatalog[]` / `scenarioReviewSummary` / `userProvidedScenarioInput`**：保留使用者與 Analyzer 案例 provenance；`userProvidedScenarioInput.present` 固定為 boolean，無輸入時仍輸出 `present: false`。案例數不固定，也不作 Writer topology gate。
 - **`existingTestInfrastructure`**：掃描既有 AspireAppFixture / Collection Fixture / Respawn，避免 Writer 重複建立。
 - **`requiredSkills`**：固定 `["aspire-testing"]`。
 - **`suggestedTestScenarios`**：中文三段式 `端點操作_情境_預期`。
 - **`projectContext`**：`testFramework` 固定 `"xunit"`；`targetFramework` 取自**被編排 API 專案**（非 AppHost）的 `<TargetFramework>`。
-- **`sourceCodeContext`**：將已讀檔案的**完整內容**前向傳遞（AppHost / API 的 `Program.cs` + `.csproj`、controllers、models、dbContext、validators、測試 csproj 等），供下游免重複讀取。
+- **`sourceFileIndex[]`**：只保留 absolute path、purpose 與 compact facts，正式 artifact 禁止嵌入 `sourceCodeContext` 或完整原始碼。Writer / Reviewer 只在需要精確簽章時按需讀 target-relevant 檔案。
+- **`tokenEstimateInputs`**：記錄本 assignment 實際 reads / writes，作 visible-context comparator；缺漏時不得納入 token 對照。
 
 Orchestrator 收摘要後用 Glob **驗證 `analysisFilePath` 確實存在**，才 SpawnAgent Writer。
 
@@ -63,14 +66,14 @@ Orchestrator 收摘要後用 Glob **驗證 `analysisFilePath` 確實存在**，�
 Writer 在 Step 0 先讀 analysis.json，**只載入單一技術技能** `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`，撰寫 Aspire 整合測試。**不得載入** unit 的 20 個 technique skills、TUnit skills 或一般 integration skills。
 
 **測試命名**：中文三段式 `端點操作_情境_預期`。
-**基礎設施**：`AspireAppFixture`（`IAsyncLifetime`）+ `[CollectionDefinition]` + `ICollectionFixture<T>` 共享 AppHost；必要時 `ContainerLifetime.Session`、必要時 Respawn 做資料隔離。
+**基礎設施**：`AspireAppFixture`（`IAsyncLifetime`）+ `[CollectionDefinition]` + `ICollectionFixture<T>` 共享 AppHost；使用測試端有界 Resource readiness、通用持久化 sanitizer，必要時 Respawn 做資料隔離。
 
 **Writer 必須使用**：
 
 - `DistributedApplicationTestingBuilder`
 - `app.CreateHttpClient("servicename")`（名稱對齊 AppHost `AddProject("name")`）
 - `AspireAppFixture` + `IAsyncLifetime`、`[CollectionDefinition]` + `ICollectionFixture<T>`
-- 必要時 `ContainerLifetime.Session`、必要時 Respawn
+- 測試端有界 `WaitForResourceHealthyAsync`、通用持久化 sanitizer、必要時 Respawn
 - `App.GetConnectionStringAsync("resourceName")`
 
 **Writer 不得使用**：
@@ -86,12 +89,9 @@ Writer 在 Step 0 先讀 analysis.json，**只載入單一技術技能** `.codex
 
 有效端點範圍來源優先序：prompt 明確端點 / Controller slice > Analyzer artifact 的 `suggestedTestScenarios` / `endpoints` > 整個 Controller。上層範圍存在時不得擴大到 sibling endpoints 或 sibling resources；`testClasses[].endpointsCovered`（或 `methodsCovered`）必為明確端點清單，不得填 `All` / `FullController` / 空陣列 / 敘述文字。
 
-### 4.2 分批啟動判斷
+### 4.2 單一 Writer topology
 
-| 測試案例數量 | 策略 |
-|---|---|
-| `scenarioCount ≤ 15` | 單次啟動（基礎設施 + 全部測試案例） |
-| `scenarioCount > 15` | 分兩次（第一次只產基礎設施；第二次產測試案例 + 風格統一指令） |
+每個 Controller／endpoint slice 固定一個 `single/full` Writer，同一 assignment 完成必要 infrastructure 與全部有效 scenarios；不依 `scenarioCount`、endpoint 數、Resource 數、Aspire 版本或預估輸出大小 split。此規則不限制案例數，也不得靜默刪減。若單一 Writer遇 context/output limit，attempt fail closed；歷史 B1 two-step artifacts只供實驗比較與 validator compatibility。
 
 ### 4.3 P4 版本政策
 
@@ -99,7 +99,7 @@ Writer 在 Step 0 先讀 analysis.json，**只載入單一技術技能** `.codex
 
 ### 4.4 Writer Artifact 完整性 Gate
 
-Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writerResultFilePath` 驗欄位齊全（`writerResultFilePath`、`testFilePaths` 非空、`testCount` / `testCaseCount` 為數字、`testClasses[].className/filePath/endpointsCovered`（或 `methodsCovered`）、`skillsLoaded`）+ 範圍檢查（`skillsLoaded` 應含 `aspire-testing`，**不得**含 unit / TUnit / integration 技能）。缺欄 / 不可讀 / scope mismatch → 不進 Executor，可 **bounded re-dispatch Writer 最多 2 次**，仍不行則判 blocker。
+Writer 回傳後 Orchestrator **不只採信摘要**，必須讀本 target 全部 canonical writer-result，驗證 topology、`testFilePaths`、case accounting、`testClasses`、`endpointCoverage`、`scenarioCoverage`、`skillsLoaded` 與 `tokenEstimateInputs`。`validate-aspire-scenario-contract.mjs` 確認每個有效 scenario 與 endpoint 恰由測試 assignment 實作一次；缺欄 / scope mismatch → 不進 Executor，可 bounded re-dispatch 最多 2 次，仍不行則判 blocker。
 
 ### 4.5 階段間主動釋放 agent
 
@@ -118,13 +118,13 @@ Writer 回傳後 Orchestrator **不只採信摘要**，必須讀實體 `writerRe
 - 常見修正：補 `using`、**add-only 補齊缺少套件**、`Projects.xxx` 型別（連字號轉底線）、`EnsureCreatedAsync()` 在 fixture、服務名稱一致性、`CreateHttpClient` 找不到服務。容器由 Aspire + `IAsyncLifetime.DisposeAsync` 自動清理，不需手動。**禁升降既有套件版本**修 build；**禁** restart / 拼湊·偽造 artifact / 假綠。
 - 結果：通過/失敗/略過數**必須來自實際 `dotnet test` 輸出**，禁編造。
 
-Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`aspireWorkloadStatus`、`buildResult`、`testResult`、`totalTests` / `passedTests` / `failedTests` / `skippedTests`、`fixRounds`、`fixHistory`、`addedPackages`。
+Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、build/test、case accounting、`executionMethod`、`blameHangTimeout`、Resource readiness、Aspire-native execution、fix history、零 production mutation truth 與 canonical telemetry；`validate-aspire-execution-contract.mjs` 作正式 gate。
 
 ---
 
 ## 6. Phase 4 Reviewer
 
-讀測試碼 + 三個交接檔（analysis / writer-result / executor-result），品質審查。Reviewer 一律執行，**不因 Executor 第一次全綠、0 修正輪次或使用者未明確要求而跳過**。Reviewer **無 `Edit` 工具**，只記錄不修改；有完整審查 / re-review 兩模式。
+讀測試碼 + 三類 canonical 交接檔（analysis / 全部 writer-result / executor-result），品質審查。Reviewer 一律執行，**不因 Executor 第一次全綠、0 修正輪次或使用者未明確要求而跳過**，且不重跑 build / tests。Reviewer **無 `Edit` 工具**，只記錄不修改；有完整審查 / re-review 兩模式。
 
 **固定載入** `aspire-testing`，並視需要載入 `test-naming-conventions` / `awesome-assertions`。
 
@@ -132,27 +132,25 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 
 - `DistributedApplicationTestingBuilder` 正確使用，且**沒有** `WebApplicationFactory`。
 - `CreateHttpClient("name")` 名稱與 AppHost `AddProject("name")` **一致**。
-- Collection Fixture / `IAsyncLifetime` / `ContainerLifetime.Session` / Respawn 使用合理。
+- Collection Fixture / `IAsyncLifetime` / 測試端有界就緒 / 通用 sanitizer / Respawn 使用合理；不得因 sample 未設 Session 或 data volume 列警告。
 - 執行方式為 `dotnet test`，**不是** `dotnet run`。
 - csproj 有 `Microsoft.NET.Test.Sdk` + `xunit` + `Aspire.Hosting.Testing`，**沒有** `<OutputType>Exe</OutputType>`。
 - 端點覆蓋只針對 P3 指定範圍，不擴大到 sibling endpoints / resources。
 
-收尾寫 `{ControllerName}.reviewer-result.json`（含 `overallRating`、`issues[]`、`missingTestCases[]`、`endpointCoverage`、`qualityGates`、執行方式驗證）。寫失敗即 blocker。Orchestrator 回傳後用 Glob 確認 `reviewResultFilePath` 落地；不存在即 blocker，不採信回傳文字。
+收尾寫 `{ControllerName}.reviewer-result.json`（含 `overallRating`、`score`、`gateDecision`、`issues[]`、`missingTestCases[]`、`endpointAcceptance`、`scenarioAcceptance`、Aspire compliance 與 telemetry）。寫失敗即 blocker。Orchestrator 驗證 artifact、no-self-read 與 acceptance；不存在或不一致即 blocker，不採信回傳文字。
 
 **修改流程（post-review approval gate）**：Reviewer 回傳後 Orchestrator 呈現完整報告並**等待使用者明確指示**才啟動修改流程。**禁止自動觸發、禁止預先授權**。同意後只 dispatch Writer / Executor 做測試側修改；需 production code 須先過批准邊界；修改後更新 writer-result / executor-result；Reviewer 以 re-review 模式確認前次 issues，不展開無限新增審查。
 
 ---
 
-## 7. Production-code 邊界（Codex 與 Claude 共有政策 + aspire 三類窄例外）
+## 7. Production-code 邊界
 
 本 workflow 預設**只寫/驗測試，不主動改 production code**：
 
 - 若需改 `src/**` / production `.csproj` / constructor / public API / 加 seam → Orchestrator 標 **`requiresUserApproval`**，未經同意不得 dispatch。
-- **Aspire 唯三窄例外**（Executor 已被授權做最小修改，須在 final report 以「生產 Bug/修改紀錄」標記）：
-  1. **WebApi 缺 Health Checks**（`GET /health` 404）→ 加 `AddHealthChecks()` + `MapHealthChecks("/health")`。
-  2. **容器每測試重啟超時** → 在 AppHost 或 fixture 加 `.WithLifetime(ContainerLifetime.Session)`（Aspire 9.0+）。
-  3. **Redis TLS**（Aspire 13.1.0+ 預設啟用）→ 加 `.WithoutHttpsCertificate()` 等對應設定。
-- 任何超出上述三類的 production 改動仍走批准閘門。final report 誠實標 `blocked` / `requiresUserApproval`。
+- Executor 沒有 production / AppHost 窄例外：Health Checks、volume、lifetime 與 production/AppHost Redis TLS 都不得自行修改。
+- 測試韌性由 fixture 承擔：有界就緒、通用 sanitizer，以及 Aspire 13.1+ 的 test-side Redis `WithoutHttpsCertificate()` 中和器。
+- 需要 production/AppHost 修改時誠實標 `blocked` / `requiresUserApproval`，由使用者另行決策。
 
 ---
 
@@ -166,7 +164,7 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 | `{ControllerName}.reviewer-result.json` | Reviewer | `.orchestrator/reviewer-result/` |
 | `run-state.json` | Orchestrator | `.orchestrator/` |
 
-**`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），含 `workflow: "aspire"` 與逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `produceSpanMs`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`、`redispatchEvents[]` / `boundedRedispatchCount` / `restartCount` / `executorFixRounds`。正式 phase timing 必須讀實體檔計算，不得從對話敘述 / hook additionalContext / 人工推估 / token report 推導。結果呈現輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
+**`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），含 `workflow: "aspire"` 與逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `produceSpanMs`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`、`contextForkPolicy=none`、`externalMemoryPolicy=forbid`、redispatch / restart / fix counters。formal roles 全部使用 `fork_turns: "none"`，並由 attempt-isolation 與 role-read-scope gates 驗證。正式 phase timing 必須讀實體檔計算，不得從對話敘述 / hook additionalContext / 人工推估 / token report 推導。
 
 > **Estimated Token Usage**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source，本 workflow 不回報正式 token usage。四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 `Estimated Token Usage` optional telemetry。此估算只供 visible-context 相對成本比較，不可用於 billing、runtime truth 或 correctness gate。
 
@@ -177,7 +175,7 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 | 階段 | 執行方式 | 原因 |
 |---|---|---|
 | Analyzer | 平行（逐 Controller / endpoint slice） | 互不依賴 |
-| Writer | 平行（逐 target，單一 Controller `scenarioCount > 15` 才分兩批） | dispatch 單位是 Writer assignment |
+| Writer | 共用測試專案時循序；不同測試專案可平行 | 避免 shared fixture / csproj ownership 互撞；topology 不由 scenarioCount 決定 |
 | Executor | **循序** | **AppHost 啟動與 Docker 容器不可並行互搶**（port / 容器衝突） |
 | Reviewer | 平行（逐 target） | 獨立審查 |
 
@@ -204,7 +202,7 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 4. **品質審查摘要**：Reviewer 整體評級、blocker / warning / pass 與關鍵發現。
 5. **改善建議**：整理 Reviewer 的 `issues` 與 `missingTestCases`，沒有則明確寫「無」。
 6. **使用的 Skills 組合**：Writer 載入的 skills，固定應含 `aspire-testing`，不得混入 unit / TUnit / 一般 integration skills。
-7. **Executor 修正紀錄**：`fixRounds`、`fixHistory`、`addedPackages`，並標記是否套用 Aspire production 窄例外（僅限 Health Checks、`ContainerLifetime.Session`、Redis TLS），沒有則明確寫「無」。
+7. **Executor 修正紀錄**：`fixRounds`、`fixHistory`、`addedPackages` 與 production/AppHost mutation truth；正式結果預期為「無」，任何 production/AppHost 改動均為契約違反。
 8. **各階段耗時摘要 + Timing Evidence**：讀 `run-state.json`，輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
 9. **Estimated Token Usage**：optional telemetry。四階段與 timing evidence 完成後執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，輸出「### Estimated Token Usage」表格；estimator 失敗 / run-state 缺失 / artifact 不足 / summary 為 `unavailable` 時改輸出 unavailable 表格，但不得讓 workflow 失敗，且不得作為 correctness gate。
 
@@ -218,7 +216,7 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 `dockerStatus`、`asp
 xUnit + Microsoft.NET.Test.Sdk（dotnet test + --blame-hang-timeout 執行模型）
 Aspire.Hosting.Testing（DistributedApplicationTestingBuilder + app.CreateHttpClient("name")）
 AspireAppFixture（IAsyncLifetime）+ CollectionDefinition（AppHost 共享）
-ContainerLifetime.Session（Aspire 9.0+，避免容器每測試重啟）
+測試端有界 Resource readiness + 通用持久化 sanitizer
 App.GetConnectionStringAsync("resourceName")（Aspire 管理連線，非 IConfiguration）
 Respawn（資料庫狀態重置）
 ```

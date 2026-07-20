@@ -82,12 +82,11 @@ Writer 在 Step 0 讀 analysis.json，按 `requiredSkills` 載入 Agent Skills�
 
 > **嚴禁模式**（所有 Factory 類型）：`ConfigureTestServices`、nullable `Container?`、公開 `EnsureCreatedAsync()`、`Task.Delay()` 硬等待、`static lock` 初始化鎖。`EnsureCreatedAsync()` 須封裝在 Factory 的 `InitializeAsync()` 內。
 
-### 4.2 分階段啟動（integration 專屬，非 TUnit method-split）
+### 4.2 每 Target 單一 Writer
 
-| 測試案例數量 | 策略 |
-|---|---|
-| `scenarioCount ≤ 15` | 單次啟動（基礎設施 + 全部測試案例） |
-| `scenarioCount > 15` | 分兩次（第一次只產基礎設施 GlobalUsings/WebApiFactory/TestBase/csproj；第二次產測試案例 + 風格統一指令） |
+每個 Controller／endpoint slice 固定只 dispatch 一個 `single`／`full` Writer，不受 endpoint 數、`scenarioCount`、容器種類或預估輸出大小影響。該 Writer 同時負責必要基礎設施與完整 endpoint tests；Analyzer 的合理 scenarios 不限數量，也不得為了降低 token 而刪減。若單一 Writer 遇到 context／output limit，attempt fail closed，不得恢復 split。
+
+多個 Controllers 共用同一測試專案時，Writers 依 target 順序循序執行：第一個建立所需共享 infrastructure，後續 Writer 重新檢查磁碟現況並以 add-only 方式重用／補充 Factory、Fixture、TestBase 與 `.csproj`。共享 Factory 可能在單一 target filtered run 一併啟動其他 target 的容器；execution gate 仍要求本 target required kinds 全部啟動，額外 kind 則必須逐一符合本次其他 Analyzer requirements 的明示白名單。最後一個 Executor 執行完整 test-project regression，驗證後續共享修改沒有破壞先前 target。
 
 ### 4.3 端點範圍硬邊界（P3，Codex 強化）
 
@@ -162,7 +161,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | 階段 | 執行方式 | 原因 |
 |---|---|---|
 | Analyzer | 平行（逐 Controller / endpoint slice） | 互不依賴 |
-| Writer | 平行（逐 target，單一 Controller `scenarioCount > 15` 才分兩批） | dispatch 單位是 Writer assignment |
+| Writer | 共用測試專案時循序（逐 target） | 每 target 恰為一個完整 Writer；不同測試專案才可平行 |
 | Executor | **循序** | 同方案 `dotnet build` 不可並行；容器避免 port 衝突 |
 | Reviewer | 平行（逐 target） | 獨立審查 |
 

@@ -33,6 +33,12 @@ node .codex/scripts/estimate-token-usage.mjs --test-project <測試專案路徑>
 # 範例（aspire net9 sample）
 node .codex/scripts/estimate-token-usage.mjs \
   --test-project samples/aspire/practice_aspire/tests/Practice.Aspire.AppHost.Tests
+
+# EXP-00 之後可額外量測 main-thread Orchestrator contract。
+# 此數值獨立呈現，不會改變既有 summary.totalTokensEstimated 語意。
+node .codex/scripts/estimate-token-usage.mjs \
+  --test-project samples/unit/practice/tests/Practice.Core.Net10.Tests \
+  --orchestrator-contract .codex/skills/dotnet-testing-orchestrator-unit/SKILL.md
 ```
 
 輸出寫到 `<測試專案>/.orchestrator/token-usage-estimate.json`,並把該路徑印到 stdout。
@@ -45,16 +51,41 @@ node .codex/scripts/estimate-token-usage.mjs \
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "schemaCompatibility": {
+    "minimumReaderVersion": 1,
+    "additiveOnlyFromVersion": 1
+  },
   "workflow": "aspire",                 // 取自 run-state.workflow
   "estimator": { "method": "chars-heuristic", "charsPerToken": 3.6 },
   "summary": {
+    "measurementScope": "subagent-visible-context",
     "estimateKind": "estimated",        // 或 "unavailable"
     "inputTokensEstimated":  123456,
     "outputTokensEstimated": 23456,
     "totalTokensEstimated":  146912,
     "range": { "low": 146912, "high": 178000 },  // high = 套 overhead
     "confidence": "medium"              // medium/low/unavailable（chars 粗估上限即 medium，取各 assignment 最低）
+  },
+  "orchestratorContractEstimate": {
+    "estimateKind": "estimated",
+    "path": ".codex/skills/dotnet-testing-orchestrator-unit/SKILL.md",
+    "source": "cli",
+    "tokensEstimated": 13413,
+    "includedInSubagentSummaryTotal": false
+  },
+  "observations": {
+    "fileReuse": {
+      "countedOccurrences": 42,
+      "uniqueFiles": 25,
+      "repeatedOccurrences": 17,
+      "repeatedTokensEstimated": 48000,
+      "skippedDedupedOccurrences": 9,
+      "dedupedOccurrencesByReason": {
+        "deduped-contract-owned": 4,
+        "deduped-canonical-artifact": 5
+      }
+    }
   },
   "phases": { "analyzer": {...}, "writer": {...}, "executor": {...}, "reviewer": {...} },
   "knownMissing": [ "Codex runtime hidden framing", "internal reasoning tokens",
@@ -63,7 +94,13 @@ node .codex/scripts/estimate-token-usage.mjs \
 }
 ```
 
-每個 assignment 另列 `inputEstimate` / `outputEstimate` 細項、`countedFiles`(逐檔 token 與 status)、`sharedArtifactDeduped`、`confidence`。
+每個 assignment 另列 `inputEstimate` / `outputEstimate` 細項、`countedFiles`（逐檔 token 與 status）、`sharedArtifactDeduped`、`accountingDedupe`、`confidence`。`accountingDedupe` 分別揭露同 assignment 內被排除的 Agent definition read 與 canonical artifact write token，讓總量可對帳。
+
+`summary.totalTokensEstimated` 保留既有口徑，只計 subagent visible context。`orchestratorContractEstimate` 是 main-thread Orchestrator Skill 檔案本身的獨立估算，不包含主對話、tool calls、hidden framing 或 reasoning，也不併入既有 summary total。
+
+Estimator implementation v4 只排除兩種同 assignment accounting duplication：Agent TOML 已由 `agentDefinitionPath` 固定計入時，相同 `readFiles` 標示 `deduped-contract-owned`；canonical artifact 已由 `artifactTokens` 計入時，相同 `writtenFiles` 標示 `deduped-canonical-artifact`。它不做跨 assignment 或跨 phase 的全域去重。
+
+`observations.fileReuse` 顯示同一可見檔案在不同 phase / assignment 的重複計數位置，用來找出 contract、Skill、source 與 artifact 重複載入熱點。上述 `deduped-*` occurrence 不進入 repeated-file 統計，但會另列於 `skippedDedupedOccurrences` 與 `dedupedOccurrencesByReason`。下游 phase 重新讀取上游 artifact 仍是實際可見成本並保留計數。`repeatedTokensEstimated` 是觀測值，不代表 provider cache miss，也不得直接從總量扣除。
 
 ---
 
@@ -73,8 +110,9 @@ node .codex/scripts/estimate-token-usage.mjs \
 - Codex runtime hidden framing、internal reasoning tokens、cached input accounting、實際 provider billing。
 
 **已知系統性偏差**:
-- **Orchestrator 主執行緒未估** — 估算只含 4 個 subagent 的 visible context,Orchestrator 主執行緒不在內 → 系統性**低估**。
-- **analysis 內嵌 `sourceCodeContext` 重複計** — Analyzer 的 `writtenFiles` 與 artifact 路徑相同時,同一份 source context 會被算兩次(read + written/artifact)→ 系統性**高估**;目前 shared-artifact 去重未涵蓋此形狀。
+- **Orchestrator 主執行緒只估 contract 檔** — 提供 `--orchestrator-contract` 或 `run-state.orchestratorDefinitionPath` 時，可獨立估算 Orchestrator Skill 檔案；主對話、tool calls、hidden framing、reasoning 與其他 main-thread context 仍不在內。未提供路徑時此欄為 `unavailable`。
+- **Repeated-file observation 不是 cache truth** — `observations.fileReuse` 只呈現 estimator 看見的檔案 occurrence；Codex/provider 是否命中 cache 不可觀察，因此不得把 repeated estimate 當成實際可省 token。
+- **同 assignment ownership 去重不是 cache 模擬** — v4 只排除 estimator 自己已固定計入、又被同一 assignment manifest 重列的 Agent TOML 或 canonical artifact；不同 assignment / phase 的真實 read 不會被扣除。
 - **two-step(分批 Writer)去重** — 同 phase 多 assignment 共用同一 merged 交接 artifact 時,估算器以 `seenArtifacts` 對「artifact 衍生 token」去重(每個 assignment 仍各計 agentToml + payload),避免 ~Nx 過計。
 
 **口徑提醒**:此估算數量級(visible-context,約 10^5)與 Claude 版的「含 cache 讀取 runtime 真實量」(約 10^6)**不可直接相等**;判讀以「內部自洽 + 落在可見上下文合理區間」為準,而非追平 Claude。

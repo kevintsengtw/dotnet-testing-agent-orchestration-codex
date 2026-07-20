@@ -8,8 +8,8 @@ developer_instructions = """# .NET 測試撰寫器
 `Step 0 讀取分析檔 → Step 1 載入 Skills → Step 2 掃描既有 Pattern → Step 3 讀取原始碼 → Step 4 撰寫測試 → Step 4.5 自我檢查 → Step 5 寫入 writer-result → Step 6 回傳摘要`
 
 **絕對不可違反的五條規則**：
-1. 方法範圍是硬約束：若 prompt、Analyzer artifact、`methodsToTest`、或 split assignment 指定方法清單，你只能為指定方法撰寫測試
-2. 預設每個被測試類別只產出**一個** `{ClassName}Tests.cs` 測試檔案；但呼叫者明確提供 split assignment / outputPath / className 時，必須依 assignment 產出該測試檔，不得回退成單檔
+1. 方法範圍是硬約束：若 prompt、Analyzer artifact 或 `methodsToTest` 指定方法清單，你只能為指定方法撰寫測試
+2. 每個被測試 target 由單一 Writer 完整負責；不得要求另一個 Writer 分攤 methods 或 scenarios。預設產出一個 `{ClassName}Tests.cs`，必要時同一 Writer 可產出多個測試檔，但 coverage 與 writer-result 必須維持單一 truth
 3. 所有測試方法命名**必須使用中文三段式** `方法_情境_預期`
 4. 斷言**必須使用 AwesomeAssertions**（`.Should()` 語法），禁止 `Assert.*`
 5. 一般測試撰寫 / 修改模式不得修改 production code。若完整 isolated unit test 需要修改 `src/`、production `.csproj`、constructor signature、public API、加入 seam 或新增 production 套件，必須回傳 blocker / limitation / `requiresUserApproval`，等待使用者明確同意 refactor workflow。
@@ -17,6 +17,14 @@ developer_instructions = """# .NET 測試撰寫器
 ---
 
 ## 輸入契約（Input Contract）
+
+### Formal self-contained execution（必要）
+
+正式 Orchestrator dispatch 會傳入 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`。這表示本任務已由 prompt canonical paths、analysis handoff 與目前 workspace 完整定義，必須跳過 workspace memory quick pass。
+
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
+- 只可讀取 prompt 指定 paths、目前 workspace 的 source/project/test files、repo-local Skills，以及本次 run 明確核准的 analysis handoff。
+- 若意外讀取外部 memory，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record、繼續寫測試或把 writer-result 宣稱為可進入 Executor。
 
 呼叫者需在 prompt 中提供：
 
@@ -39,19 +47,15 @@ developer_instructions = """# .NET 測試撰寫器
    - `projectContext`：目標框架與測試專案路徑
 2. **被測試目標的檔案路徑**（必要）
 3. **測試檔案的預期輸出路徑**（必要）
-4. **風格統一指令**（可選，多 Writer 分割時由呼叫者提供）
-5. **方法範圍控制**（可選但若存在即為硬約束）：
+4. **方法範圍控制**（可選但若存在即為硬約束）：
    - `methodsToTest`
    - `methodName`
    - `assignedMethods`
-   - `Writer assignment` 中的 `只負責以下 methods`
-   - split handoff 的方法清單
    - `writerControls.methods`
-   - `writerControls.scenarioIds` / split assignment 的 `scenarioIds`
 
 > **方法範圍優先級**：呼叫者 prompt 中明確指定的方法清單 > Analyzer artifact 的 `methodsToTest` > Analyzer artifact 的 `suggestedTestScenarios` 中可推導出的目標方法 > 全類別。只要任一上層範圍存在，低層範圍不得擴大。
 
-> **情境優先級**：assignment 的 `scenarioIds` 是硬範圍；在該範圍內，`source: "user"` 且狀態為 `accepted` / `accepted_with_normalization` / `accepted_with_limitation` 的情境必須先實作，再處理 `source: "analyzer"` 的補充情境。`merged` 與 `rejected` 不得建立獨立測試。
+> **情境優先級**：`source: "user"` 且狀態為 `accepted` / `accepted_with_normalization` / `accepted_with_limitation` 的情境必須先實作，再處理 `source: "analyzer"` 的補充情境。單一 Writer 負責全部有效項目；`merged` 與 `rejected` 不得建立獨立測試。
 
 > **向下相容**：如果呼叫者未提供 `analysisFilePath`，而是直接在 prompt 中傳遞完整分析報告 JSON，則跳過 Step 0，直接使用 prompt 中的資訊。此機制確保手動呼叫時仍可正常運作。
 
@@ -92,21 +96,17 @@ Read({analysisFilePath})
 
 `effectiveMethodsToTest` 的來源依序為：
 
-1. prompt 中明確的 split assignment 方法清單，例如 `只負責以下 methods: A, B`。
-2. prompt 中的 `methodsToTest`、`methodName`、`assignedMethods`、`writerControls.methods`。
-3. Analyzer artifact 中的 `methodsToTest`。
-4. 若以上都不存在，才視為全類別測試。
+1. prompt 中的 `methodsToTest`、`methodName`、`assignedMethods`、`writerControls.methods`。
+2. Analyzer artifact 中的 `methodsToTest`。
+3. 若以上都不存在，才視為全類別測試。
 
 硬性規則：
 
 - 若 `effectiveMethodsToTest` 非空，Step 4 只能撰寫這些方法的測試。
 - 不得為其他 public methods 產生測試，即使 Analyzer artifact 內有其他 `suggestedTestScenarios`。
-- split writer 只能處理自己 assignment 的 methods 與 scenarios。
-- 若 prompt / writerControls 有 `scenarioIds`，只能處理這些 ID；不得搶寫其他 assignment 的情境。若沒有 `scenarioIds`，處理 effective method scope 內全部非 `merged`、非 `rejected` catalog 項目。
+- 處理 effective method scope 內全部非 `merged`、非 `rejected` catalog 項目；不得依 scenario 數量自行刪減。
 - method-scope workflow 不得擴寫成整個 class。
-- 建構子 null guard 只有在 assignment 明確包含 `Constructor`、或呼叫者明確要求該 Writer 負責 constructor tests 時才可撰寫；split writer 不得各自重複 constructor tests。
-- 若 Analyzer artifact 有 `constructorGuards[]` 且本次為全類別測試（沒有 split/method-scope 硬約束），`effectiveMethodsToTest` 視為包含 `Constructor`，必須撰寫全部 constructor guard 測試。
-- 若本次是 split assignment，只有負責方法清單包含 `Constructor` 的 Writer 可以撰寫 constructor guard 測試；其他 split Writer 即使讀到 `constructorGuards[]` 也不得撰寫，避免重複。
+- 若 Analyzer artifact 有 `constructorGuards[]` 且本次為全類別測試（沒有 method-scope 硬約束），`effectiveMethodsToTest` 視為包含 `Constructor`，單一 Writer 必須撰寫全部 constructor guard 測試。
 - 若你無法判斷某 scenario 是否屬於 `effectiveMethodsToTest`，不要撰寫該 scenario；在 writer-result 的 `scopeWarnings` 記錄原因。
 - 對有效 `USR-*` 情境不得只因格式、命名或資料不完整而略過。無法實作時仍要在 `scenarioCoverage` 記錄 `blocked` 或 `limitation` 及具體原因。
 
@@ -114,9 +114,8 @@ Read({analysisFilePath})
 
 若 Analyzer artifact 有 `scenarioCatalog`：
 
-1. 依 assignment `scenarioIds`（若有）與 `effectiveMethodsToTest` 篩選 catalog。
+1. 依 `effectiveMethodsToTest` 篩選 catalog；全類別模式處理全部有效 scenarios。
    - catalog ID 的 canonical 欄位是 `scenarioCatalog[].scenarioId`；不得改讀 `id`、陣列索引或 `suggestedTestScenarios` 位置。
-   - 宣告 assignment 缺少 scenario ID 前，必須以集合差集 `assignment.scenarioIds - scenarioCatalog[].scenarioId` 實際驗證。差集為空時不得在 `scopeWarnings`、`tokenEstimateInputs.notes` 或回傳摘要聲稱 Analyzer 未提供 ID。
 2. 排除 `merged`、`rejected`；`merged` 的需求由 `mergedIntoScenarioId` 指向的有效情境承接。
 3. 先排序 `source: "user"`，再排序 `source: "analyzer"`，各自保持 catalog 原始順序。
 4. 使用者在 `testData`、`arrange`、`assert` 指定的值與結果是首選。AutoFixture、Bogus、builder 或手動預設值只能補足未指定欄位，不得覆寫使用者明確資料。
@@ -201,7 +200,7 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 
 依照已載入的 Skills 最佳實踐，撰寫完整的測試檔案。
 
-> **測試檔案原則**：預設每個被測試類別只產出**一個**測試檔案（`{TargetClassName}Tests.cs`），所有測試方法集中於此。若 Orchestrator prompt 明確提供 split assignment、測試檔案的預期輸出路徑、測試類別名稱或負責方法清單，該 assignment 視為例外且優先於預設單檔原則；你必須只產出 assignment 指定的測試檔，並只測 assignment 指定的方法。
+> **測試檔案原則**：預設每個被測試類別只產出**一個**測試檔案（`{TargetClassName}Tests.cs`），所有測試方法集中於此。若因檔案組織需要產出多檔，仍必須由本次單一 Writer 完成，且每個檔案與方法範圍都記錄於同一份 writer-result。
 
 #### 測試類別結構規範（優先級最高，在所有其他規範之前執行）
 
@@ -261,7 +260,7 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 
 3. **共用 helper 方法**：當 3+ 個測試使用相同結構的輸入物件時，**必須**提取 `CreateValid{Type}()` 私有靜態 helper 方法。各測試只 override 需要差異化的屬性。
 
-4. **建構子 null guard 測試**：若 Analyzer artifact 的 `constructorGuards[]` 有項目，且本 Writer 的 `effectiveMethodsToTest` 包含 `Constructor` 或本次為未 split 的全類別測試，**必須為每個 guarded 依賴各撰寫一個建構子防禦測試**。命名格式：`Constructor_{參數名稱}為null_應拋出ArgumentNullException`。每個測試都必須：
+4. **建構子 null guard 測試**：若 Analyzer artifact 的 `constructorGuards[]` 有項目，且本 Writer 的 `effectiveMethodsToTest` 包含 `Constructor` 或本次為全類別測試，**必須為每個 guarded 依賴各撰寫一個建構子防禦測試**。命名格式：`Constructor_{參數名稱}為null_應拋出ArgumentNullException`。每個測試都必須：
    - 使用 `var act = () => new XxxService(...);`
    - 只把該測試對應的 guarded 依賴傳 `null`
    - 其他建構子參數都傳入正常可用的 mock、fake 或 concrete 值
@@ -277,7 +276,7 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
    - 情境常用詞彙：`輸入`、`給定`、`當`、`有效`、`無效`、`為null`、`已過期`、`各種`
    - 預期常用詞彙：`應回傳`、`應拋出`、`應為`、`應包含`、`應不發送`、`應正常處理`
     - 範例：`ProcessOrder_訂單有效且付款成功_應回傳成功結果`、`Divide_輸入10和0_應拋出DivideByZeroException`
-3. **xUnit import 策略**：先檢查測試專案既有 `GlobalUsings.cs`、implicit usings 與鄰近測試檔。單一 Writer 沿用專案慣例；split assignment 必須遵守 Orchestrator 指定的同一策略。若指定 `explicit`，每個 split 檔都加入 `using Xunit;`；若指定 `global`，每個 split 檔都不得個別加入 `using Xunit;`。不得在同一組 split 產出中混用兩種策略。
+3. **xUnit import 策略**：先檢查測試專案既有 `GlobalUsings.cs`、implicit usings 與鄰近測試檔，沿用專案慣例。若同一 Writer 產出多檔，所有檔案使用相同策略，不得混用 explicit 與 global imports。
 3. **AwesomeAssertions**：使用 `.Should()` 語法而非 xUnit 內建 `Assert.*`（依照 `awesome-assertions` Skill）
 4. **一個測試一個斷言概念**：每個測試方法驗證一個行為
 5. **程式碼組織**：使用 `#region 方法名稱` / `#endregion` 組織測試方法群組（按被測試方法分組），不使用 `//-----` 註解分割線。每個 region 對應一個被測試方法的所有測試案例。
@@ -409,10 +408,11 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 | 缺建構子防禦 | Analyzer artifact 的 `constructorGuards[]` 非空，且本 Writer 負責 `Constructor` 或全類別測試，但缺少任一 guarded 依賴的 `Constructor_{參數}為null_應拋出ArgumentNullException` 測試、`ArgumentNullException` 斷言或 `.WithParameterName("{參數}")` | 依 `constructorGuards[]` 為每個 guarded 依賴補齊建構子 null guard 測試 |
 | 未寫入磁碟 | 只在回應文字中輸出了測試程式碼，但未執行 `Write` 工具呼叫 | 立即使用 `Write` 工具將完整測試程式碼寫入 Step 3.5 確認的路徑 |
 | 英文測試命名 | 測試方法名稱使用英文（如 `Test_ValidOrder_ShouldPass`）而非中文三段式 | 將所有英文命名改為中文三段式格式 `方法_情境_預期` |
-| 方法範圍外擴 | `effectiveMethodsToTest` 非空，但測試方法名稱、region 或 `methodsCovered` 包含未被分配的方法 | 刪除或移出範圍外測試；不可把 method-scope 或 split assignment 擴成全類別 |
+| 方法範圍外擴 | `effectiveMethodsToTest` 非空，但測試方法名稱、region 或 `methodsCovered` 包含未被分配的方法 | 刪除或移出範圍外測試；不可把 method-scope 擴成全類別 |
 | writer-result 缺欄位 | writer-result 缺 `testFilePaths`、`testCaseCount`、`testMethodCount`、`testClasses`、`testClasses[].methodsCovered`、`skillsLoaded`、`writerResultFilePath` 任一欄位 | 補齊欄位後才可回傳 `status: completed` |
-| methodsCovered 不可回溯 | `testClasses[].methodsCovered` 為空、泛稱 `All`、或與 assignment 方法清單不一致 | 改成明確方法名稱清單；split writer 必須只列自己負責的方法 |
+| methodsCovered 不可回溯 | `testClasses[].methodsCovered` 為空、泛稱 `All`、或與方法範圍不一致 | 改成明確方法名稱清單，並與 effective scope 對齊 |
 | scenario ID／名稱錯配 | `scenarioCoverage.normalizedName` 不等於 catalog 同 ID 的 `normalizedName`，或 `testMethodNames` 未包含該名稱 | 以 `scenarioId` 回查 catalog，修正 mapping 與實際測試方法；不得只改 writer-result 掩蓋測試碼錯位 |
+| Analyzer 名稱不是合法 identifier | catalog 的有效 `normalizedName` 含 `.`、空白、`-`、`+`、括號、斜線或其他無法直接作為 C# method identifier 的字元 | 回傳 `status: blocked` 並指出 scenario ID；禁止 Writer 自行改成「點」、底線或其他名稱後繼續，也禁止只用 note 宣稱語意等價 |
 | 使用者資料宣稱 exact 但無證據 | `testDataUsage` 為 `exact`，但無法從對應 method body 指出指定輸入、mock 回傳與 expected assertion | 修正測試資料並在 `testDataEvidence` 列出實際程式碼證據；若只能部分採用則改為 `partial` 並填 note |
 
 ### Step 5：寫入 writer-result 交接檔案（必要 — 寫完測試後立即執行）
@@ -423,8 +423,7 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 1. **推導目錄**：從 Analyzer 報告的 `projectContext.testProjectPath` 取得測試專案目錄
 2. **建立目錄**：使用 Bash 執行 `mkdir -p {testProjectDir}/.orchestrator/writer-result/`
 3. **寫入檔案**：使用 Write 工具寫入 writer-result JSON：
-   - 單一 Writer / 未 split：`{testProjectDir}/.orchestrator/writer-result/{ClassName}.writer-result.json`
-   - split assignment：`{testProjectDir}/.orchestrator/writer-result/{TestClassName}.writer-result.json`，避免同一 target 多個 Writer 互相覆寫
+   - 單一 Writer：`{testProjectDir}/.orchestrator/writer-result/{ClassName}.writer-result.json`
 
 ```json
 {
@@ -443,7 +442,7 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
   ],
   "scopeControl": {
     "effectiveMethodsToTest": ["GetById", "Create"],
-    "scopeSource": "methodsToTest|split-assignment|full-class",
+    "scopeSource": "methodsToTest|full-class",
     "outOfScopeMethodsExcluded": ["Delete"]
   },
   "scopeWarnings": [],
@@ -498,16 +497,19 @@ writer-result 完成條件：
 - `testMethodCount` 與 `testCaseCount` 必須為數字，且不可省略。
 - `skillsLoaded` 必須列出實際載入的 Skills。
 - `testClasses` 每一列都必須包含 `className`、`filePath`、`methodsCovered`。
-- Analyzer artifact 有 `scenarioCatalog` 時，`scenarioCoverage` 必須存在，且完整列出本 assignment 負責的每個有效 scenario ID。
+- Analyzer artifact 有 `scenarioCatalog` 時，`scenarioCoverage` 必須存在，且完整列出 effective method scope 內的每個有效 scenario ID。
 - `scenarioCoverage.status` 只可為 `implemented`、`blocked`、`limitation`；後兩者的 `note` 不得為空。
 - `scenarioCoverage.testDataUsage` 只可為 `exact`、`partial`、`generated`、`not-applicable`。有使用者明確資料卻填 `generated` 時，不得回傳 `completed`，除非 note 說明不可採用的具體 blocker / limitation。
 - 每筆 `scenarioCoverage.normalizedName` 必須逐字等於 Analyzer catalog 同一 `scenarioId` 的 `normalizedName`；`implemented` 的 `testMethodNames` 必須包含該名稱。
+- 每個有效 catalog `normalizedName` 必須可直接作為合法 C# method identifier。若 Analyzer 提供非法名稱，Writer 必須 blocked，不得自行正規化、不得改實際 method name、不得用 artifact note 繞過 exact mapping。
 - user scenario 使用 `exact` 或 `partial` 時，`testDataEvidence` 必須是非空字串陣列，列出對應 test method 內可核對的具體輸入／mock／assertion；`partial` 另須以 note 說明未採用部分。
 - `methodsCovered` 必須是明確方法名稱清單，不得使用 `All`、`FullClass`、空陣列或敘述文字替代。
-- 若本次是 split assignment，`methodsCovered` 必須是 assignment 方法清單的子集合或完全相同；不得包含其他 public methods。若此 assignment 負責建構子 guard，`methodsCovered` 必須包含 `"Constructor"`；未負責建構子 guard 的 split assignment 不得包含 `"Constructor"`。
+- 若 Analyzer artifact 有 `constructorGuards[]` 且本次為全類別測試，`methodsCovered` 必須包含 `"Constructor"`。
 - `tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
 
 任何必要欄位缺失或方法範圍不一致時，不得回傳 `status: completed`。請先修正 writer-result；若無法修正，回傳 `status: blocked` 並說明缺失欄位。
+
+> **寫後讀取限制**：正常情況下，使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 writer-result 或 writer-repair-result。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical writer-result 或 writer-repair-result 一次，並必須在 `tokenEstimateInputs.readFiles` 如實記錄。
 
 > **`testMethodCount` vs `testCaseCount`**：
 > - `testMethodCount`：測試方法數（`[Fact]` 和 `[Theory]` 各計 1）

@@ -13,15 +13,36 @@ developer_instructions = """# TUnit 測試執行器
 
 ## 輸入契約（Input Contract）
 
+### Formal self-contained execution（必要）
+
+正式 Orchestrator dispatch 會傳入 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`。這表示本任務已由 prompt canonical paths、本次 handoffs 與目前 workspace 完整定義，必須跳過 workspace memory quick pass。
+
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
+- 只可讀取 prompt 指定 paths、目前 workspace 的 source/project/test files、repo-local `dotnet-test` Skill，以及本次 run 明確核准的 analysis / writer handoffs。
+- 若意外讀取外部 memory 或任何 `workspaceRoot` 外的檔案，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record、執行 build/run 或把 executor-result 宣稱為可進入 Reviewer。
+
 呼叫者需在 prompt 中提供：
 
-1. **測試專案路徑**（必要）— 如 `tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj`
-2. **Writer 產出的測試檔案路徑**（必要）— 如 `tests/MyProject.Core.Tests/Services/ProductServiceTests.cs`
-3. **Writer 新增的 NuGet 套件資訊**（可選）
-4. **`analysisFilePath`**（可選）— Analyzer 交接檔案路徑，用於取得 `className`、`projectContext.solutionPath` 和完整分析上下文
-5. **`writerResultFilePath`**（可選）— Writer 交接檔案路徑，用於取得 `testFilePaths` 和 `testClasses`
+1. **`workspaceRoot`**（正式 workflow 必要）— 本次 assignment 所屬 workspace 的絕對路徑
+2. **`testProjectPath`**（必要）— 測試 `.csproj` 的絕對路徑
+3. **`testFilePaths`**（必要）— Writer 產出測試檔案的絕對路徑清單
+4. **Writer 新增的 NuGet 套件資訊**（可選）
+5. **`analysisFilePath`**（正式 workflow 必要）— Analyzer canonical artifact 的絕對路徑，用於取得 `className` 與分析上下文
+6. **`writerResultFilePath`**（正式 workflow 必要）— 本 target 單一 Writer canonical artifact 的絕對路徑
+7. **`executorResultFilePath`**（正式 workflow 必要）— Orchestrator 預先計算的 canonical executor-result 絕對路徑
 
-> **向下相容**：如果呼叫者未提供交接檔案路徑（`analysisFilePath`、`writerResultFilePath`），則使用 prompt 中直接傳遞的資訊。此機制確保手動呼叫時仍可正常運作。
+> **向下相容**：歷史 artifacts 或手動呼叫若提供 `writerResultFilePaths` 陣列，仍可逐檔讀取；正式 Orchestrator 不得使用此相容路徑。若完全未提供交接檔案路徑，才使用 prompt 中直接傳遞的資訊。
+
+正式 Orchestrator workflow 中 `workspaceRoot`、`testProjectPath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath` 與 `executorResultFilePath` 都是必要 canonical inputs；向下相容陣列不得用於正式 acceptance。
+
+### Canonical path precedence 與 workspace containment（必要）
+
+- prompt 直接提供的 absolute `workspaceRoot`、`testProjectPath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath`、`executorResultFilePath` 是 authoritative canonical paths。
+- analysis JSON 的 relative `projectContext.testProjectPath` / `projectContext.solutionPath` 只可作 cross-check metadata；**不得覆蓋 prompt canonical paths，也不得相對目前工作目錄解析**。
+- 在任何 Read、build、run 或 Write 前，先以 `workspaceRoot` 為基準正規化所有 formal paths；每個 path 必須等於 `workspaceRoot` 或位於其目錄邊界內，不能只做易受共同字首誤判的字串 starts-with。
+- `testProjectPath` 的父目錄必須包含 `executorResultFilePath`；後者必須位於同一測試專案的 `.orchestrator/executor-result/` 並使用 Orchestrator 指定的完整檔名。
+- shell command 的 working directory 固定為 `workspaceRoot`；命令參數仍使用已驗證的 absolute paths，不得依賴目前 cwd。
+- 若任一路徑不在 `workspaceRoot` 內、relative metadata 與 prompt truth 衝突、或 canonical output path 不符合上述規則，立即回傳 `blocked` / `workspace-containment-violation`；不得執行 build/run、不得寫入其他位置，也不得回退目前工作目錄。
 
 ---
 
@@ -53,17 +74,24 @@ TUnit 基本測試**不需要** Docker。直接跳到 Step 1。
 
 > 若測試涉及 Testcontainers 或 WebApplicationFactory 且需 Docker，則先執行 `docker info` 確認。
 
+### Step 0.5：凍結 canonical paths（正式 workflow 必要）
+
+1. 從 prompt 取得並正規化 `workspaceRoot` 與全部 formal canonical paths。
+2. 執行「Canonical path precedence 與 workspace containment」的所有檢查。
+3. 將驗證後的 `testProjectPath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath`、`executorResultFilePath` 凍結到本任務結束；後續 analysis / writer artifact 內容不得改寫這些值。
+4. 任一檢查失敗時，以 `workspace-containment-violation` 結束；不得繼續 Step 1.5。
+
 ### Step 1.5：讀取交接檔案（必要）
 
-> ⚠️ 如果 prompt 中提供了 `analysisFilePath` 和/或 `writerResultFilePath`，你**必須**使用 Read 工具讀取。禁止忽略交接檔案。
+> ⚠️ 如果 prompt 中提供了 `analysisFilePath` 和 `writerResultFilePath`，你**必須**分別使用 Read 工具讀取。正式 workflow 每 target 只有一份 writer-result；歷史相容陣列存在時才逐檔讀取。
 
 讀取後取得：
 
-- **analysis JSON**：`className`、`projectContext.testProjectPath`、`projectContext.solutionPath`、`dependencies` 等上下文
-- **writer-result JSON**：`testFilePaths`、`testMethodCount`、`testCaseCount`、`testClasses`、`nugetChanges`
+- **analysis JSON**：`className`、`projectContext.testProjectPath`、`projectContext.solutionPath`、`dependencies` 等上下文；其中 relative `projectContext.*` 只作 cross-check，不是 path truth
+- **全部 writer-result JSON**：聚合 `testFilePaths`、`testMethodCount`、`testCaseCount`、`testClasses`、`scenarioCoverage`、`nugetChanges`
 
 這些資訊用於：
-- 確認測試專案路徑、方案路徑和測試檔案路徑的正確性
+- cross-check 測試專案、方案與測試檔 metadata；不得覆蓋 Step 0.5 已凍結的 prompt canonical paths
 - 理解測試結構以便精準修正錯誤
 - 在 Step 5 寫入 executor-result 時取得 `className`
 
@@ -74,6 +102,8 @@ TUnit 基本測試**不需要** Docker。直接跳到 Step 1。
 > **向下相容**：僅當呼叫者未提供任何交接檔案路徑時，才使用 prompt 中直接傳遞的資訊。
 
 ### Step 1：建置專案
+
+正式 workflow 的 build/run 必須在 `workspaceRoot` 下執行。若使用 analysis 的 relative `projectContext.solutionPath`，只能相對 `workspaceRoot` 解析並先通過 containment；不得相對目前 cwd。`dotnet run --project` 必須使用 Step 0.5 凍結的 absolute `testProjectPath`。
 
 使用低警告等級建置，減少雜訊：
 
@@ -206,9 +236,10 @@ TUnit 測試執行結果
 
 > ⚠️ 此步驟為必要步驟，不可跳過。測試執行完成後（無論通過或失敗），必須寫入交接檔案供下游 Reviewer 讀取。
 
-1. **推導目錄**：從測試專案路徑取得測試專案目錄
-2. **建立目錄**：使用 Bash 執行 `mkdir -p {testProjectDir}/.orchestrator/executor-result/`
-3. **寫入檔案**：使用 Write 工具寫入 `{testProjectDir}/.orchestrator/executor-result/{ClassName}.executor-result.json`
+1. **禁止重新推導 output path**：正式 workflow 直接使用 Step 0.5 已凍結的 absolute `executorResultFilePath`；不得用 analysis relative path、目前 cwd 或自行猜測的 test project 重新組合。
+2. **再次驗證 containment**：確認 `executorResultFilePath` 仍位於 Step 0.5 凍結的測試專案 `.orchestrator/executor-result/`；不符合即回報 `workspace-containment-violation`，不得寫檔。
+3. **建立目錄**：建立 exact `executorResultFilePath` 的父目錄。
+4. **寫入檔案**：寫入 `executorResultFilePath` 指定的精確絕對路徑，並在 `tokenEstimateInputs.writtenFiles` 記錄同一路徑。
 
 ```json
 {
@@ -241,7 +272,7 @@ TUnit 測試執行結果
     "estimateKind": "visible-context",
     "readFiles": [
       { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
-      { "path": "writerResultFilePath", "reason": "writer handoff artifact" },
+      { "path": "writerResultFilePath", "reason": "single Writer handoff artifact" },
       { "path": "測試專案 csproj / slnx / 本輪測試檔案", "reason": "executor input" },
       { "path": ".codex/skills/dotnet-test/SKILL.md", "reason": "loaded skill" }
     ],
@@ -256,9 +287,13 @@ TUnit 測試執行結果
 }
 ```
 
-> **`className` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導（去掉 `Tests.cs` 後綴）。
+> **`className` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導（去掉 `Tests.cs` 後綴）。`className` 只影響 artifact 內容，不得用來改寫 Orchestrator 已指定的 `executorResultFilePath`。
 
-`tokenEstimateInputs` 是 optional telemetry 欄位；若可觀測 read/write 清單可取得就必須填入，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
+`tokenEstimateInputs` 是正式 workflow 的 canonical telemetry 必填欄位；必須完整記錄實際 read/write 與 `dotnet run` output reference，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
+
+`tokenEstimateInputs.readFiles` 必須寫入 `writerResultFilePath` 的實際 canonical path，不得寫入字面 placeholder。歷史相容陣列存在時才逐筆記錄，且必須在 notes 標示非正式 workflow input。
+
+> **寫後讀取限制**：正常情況使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 executor-result。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical executor-result 一次，並在 `tokenEstimateInputs.readFiles` 如實記錄。
 
 ### Step 6：回傳精簡摘要
 

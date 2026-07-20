@@ -70,7 +70,7 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動 Analyzer → Writer → Exe
 預期 Orchestrator 行為：
 
 - Analyzer **平行** 2 個（Orders → PostgreSQL；CustomerActivities → MongoDB，載入 `testcontainers-nosql`）
-- Writer 平行（單一 Controller `scenarioCount > 15` 才再分兩批）；共用 factory 啟動所需容器
+- 每個 Controller 固定一個完整 Writer；共用同一測試專案時依序重用／補充 factory 所需容器，不使用 split
 - Executor **循序執行**（共用方案、容器避免 port 衝突）
 - 2 個 Reviewer 平行，最後彙整概覽表 + 各 Controller 詳細結果
 
@@ -222,7 +222,7 @@ Executor 與 Reviewer 都只用 `dotnet test`（這是與 TUnit 工作流程的�
 - 讀 analysis.json，按 `requiredSkills` 載入 Skills
 - 建立基礎設施（`CustomWebApplicationFactory` + Collection Fixture + `IntegrationTestBase`）與測試類別；依 `dbRegistrationAnalysis` 決定 DbContext 置換策略
 - 中文三段式命名；HTTP 斷言用 AwesomeAssertions.Web；ProblemDetails 用 `.And.Satisfy<T>()`
-- `scenarioCount > 15` 時分兩批（先基礎設施、後測試案例 + 風格統一指令）
+- 每個 Controller 固定一個 `single`／`full` Writer，同時完成基礎設施與全部測試案例；不依 `scenarioCount` split
 - 寫 `writer-result.json`；Orchestrator 讀實體檔做 artifact gate（缺欄 / 範圍不符可 bounded re-dispatch 最多 2 次）
 
 ### Phase 3：Executor 建置與執行

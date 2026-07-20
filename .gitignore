@@ -251,3 +251,4 @@ samples/**/tests/**/Infrastructure/
 .dotnet-testing-agent/
 tmp/
 .mcp/
+.release-preview/

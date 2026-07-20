@@ -195,7 +195,7 @@ $dotnet-testing-orchestrator-unit
 
 - Analyzer 偵測到繼承 `AbstractValidator<Order>`，設定 `targetType: "validator"`
 - Writer 使用 FluentValidation TestHelper 模式：`validator.TestValidate(model)` 搭配 `ShouldHaveValidationErrorFor()` / `ShouldNotHaveValidationErrorFor()`
-- Validator 類別不會被分割為多個 Writer（永遠使用單一 Writer 以確保驗證規則一致性）
+- 每個 target 都固定使用單一 Writer；Validator 同樣不依規則數量或情境數量分割
 
 ---
 
@@ -278,19 +278,20 @@ git clean -fd samples/unit/practice/tests/
 
 ---
 
-### 2. Writer 沒有觸發分割策略
+### 2. Single Writer 無法完成全部情境
 
-**說明**：當目標類別的公開方法數量超過 5 個，或建議測試情境數量超過 20 個時，Orchestrator 應自動將任務分割為兩個平行 Writer subagent（各負責不同方法群組）。
+**說明**：正式 Unit workflow 對每個 target 固定使用一個 Writer，不以公開方法數或建議情境數分割，也不限制 Analyzer 案例數量。
 
-**若沒有分割**，可能原因是 Analyzer 分析結果中 `methodScenarioCounts` 數值偏低，未達觸發門檻。可嘗試在指令中補充說明，提示 Orchestrator 該類別的複雜度：
+若 Writer 因 context 或 output limit 無法完成，該 phase 應回報 blocker 並保留 artifact／run-state 證據。不得臨時切換為 split，也不得以刪減情境的方式假裝完成。
 
-```text
-說明：OrderProcessingService 包含 8 個公開方法，請完整涵蓋所有方法的測試情境
-```
+先檢查：
 
-> 例外：`targetType` 為 `"validator"` 的類別（FluentValidation 驗證器）永遠使用單一 Writer，不會分割。
->
-> 提醒：Codex 多 subagent dispatch 的產出具非決定性，同一輸入下測試數 / 分割分組可能有 run-to-run 波動，屬已知限制。
+- analysis artifact 的 `scenarioCount`、`suggestedTestScenarios` 與 `scenarioCatalog` 是否一致
+- writer-result 是否逐項記錄 `scenarioCoverage`
+- `blocked` / `limitation` 是否有具體原因
+- `testFilePaths` 與 `testClasses[].methodsCovered` 是否能回溯全部輸出檔
+
+> Codex 產出仍具非決定性；同一輸入下 scenario 數與技術型 Skill reads 可能波動，但 Writer assignment 數固定為每 target 一個。
 
 ---
 
@@ -361,7 +362,7 @@ Analyzer subagent 接收 Orchestrator 委派後，執行以下工作：
   - `TimeProvider` → 特殊處理，使用 FakeTimeProvider
   - `IFileSystem` → 特殊處理，使用 MockFileSystem
 - 評估需要載入哪些 Agent Skills（`autofixture-basics`、`nsubstitute-mocking`、`datetime-testing-timeprovider` 等）
-- 估算各方法的測試情境數量（`methodScenarioCounts`），決定是否需要分割 Writer
+- 估算各方法的測試情境數量（`methodScenarioCounts`），供 coverage、artifact gate 與 token attribution 使用；不控制 Writer topology
 - 產出結構化 JSON 分析報告，寫入 `.orchestrator/analysis/{ClassName}.analysis.json`
 
 Analyzer 分析完成後，將摘要回傳給 Orchestrator（方法數、情境數、技術清單），Orchestrator 驗證交接檔案存在後進入 Phase 2。
@@ -378,11 +379,9 @@ Writer subagent 接收 Orchestrator 委派後，執行以下工作：
 - 按照中文三段式命名慣例產生測試方法名稱：`方法名_情境描述_預期結果`
 - 所有斷言使用 AwesomeAssertions（`.Should()` 系列），禁止使用 xUnit 原生 `Assert.*`
 
-**分割策略**：當 `methodCount > 5` 或 `scenarioCount > 20` 時，Orchestrator 同時 SpawnAgent 兩個 Writer subagent 平行撰寫：
+**Single Writer 策略**：每個 target 固定 SpawnAgent 一個 Writer，負責完整的有效 scenarios、constructor guards 與方法範圍。不同 target 的 Writers 可以平行執行；同一 target 不再依方法、scenario 或 setup 切割。
 
-- Writer 1（主要組）：負責情境數較多的方法群組，輸出至 `{ClassName}Tests.cs`
-- Writer 2（分割組）：負責其餘方法群組，輸出至 `{ClassName}_{代表方法名}Tests.cs`
-- 兩個 Writer 接收相同的風格統一指令，確保產出的斷言風格、using 排列、初始化方式完全一致
+單一 Writer 可以為可讀性產出多個測試檔，但仍只產生一份 canonical writer-result，並逐檔記錄 `methodsCovered` 與 `scenarioCoverage`。若無法完成，回報 blocker；split 只保留為歷史實驗比較資料，不是正式 fallback。
 
 ---
 

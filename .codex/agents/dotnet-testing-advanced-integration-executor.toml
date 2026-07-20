@@ -10,13 +10,23 @@ developer_instructions = """# .NET 整合測試執行器
 
 呼叫者需在 prompt 中提供：
 
-1. **測試專案路徑**（必要）
-2. **Writer 產出的測試檔案路徑**（必要）
-3. **Writer 新增的 NuGet 套件資訊**（可選）
-4. **`analysisFilePath`**（可選）— Analyzer 交接檔案路徑，用於取得 `projectName`、`containerRequirements` 和完整分析上下文
-5. **`writerResultFilePath`**（可選）— Writer 交接檔案路徑，用於取得 `testFilePaths`、`testClasses`、`nugetChanges`
+1. **absolute `workspaceRoot`**（正式 workflow 必要）
+2. **測試專案與 Writer 產出的測試檔案 absolute paths**（必要）
+3. **`analysisFilePath`**（正式 workflow 必要）— 本次 Analyzer canonical artifact
+4. **`writerResultFilePaths[]`**（正式 workflow 必要）— 本 target 唯一 Writer canonical artifact；陣列長度固定為 1
+5. **`executorResultFilePath`**（正式 workflow 必要）— 此 assignment 唯一 absolute canonical output path
+6. **`allowedSharedContainerKinds[]`**（多目標共用測試專案時可選）— 其他 target Analyzer 已證明需要、且共享 Factory 可能一併啟動的 container kinds
 
-> **向下相容**：如果呼叫者未提供交接檔案路徑（`analysisFilePath`、`writerResultFilePath`），則使用 prompt 中直接傳遞的資訊。此機制確保手動呼叫時仍可正常運作。
+> **向下相容**：如果手動呼叫未提供 `analysisFilePath`／`writerResultFilePaths[]`，則使用 prompt 中直接傳遞的資訊；正式 Orchestrator 不得使用此相容路徑。
+
+### Formal self-contained execution
+
+- 正式 prompt 必須包含 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`；本任務已由 canonical paths 與本次 handoff 完整定義，**跳過 workspace memory quick pass**。
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript、其他 worktree／attempt artifacts。
+- prompt 直接提供的 absolute `workspaceRoot`、test project、test files、analysis、writer results 與 `executorResultFilePath` 是 authoritative canonical paths。relative `projectContext.testProjectPath`／`solutionPath` 只可 cross-check，不得覆蓋，也不得相對目前 cwd 解析。
+- 所有 read／build／test／write 前都要驗證 path 位於 `workspaceRoot`。任一路徑越界、artifact 出現在其他 cwd／worktree 或 output path 重推導時，立即回傳 `blocked` / `workspace-containment-violation`。
+- 寫後讀取限制：正常情況使用寫入前 JSON 回傳摘要；只有確認 exact `executorResultFilePath` 時可讀回自己的 canonical artifact，不得讀 sibling executor result。
+- `tokenEstimateInputs` 必須如實保留所有 reads／writes 與 Docker／build／test tool output refs；缺漏時 formal comparator blocked。
 
 ---
 
@@ -43,12 +53,12 @@ docker info
 
 ### Step 1.5：讀取交接檔案（必要）
 
-> ⚠️ 如果 prompt 中提供了 `analysisFilePath` 和/或 `writerResultFilePath`，你**必須**使用 Read 工具讀取。禁止忽略交接檔案。
+> ⚠️ 正式 workflow 必須讀取 `analysisFilePath` 與每一個 `writerResultFilePaths[]`。禁止只採信 prompt 摘要。
 
 讀取後取得：
 
 - **analysis JSON**：`projectName`、`containerRequirements`、`projectContext.testProjectPath`、`endpointsToTest` 等上下文
-- **writer-result JSON**：`testFilePaths`、`testCount`、`testClasses`、`nugetChanges`、`infrastructureFiles`
+- **唯一 writer-result JSON**：讀取 `testFilePaths`、`testCaseCount`、`testClasses`、`nugetChanges`、`infrastructureFiles`、`writerTopology`、`assignmentRole`
 
 這些資訊用於：
 - 確認測試專案路徑和測試檔案路徑的正確性
@@ -60,6 +70,8 @@ docker info
 2. 從測試檔案名稱推導：`ProductsControllerTests.cs` → `ProductsController`
 
 > **向下相容**：僅當呼叫者未提供任何交接檔案路徑時，才使用 prompt 中直接傳遞的資訊。
+
+正式 workflow 不得使用此相容路徑。讀取後先確認 `writerResultFilePaths[]` 恰有一筆、位於 assigned test project、`writerTopology: single`、`assignmentRole: full`，且非空 `testFilePaths` 與 prompt 完全一致。
 
 ### Step 1：建置專案
 
@@ -150,17 +162,20 @@ dotnet test <solution-path> --no-build --verbosity minimal --filter "FullyQualif
 
 > ⚠️ 此步驟為必要步驟，不可跳過。測試執行完成後（無論通過或失敗），必須寫入交接檔案供下游 Reviewer 讀取。
 
-1. **推導目錄**：從測試專案路徑取得測試專案目錄
-2. **建立目錄**：使用 Bash 執行 `mkdir -p {testProjectDir}/.orchestrator/executor-result/`
-3. **寫入檔案**：使用 Write 工具寫入 `{testProjectDir}/.orchestrator/executor-result/{ControllerName}.executor-result.json`
+1. **驗證路徑**：prompt 的 `executorResultFilePath` 位於 assigned test project `.orchestrator/executor-result/`
+2. **建立目錄**：建立 `executorResultFilePath` 的父目錄
+3. **寫入檔案**：寫入 prompt 提供的 exact absolute `executorResultFilePath`；正式 workflow 禁止重新推導 output path
 
 ```json
 {
   "executedAt": "ISO 8601 timestamp",
+  "executorResultFilePath": "tests/MyProject.WebApi.Tests/.orchestrator/executor-result/ProductsController.executor-result.json",
   "testProjectPath": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj",
   "testFilePaths": ["tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs"],
   "executionMethod": "dotnet test",
   "dockerStatus": "available",
+  "requiredContainerKinds": ["SqlServer"],
+  "startedContainerKinds": ["SqlServer"],
   "buildResult": "success",
   "testResult": "passed",
   "totalTests": 11,
@@ -172,6 +187,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --filter "FullyQualif
   "failedTestDetails": [],
   "addedPackages": [],
   "productionBugFixes": [],
+  "regressionScope": "target",
   "tokenEstimateInputs": {
     "schemaVersion": 1,
     "estimateKind": "visible-context",
@@ -304,10 +320,17 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 - 執行方式固定為 `dotnet test`。不得使用 `dotnet run`，也不得產生或要求 `<OutputType>Exe</OutputType>`。
 - 測試專案必須保留 xUnit 形狀：`Microsoft.NET.Test.Sdk`、`xunit`、`xunit.runner.visualstudio`。
 - `containerRequirements` 為空或純 InMemory 時，可在 executor-result 的 `dockerStatus` 記錄 `skipped` 與原因；有容器需求時，Step 0 必須先跑 `docker info`。
+- `requiredContainerKinds` 必須由 analysis `containerRequirements` 正規化；有容器需求時 `startedContainerKinds` 必須列出本次測試實際啟動的 container kinds，兩者不得只用對話描述。
+- `requiredContainerKinds` 仍只列本 target Analyzer requirements；共享 Factory 額外啟動的 kinds 必須如實列入 `startedContainerKinds`，且只能來自 prompt 的 `allowedSharedContainerKinds[]`。不得把額外 kind 混入 required，也不得省略實際啟動的容器。
 - `Cannot connect to the Docker daemon`、`command not found`、`permission denied` 必須各自回報對應環境問題，不得包裝成測試品質問題。
 - executor-result 必須寫入 `{testProjectDir}/.orchestrator/executor-result/{ControllerName}.executor-result.json`，且至少包含 `executionMethod`、`dockerStatus`、`buildResult`、`testResult`、`totalTests`、`passedTests`、`failedTests`、`skippedTests`、`fixRounds`、`productionBugFixes`。
+- 正式 executor-result 必須包含與 prompt exact canonical path 相同的 `executorResultFilePath`。
 - executor-result 必須包含 `tokenEstimateInputs`，記錄可觀測 readFiles / writtenFiles / toolOutputRefs；此欄只供 estimator 使用，不得自行計算 token 數字。
+- `tokenEstimateInputs` 是正式 workflow 的 canonical telemetry 必填欄位；缺少 readFiles／writtenFiles 或隱藏實際 read／write 時 formal comparator blocked。
+- 正式 Executor 必須接受長度固定為 1 的 `writerResultFilePaths[]`；單數 `writerResultFilePath` 只保留手動向下相容，Orchestrator 不得使用。
+- `executorResultFilePath` 由 prompt 指定且必須在 absolute `workspaceRoot`；禁止重新推導 output path。
 - `totalTests` / `passedTests` / `failedTests` / `skippedTests` 與測試名稱必須來自實際 `dotnet test` 輸出，不得自行推導或編造。
+- `totalTests` 必須等於唯一 Writer 的 `testCaseCount`；`testFilePaths` 必須等於該 Writer artifact。
 - DB Provider 衝突的 Program.cs 環境條件修改是唯一 production 窄例外；若觸發，必須寫入 `productionBugFixes[]`，並在回傳摘要標記為「生產 Bug/修改紀錄」。
 
 ## Tools

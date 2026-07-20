@@ -30,7 +30,7 @@ Agent Orchestration 是一種多 AI 代理協作模式：由一個「指揮者�
 
 本架構將 Orchestrator 定義為 **Skill**，將四個角色定義為 **Subagent**（`.codex/agents/*.toml`）：
 
-- Orchestrator Skill（`dotnet-testing-orchestrator-unit`）載入主對話的 context
+- 對應的 Orchestrator Skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）載入主對話的 context
 - 主對話載入 Skill 後，透過 Codex 原生 **SpawnAgent** 依序調度四個 Subagent
 - 每個 Subagent 的定義檔（`.codex/agents/*.toml`）由 SpawnAgent 自動載入
 
@@ -41,7 +41,7 @@ Agent Orchestration 是一種多 AI 代理協作模式：由一個「指揮者�
 工作流程執行過程中，Orchestrator 會維護一份 `run-state.json`（位於測試專案的 `.orchestrator/` 目錄下），記錄各階段的 wall-clock 起訖時間、subagent 結果與整體狀態。
 
 - `run-state.json` 的 wall-clock 時間戳是**官方階段耗時與整體耗時的唯一真實來源**，不依賴 narration 或其他推算。
-- `config.toml` 可選擇啟用 `codex_hooks` 作為額外 telemetry，但官方耗時一律以 `run-state.json` 為準。
+- `run-state.json` 由 `.codex/scripts/run-state.mjs` 確定性寫入；不得以 narration、人工估算或 optional telemetry 取代。
 
 > 本版**不提供正式 token 用量統計**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source（實證確認）。可輸出 `Estimated Token Usage` optional telemetry，僅作 visible-context 相對成本比較，避免誤導為 billing truth。
 
@@ -51,7 +51,7 @@ Agent Orchestration 是一種多 AI 代理協作模式：由一個「指揮者�
 
 ```mermaid
 graph TD
-    Dev[👤 開發人員] -->|呼叫 $dotnet-testing-orchestrator-unit| Skill[📋 Orchestrator Skill\n主對話 context]
+    Dev[👤 開發人員] -->|呼叫對應的 $dotnet-testing-orchestrator-*| Skill[📋 Orchestrator Skill\n主對話 context]
 
     subgraph pipeline [四階段 Subagent 流水線（SpawnAgent 調度）]
         direction TB
@@ -100,15 +100,9 @@ graph TD
 flowchart TD
     Start([開始]) --> P0[Phase 0\n清理殘留 .orchestrator/ 目錄\n初始化 run-state.json]
     P0 --> P1[Phase 1：Analyzer\n分析被測試目標\n產出 analysis.json]
-    P1 --> Check{方法數 > 5\n或情境數 > 20？}
-
-    Check -- 否 --> P2[Phase 2：Writer\n單一 Writer 撰寫所有測試]
-    Check -- 是 --> P2A[Phase 2a：Writer 1（主要組）\n依 setup 親和分到的方法\n獨立測試類別]
-    Check -- 是 --> P2B[Phase 2b：Writer 2（分割組）\n依 setup 親和分到的方法\n另一獨立測試類別]
-    P2A & P2B --> P2Gate[Orchestrator 彙整\nwriter-result/testFilePaths\nartifact gate]
-
-    P2 --> P3[Phase 3：Executor\ndotnet build\ndotnet test]
-    P2Gate --> P3
+    P1 --> P2[Phase 2：每 target 唯一 Writer\n承接全部有效 scenarios\n產出 writer-result.json]
+    P2 --> P2Gate[Orchestrator 驗證\n完整 coverage / isolation\nSingle Writer artifact gate]
+    P2Gate --> P3[Phase 3：Executor\n依 framework build + run]
 
     P3 --> ExecCheck{全部通過？}
     ExecCheck -- 否，修正並重試\n最多 3 輪 --> P3
@@ -122,7 +116,9 @@ flowchart TD
     P5 --> End([完成])
 ```
 
-> 上圖為**單目標**流程。**多目標**（一次指定多個被測類別）時：Analyzer **平行**（逐 target）、Writer **平行且各 target 仍可 per-class 分割**（dispatch 單位是「Writer assignment」非 target，故 N 個 target 可同時跑 > N 個 Writer）、Executor **循序**（同專案 build 不可並行）、Reviewer **平行**。詳見 [unit-orchestrator.md §9](unit-orchestrator.md)。
+> 上圖為**單目標**流程。多目標時，每個 target 各有一個 Analyzer、Writer 與 Reviewer；同一 target 永遠不 split。Unit/TUnit 可在不同 target 間平行 dispatch；Integration/Aspire 若共用測試專案、factory 或 AppHost 資源，Writers／Executors 依各自契約循序執行以避免 ownership 與容器衝突。
+
+> Analyzer scenario 數不設上限。Single Writer 必須完整承接本次有效 scenarios；若 context/output limit 無法完成，保留證據並 fail closed，不得恢復 split 或刪減案例。
 
 > **Phase 5 清理策略依 workflow 而異**：**unit** 在結果呈現後清理 `executor-result/`（`run-state.json` 與 `analysis/` 本 run 不刪，留作 review 證據，於下次 Phase 0 一併清）；**tunit / integration / aspire** 則**不自動清理**本次 `.orchestrator/` artifacts（`analysis/` / `writer-result/` / `executor-result/` / `reviewer-result/` / `run-state.json` 全數保留供驗收與 benchmark），同樣於下次 Phase 0 殘留清理時處理。各自詳見對應的 `*-orchestrator.md`。
 
@@ -182,15 +178,16 @@ sequenceDiagram
 | ----------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
 | Orchestrator 載體 | Skill（非 Subagent）          | Skill 在主對話中執行，才能透過 SpawnAgent 調度 Subagent；若定義為 Subagent 則身處子對話，無法再對外調度 |
 | Dispatch 機制     | Codex 原生 SpawnAgent         | 由上游 Claude 版的 Agent tool 經 migrate-to-codex 轉換而來，改用 Codex 原生多代理調度          |
-| 耗時量測          | run-state.json wall-clock     | wall-clock 時間戳是唯一真實來源；hooks 僅為可選 telemetry，官方耗時不依賴 narration            |
+| 耗時量測          | run-state.json wall-clock     | wall-clock 時間戳是唯一真實來源；由 `.codex/scripts/run-state.mjs` 寫入，官方耗時不依賴 narration |
 | Token 統計        | Estimated telemetry            | Codex native subagent 的全流程 token 無可靠 truth source（實證確認）；只輸出 `Estimated Token Usage` 作相對成本比較，不作 billing truth            |
-| 大型類別處理      | Writer 分割：**setup 親和優先** | 方法數 > 5 或情境數 > 20 時拆為最多 2 個平行 Writer（**per-class/per-target 上限 2，非整個 workflow 全域**；多目標時 dispatch 單位是 assignment，三 target 可同時 > 3 Writer，實跑曾 5 Writer 並起）。**分組以「共用 setup 親和」為主、scenario 數平衡為次**（Codex 強化；非純貪心） |
-| 分割多檔一致性    | **跨檔 fixture 一致契約**（Codex 強化）| 解決上游 Claude 版的 split 多檔 fixture 漂移：時間錨具名常數、AutoFixture 遞迴行為、欄位/變數命名、SUT 建構模式逐檔一致 |
+| Writer topology   | 每 target 固定一個 Writer      | 移除重複載入 Writer contract、Skills、analysis 與 source context 的成本；不限制 Writer 可產生的測試檔數量 |
+| 大型 target 處理  | Single Writer fail closed       | 不以 method/scenario/endpoint/Resource 數量分割；遇 context/output limit 回報 blocker，不刪減案例或臨時回退 split |
 | 建構子防禦覆蓋    | **建構子 null-guard 測試**（Codex 強化）| Analyzer 偵測 `constructorGuards[]`，Writer 為每個 guarded 依賴寫 `ArgumentNullException` 測試，集中單一檔；不改 production code |
 | 可測試性邊界      | production-code 邊界政策      | 需 seam（IFileSystem/clock）即標 `requiresUserApproval`、不硬測；裸 `DateTime.*` 比照裸 `File.IO` 標 testabilityIssue |
 | 階段內耗時量測    | run-state instrumentation（Codex 強化）| 逐 assignment `dispatchAcceptedAt`/`produceSpanMs`、`phaseDurations`、`profilingSummary`、`redispatchEvents`；量不到填 `null`+`notes` 不造假 |
-| 階段間主動釋放    | phase boundary **固定動作** | 每個 phase 交接（Analyzer→Writer、Writer→Executor、Executor→Reviewer）主動 close 已完成 agents，釋放 thread slots；**runtime 不支援 close 時停手回報，不得改為限制/序列化 Writer 並行** |
+| 階段間主動釋放    | phase boundary **固定動作** | 每個 phase 交接（Analyzer→Writer、Writer→Executor、Executor→Reviewer）主動 close 已完成 agents，釋放 thread slots；runtime 不支援 close 時停手回報，不得以恢復同 target split 規避 |
 | thread-ceiling 處理 | bounded re-dispatch（**僅撞限時**）| **只在** agent thread limit / capacity ceiling 或 artifact missing 等 bounded 條件出現時補派，**每 phase 最多 2 次**（`restartCount=0`，自癒）；不重啟整個流程 |
 | 技能載入方式      | 動態載入技術型 Agent Skills   | Analyzer **依屬性**（依賴型別/targetType/門檻，非類別名）決定 Writer 需要哪些技能，按需載入 |
 | 交接機制          | JSON 檔案（.orchestrator/）   | Subagent 間透過交接 JSON 傳遞結構化資料，而非在 prompt 中嵌入完整內容 |
+| Context isolation | `fork_turns: none` + external memory forbid | formal roles 只讀 assigned source/project、repo-local Skills 與核准的 current-run handoffs；attempt isolation 與 role read scope fail closed |
 | 清理策略          | **依 workflow 而異**（上為 unit） | **unit**：保留 analysis/ 與 run-state.json、Phase 5 刪 executor-result/；**tunit / integration / aspire**：Phase 5 不自動清，保留完整 `.orchestrator/` artifacts 供驗收/benchmark。兩者皆於下次 Phase 0 清殘留，皆不進版控 |

@@ -87,46 +87,94 @@ description: ".NET 整合測試指揮中心 — 分析 WebAPI 端點結構、決
 
 ```text
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-integration-analyzer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace 絕對路徑>",
   "apiProjectPath": "<被測 WebAPI 專案路徑>",
   "targetController": "<Controller 名稱或端點範圍>",
   "testProjectPath": "<測試專案路徑>",
   "analysisOutputPath": "<canonical analysis path>",
-  "userRequest": "<使用者特殊需求，如有>"
+  "userRequest": "<使用者特殊需求，如有>",
+  "userProvidedScenarios": "<使用者原始 scenarios，如有>"
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-integration-writer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace 絕對路徑>",
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
   "apiProjectPath": "<被測 WebAPI 專案路徑>",
   "outputPath": "<測試檔案預期輸出路徑>",
-  "writerControls": "<分批/風格/端點範圍/修改模式等最小控制欄位，如有>"
+  "writerResultFilePath": "<此 Controller 唯一 canonical writer result path>",
+  "writerControls": {
+    "writerTopology": "single",
+    "assignmentRole": "full",
+    "endpointScope": "<端點範圍>"
+  }
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-integration-executor.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace 絕對路徑>",
   "testProjectPath": "<測試專案路徑>",
   "testFilePaths": ["<Writer 產出的測試檔案路徑>"],
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
-  "writerResultFilePath": "<Writer 交接檔案路徑>"
+  "writerResultFilePaths": ["<本 target 唯一 Writer 交接檔案路徑>"],
+  "executorResultFilePath": "<canonical executor result path>"
 }
 
 SpawnAgent
+fork_turns: "none"
 target: ".codex/agents/dotnet-testing-advanced-integration-reviewer.toml"
 payload: {
+  "executionContext": "self-contained",
+  "externalMemoryPolicy": "forbid",
+  "workspaceRoot": "<本次 assignment workspace 絕對路徑>",
   "testFilePaths": ["<測試檔案路徑>"],
   "apiProjectPath": "<被測 WebAPI 專案路徑>",
   "analysisFilePath": "<Analyzer 交接檔案路徑>",
-  "writerResultFilePath": "<Writer 交接檔案路徑>",
+  "writerResultFilePaths": ["<本 target 唯一 Writer 交接檔案路徑>"],
   "executorResultFilePath": "<Executor 交接檔案路徑>",
   "reviewResultFilePath": "<canonical reviewer result path>"
 }
 ```
 
 正式 role dispatch 必須維持 Analyzer → Writer → Executor → Reviewer，不可因 dispatch 困難改成主流程內聯。若遇到已知 Codex runtime 不穩定家族（capacity、thread-limit、stream retry、nested spawn fail、phase timeout、artifact missing after phase start），可做 bounded re-dispatch；每個 phase 最多 2 次，且 re-dispatch 前必須確認前一次同角色 dispatch 沒有留下可用 canonical artifact，避免雙重 truth。
+
+### Formal context isolation（必要）
+
+- 四個正式 role dispatch 都必須明確使用 `fork_turns: "none"`；不得依賴 runtime default，也不得使用 `all` 或正整數繼承主對話。
+- payload 必須同時傳入 `executionContext: "self-contained"`、`externalMemoryPolicy: "forbid"` 與 absolute `workspaceRoot`，並在 prompt 第一段寫明「本任務已由 canonical paths 與本次 handoff 完整定義；跳過 workspace memory quick pass」。
+- 正式 roles 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、`MEMORY.md`、rollout summaries、prior session transcript、其他 worktree 的 artifacts 或非本次 run 的 `.orchestrator`。
+- 若 runtime 不支援 `fork_turns: "none"`，或角色仍讀取外部 memory／其他 attempt artifact，立即判定 `attempt-isolation-violation`；不得刪除 telemetry 後補派，也不得納入 token comparator。
+- 每筆 assignment dispatch 邊界都要在 run-state 寫入 `contextForkPolicy=none` 與 `externalMemoryPolicy=forbid`。
+- 每個 canonical artifact ready 後、下一 phase dispatch 前，必須執行 attempt isolation；`--allow-read` 只列本次 run 核准的上游 canonical artifacts：
+
+```bash
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow integration --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {analysisFilePath}
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow integration --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {writerResultFilePath} --allow-read {analysisFilePath}
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow integration --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {executorResultFilePath} --allow-read {analysisFilePath} --allow-read {writerResultFilePath} [...]
+node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow integration --workspace-root {workspaceRoot} --test-project {testProjectPath} --artifact {reviewResultFilePath} --allow-read {analysisFilePath} --allow-read {writerResultFilePath} [...] --allow-read {executorResultFilePath}
+```
+
+Analyzer artifact ready 後必須另執行 minimal read-scope gate；Reviewer artifact ready 後必須執行 no-self-read gate：
+
+```bash
+node .codex/scripts/validators/validate-integration-role-read-scope.mjs --role analyzer --workspace-root {workspaceRoot} --agent-definition .codex/agents/dotnet-testing-advanced-integration-analyzer.toml --artifact {analysisFilePath}
+node .codex/scripts/validators/validate-integration-role-read-scope.mjs --role reviewer --workspace-root {workspaceRoot} --artifact {reviewResultFilePath}
+```
+
+Analyzer read-scope gate 失敗分類為 `analyzer-read-scope-violation`；Reviewer self-read gate 失敗分類為 `reviewer-self-read-violation`。兩者都不得納入 token comparator。
 
 ### 自我檢查清單
 
@@ -147,7 +195,15 @@ payload: {
 
 不需要在 subagent prompt 中嵌入完整分析報告 JSON、端點清單、containerRequirements、requiredSkills、suggestedTestScenarios、existingTestInfrastructure 等內容。每個 subagent 已有 Step 0 讀取交接檔案的能力，可自行取得所有資訊。
 
-Orchestrator prompt 只需傳：**交接檔案路徑 + 摘要數字**（endpointCount、scenarioCount、testCount、testCaseCount 等）+ 必要控制參數（端點範圍、分批模式、modification request 等）。
+Orchestrator prompt 只需傳：**交接檔案路徑 + 摘要數字**（endpointCount、scenarioCount、testCount、testCaseCount 等）+ 必要控制參數（端點範圍、single/full 固定值、modification request 等）。
+
+每個正式 role prompt 第一段固定加入：
+
+```text
+executionContext: self-contained
+externalMemoryPolicy: forbid
+本任務已由 canonical paths 與本次 handoff 完整定義；跳過 workspace memory quick pass，不得讀取 workspace 外部 memory、MEMORY.md、rollout summaries 或 prior session transcript。
+```
 
 ---
 
@@ -178,14 +234,23 @@ Analyzer payload 必須包含：
 - `testProjectPath`：測試專案路徑
 - `analysisOutputPath`：由 Orchestrator 預先計算，格式為 `{testProjectDir}/.orchestrator/analysis/{ControllerName}.analysis.json`
 - `userRequest`：使用者特殊需求，如真實容器、指定 DB、只測某些端點等
+- `userProvidedScenarios`：使用者提供的原始案例內容；沒有時明確傳空值，不得由 Orchestrator 改寫或摘要
 
 等候 Analyzer 回傳精簡摘要，包含 `projectName`、`apiArchitecture`、`endpointCount`、`scenarioCount`、`containerRequirements`、`requiredSkills`、`analysisFilePath`、`projectContext`。
 
 收到 Analyzer 摘要後，使用 Glob 確認 `analysisFilePath` 指向的檔案確實存在。若不存在，更新 run-state 並依 bounded re-dispatch 規則處理。
 
+Analyzer artifact 必須包含 `endpointCatalog`、`scenarioCatalog`、`scenarioReviewSummary`、`userProvidedScenarioInput` 與 canonical `tokenEstimateInputs`。不得以固定 scenario 數作 gate；只驗證每個 scenario 的 provenance、endpoint attribution、狀態與 evidence。artifact ready 後立即執行：
+
+```bash
+node .codex/scripts/validators/validate-integration-scenario-contract.mjs --static-only
+```
+
+靜態 gate 與 Analyzer attempt isolation／read-scope gate 任一失敗，都不得進入 Writer。
+
 #### 階段間主動釋放（Analyzer → Writer）
 
-Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認存在，且準備 dispatch Writer phase 前，Orchestrator 必須主動關閉所有已完成 Analyzer agents，釋放 Codex runtime agent thread slots。若 runtime 不支援主動關閉已完成 agent，Orchestrator 必須停手並回報「runtime 不支援主動關閉已完成 agent」，不得改用限制 Writer 並行數或 serialize Writer 作為替代方案。
+Analyzer phase 全部 assignment 都已完成、analysis artifact 都已確認存在，且準備 dispatch Writer phase 前，Orchestrator 必須主動關閉所有已完成 Analyzer agents，釋放 Codex runtime agent thread slots。若 runtime 不支援主動關閉已完成 agent，Orchestrator 必須停手並回報「runtime 不支援主動關閉已完成 agent」，不得改變 Writer topology 作為替代方案。
 
 ### 階段 2：啟動撰寫（Integration Writer）
 
@@ -201,14 +266,15 @@ Writer 以以下優先序決定端點範圍：
 
 若上層範圍存在，Writer 不得擴大到 sibling endpoints。Reviewer 也嚴禁把指定範圍以外的 sibling endpoint 列為覆蓋缺口。
 
-#### 分階段啟動判斷（integration 專屬）
+#### 單一 Writer 策略（必要）
 
-| 測試案例數量 | 策略 | 說明 |
-| --- | --- | --- |
-| `scenarioCount <= 15` | 單次啟動 | Writer 產出所有基礎設施 + 全部測試案例 |
-| `scenarioCount > 15` | 分兩次啟動 | 第一次只產基礎設施（GlobalUsings、WebApiFactory、TestBase、csproj）；第二次產測試案例 + 風格統一指令 |
+每個 Controller／endpoint slice 無論 `scenarioCount`、endpoint 數、容器種類或預估輸出大小為何，固定只 dispatch **一個 Writer subagent**，且 `writerControls` 固定為 `writerTopology: "single"`、`assignmentRole: "full"`。正式 workflow 禁止把同一 target 切成 infrastructure／tests 或其他多個 Writer assignments。
 
-此策略照 integration Claude 版保留，不套用 TUnit method-based greedy split。
+此規則只固定 Writer topology，不限制 Analyzer 應產生的案例數量，也不得刪減任何合理且 in-scope 的 endpoint 或 scenario。單一 Writer 必須同時完成必要基礎設施與該 target 的全部測試，並將唯一 artifact 寫入 `{testProjectDir}/.orchestrator/writer-result/{Controller}.writer-result.json`。
+
+單一 Writer 若遇 context／output limit，該 attempt fail closed 並保留 blocker evidence；不得自動 split、不得靜默刪減 `scenarioCatalog`，也不得啟動第二個 repair Writer 代替原 assignment 完成測試內容。歷史 split artifacts 只供既有 validator／實驗報告重播，不是正式 runtime topology 或 fallback。
+
+多個 Controllers 共用同一測試專案時，Writers 依使用者指定的 target 順序循序執行；每個 target 仍恰有一個 `single`／`full` Writer。後續 Writer 必須重用並以 add-only 方式補充磁碟上已存在的 Factory／Fixture／TestBase／`.csproj`，不得覆寫先前 target 測試。這是共享檔案 ownership 順序，不是同 target split。不同測試專案的 Writers 才可平行。
 
 **`outputPath` 推導規則（確定性，必用）**：`outputPath` 必須**鏡射被測 Controller 並置於測試專案的 `Controllers/` 子目錄**，**禁止**放在測試專案根目錄（與 integration Writer 的「2e. 目錄結構規範」一致）。
 - `{TestDir}` = 測試專案目錄（取 `projectContext.testProjectPath` 去掉結尾 `.csproj` 檔名後的目錄）。
@@ -224,6 +290,7 @@ analysisFilePath: {analysisFilePath}
 被測試 API 專案路徑: {apiProjectPath}
 測試檔案的預期輸出路徑: {outputPath}
 writerControls: {writerControls}
+writerResultFilePath: {writerResultFilePath}
 ```
 
 等候 Writer 回傳精簡摘要：`testFilePaths`、`testCount`、`testCaseCount`、`skillsLoaded`、`writerResultFilePath`。
@@ -233,19 +300,27 @@ writerControls: {writerControls}
 Writer 回傳後，Orchestrator 不得只採信回覆摘要。必須使用 canonical `writerResultFilePath` 讀取實體 writer-result JSON，並檢查下列欄位全部存在且可用：
 
 - `writerResultFilePath`
-- `testFilePaths` 非空
+- `testFilePaths` 必須是非空陣列
 - `testCount` / `testCaseCount` 為數字
 - `testClasses`
 - `testClasses[].className`
 - `testClasses[].filePath`
 - `testClasses[].methodsCovered` 或 `testClasses[].endpointsCovered`
 - `skillsLoaded`
+- `writerTopology`
+- `assignmentRole`
+- `endpointCoverage`
+- `scenarioCoverage`
+- `tokenEstimateInputs`
 
 端點範圍檢查：
 
-- `methodsCovered` / `endpointsCovered` 必須是明確端點或案例清單，不得使用 `All`、`FullController`、空陣列或敘述文字替代。
-- 若本次是 endpoint-scope 或 split assignment，覆蓋清單必須是指定端點清單的子集合或完全相同，不得包含 sibling endpoints。
+- `writerTopology` 必須是 `single`，`assignmentRole` 必須是 `full`；正式 target 只允許一份 writer-result。
+- `methodsCovered` / `endpointsCovered` 必須是明確端點或案例清單，不得使用 `All`、`FullController` 或敘述文字替代。
+- 若本次是 endpoint-scope assignment，覆蓋清單必須是指定端點清單的子集合或完全相同，不得包含 sibling endpoints。
 - `skillsLoaded` 不得包含 unit 的 20 個 technique skills，也不得包含 TUnit skills。
+- 每個有效 `scenarioCatalog` ID 必須恰由該 target 的唯一 Writer 在 `scenarioCoverage` 認領；不得重複、漏列或自行新增 ID。
+- 每個 `endpointCatalog` ID 必須恰由該 target 的唯一 Writer 在 `endpointCoverage` 標為 implemented。
 
 若 writer-result 缺欄位、不可讀、或端點範圍不一致：
 
@@ -271,7 +346,9 @@ Executor payload 必須包含：
 - `testProjectPath`
 - `testFilePaths`
 - `analysisFilePath`
-- `writerResultFilePath`
+- `writerResultFilePaths`：本 target 唯一 canonical Writer artifact；為維持角色輸入型別仍使用長度 1 的陣列
+- `executorResultFilePath`：Orchestrator 預先計算的 absolute canonical output path
+- `allowedSharedContainerKinds[]`：僅多目標共用測試專案時提供；值只能來自同次其他 target Analyzer `containerRequirements` 的 union，單目標省略
 
 Executor 執行模型硬規則：
 
@@ -293,8 +370,19 @@ Executor 回傳後，Orchestrator 必須讀取 `executorResultFilePath`，確認
 - `buildResult` 與 `testResult` 存在。
 - 通過/失敗/略過數量必須來自 xUnit `dotnet test` 輸出。
 - `fixRounds` / `executorFixRounds` 必須落入 run-state，不得只寫在對話摘要。
+- `requiredContainerKinds` 必須與本 target Analyzer `containerRequirements` 完全一致；本 target required kinds 必須全部出現在 `startedContainerKinds`。
+- 多目標共用 Factory 可讓 `startedContainerKinds` 包含其他 target 所需容器，但每個額外 kind 必須由 Orchestrator 以 `--allow-shared-container-kind` 明示；未知額外容器仍使 gate 失敗。單目標不得提供共享白名單。
+- `testFilePaths` 必須等於所有 writer-result 的 union；`totalTests` 必須等於 Writer `testCaseCount` 加總。
 
 若 executor-result 顯示使用 `dotnet run`，該 phase 判定為 blocker，不得進入成功報告。
+
+Executor artifact ready 且 attempt isolation 通過後，執行：
+
+```bash
+node .codex/scripts/validators/validate-integration-execution-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} --executor {executorResultFilePath} [--allow-shared-container-kind {otherTargetKind} ...] --require-pass --forbid-production-mutation
+```
+
+正式 token 實驗預期 `productionBugFixes[]` 為空；若觸發既有 Program.cs 窄例外，workflow 可如實完成，但該 attempt 不納入 B1／S1 comparator，先呈現 production mutation evidence。
 
 #### 階段間主動釋放（Executor → Reviewer）
 
@@ -309,13 +397,27 @@ Reviewer payload 必須包含：
 - `testFilePaths`
 - `apiProjectPath`
 - `analysisFilePath`
-- `writerResultFilePath`
+- `writerResultFilePaths[]`；長度固定為 1，且必須是本次 target 的唯一 canonical Writer artifact
 - `executorResultFilePath`
 - `reviewResultFilePath`
 
 `reviewResultFilePath` 由 Orchestrator 預先計算，格式為 `{testProjectDir}/.orchestrator/reviewer-result/{ControllerName}.reviewer-result.json`。
 
 Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath` 指向的檔案確實存在且可讀取。若檔案未落地，不得只採信 Reviewer 回傳訊息；必須將該 phase 判定為 blocker，分類為 `artifact 一直沒出現`，並更新 `run-state.json` 中 reviewer phase：`artifactReadyAt: null`、`artifact: null`、`failure` 填入原始症狀。
+
+Reviewer artifact 必須包含 `scenarioAcceptance`、`endpointCoverage`、`qualityGates`、`gateDecision` 與 canonical telemetry。artifact ready、attempt isolation 與 no-self-read gates 通過後，執行正式 acceptance：
+
+```bash
+node .codex/scripts/validators/validate-integration-scenario-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} [...] --reviewer {reviewResultFilePath} --require-review-pass
+```
+
+`gateDecision` 只允許 `pass`、`pass_with_warnings`、`fail`、`blocked`。有效 scenario missing、endpoint missing、mismatch 或 `fail`／`blocked` 都使 workflow final gate 失敗；Executor 全綠不得覆蓋 Reviewer acceptance。
+
+所有 phase closeout、`phaseDurations`、`profilingSummary` 與 `overallWallClock.end` 寫入後，final report 前必須執行：
+
+```bash
+node .codex/scripts/run-state.mjs validate --path {p} --require-complete-timing
+```
 
 ### Phase 5：保留 artifacts
 
@@ -331,15 +433,17 @@ Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath
 > # 初始化（Phase 0 清理後、啟動 Analyzer 前）
 > node .codex/scripts/run-state.mjs init --path {p} --workflow integration --target {target}
 > # dispatch 前：記 dispatchIssuedAt（並一併登記 Estimated Token Usage metadata）
-> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath}
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath={tomlPath} --set expectedArtifactPath={artifactPath} --set contextForkPolicy=none --set externalMemoryPolicy=forbid
 > # 收到 agentId：記 agentId/dispatchAcceptedAt，推導 latency
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
 > # artifact 落地：記 artifactReadyAt/artifact，推導 produceSpan
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
-> # phase 收斂：記 completedAt
+> # assignment artifact gate 收斂：逐 assignment 記 completedAt
+> node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --assignment {assignmentId} --set completedAt=@now
+> # phase 全部 assignments 收斂：記 phase completedAt
 > node .codex/scripts/run-state.mjs set --path {p} --phase analyzer --set completedAt=@now
-> # 計數 / 整體：counters 與 overallWallClock.end
-> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now
+> # 計數 / 整體：counters 與 overallWallClock.end/duration
+> node .codex/scripts/run-state.mjs set --path {p} --set executorFixRounds={n} --set overallWallClock.end=@now --derive overallWallClock.durationMs=overallWallClock.end-overallWallClock.start
 > # bounded re-dispatch 事件：append 一筆
 > node .codex/scripts/run-state.mjs append --path {p} --array redispatchEvents --set phase=writer --set cause=agent-thread-limit --set occurredAt=@now --set waitMs={ms}
 > ```
@@ -350,7 +454,7 @@ Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath
 - `dispatchIssuedAt`：發出 SpawnAgent dispatch 的時間
 - `dispatchAcceptedAt`：SpawnAgent 回傳 `agentId` 後，於同一邊界以 `run-state.mjs set ... --set dispatchAcceptedAt=@now` 記錄的時間。此欄只代表派發被 runtime 接受，**不代表 agent 真正開始工作**。
 - `artifactReadyAt`：Orchestrator 在磁碟上確認 canonical artifact 已存在且可讀的時間。
-- `completedAt`：該 phase artifact gate 通過或 blocker 判定完成的時間。
+- `completedAt`：每個 assignment 自己的 artifact gate 通過／blocker 判定時間，以及全部 assignments 收斂後的 phase completedAt。不得只寫 phase-level 值。
 - `produceSpanMs`：`artifactReadyAt - dispatchAcceptedAt`，只代表 Orchestrator 可觀察的 artifact produce span。
 - `redispatchEvents[]`、`boundedRedispatchCount`、`restartCount`、`executorFixRounds`：每次 bounded re-dispatch、restart、Executor fix round 都必須落入 run-state。
 
@@ -361,12 +465,14 @@ run-state 寫入規則：
 1. Phase 0 清理完成且啟動 Analyzer 前，以 `run-state.mjs init --path {p} --workflow integration --target {target}` 建立 `{testProjectDir}/.orchestrator/run-state.json`；腳本自動含 `workflow: "integration"`、`target`、`overallWallClock.start`、空的 `phases`、`redispatchEvents: []`、`boundedRedispatchCount: 0`、`restartCount: 0`、`executorFixRounds: 0`。
 2. 每個 phase 發出 SpawnAgent 之前，先以 `run-state.mjs set --path {p} --phase {phase} --assignment {assignmentId} --set dispatchIssuedAt=@now` 記錄該 assignment 的 `dispatchIssuedAt`；SpawnAgent 回傳 `agentId` 後，立即以 `run-state.mjs set ... --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt` 補上該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`（時間戳由腳本內部以系統時鐘產生，毫秒差由腳本推導）。
 3. 平行 assignment 的 `dispatchAcceptedAt` 必須在該筆 SpawnAgent 回傳 `agentId` 的同一個操作邊界立即寫入。不得等整個 phase dispatch 完成後，用同一個時間補進所有 assignment。
-   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`；以 dispatch 邊界的同一個 `run-state.mjs set` 呼叫一併 `--set target=...`、`--set agentDefinitionPath=...`、`--set expectedArtifactPath=...` 登記（`assignmentId` 由 `--assignment` 自動帶入）。這些欄位只供 `.codex/scripts/estimate-token-usage.mjs` 做 visible-context 估算，不得作為 correctness gate。
+   - **Estimated Token Usage metadata**：同一筆 assignment 應保留 `assignmentId`、`phase`、`target`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`、`contextForkPolicy`、`externalMemoryPolicy`；以 dispatch 邊界的同一個 `run-state.mjs set` 呼叫一併登記。`contextForkPolicy=none` 與 `externalMemoryPolicy=forbid` 是正式 isolation gates，其餘欄位只供 estimator 使用。
 4. 每個 canonical artifact 通過 Glob/Read 驗證後，立即以 `run-state.mjs set ... --set artifactReadyAt=@now --set artifact={artifactPath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt` 寫入 `artifactReadyAt`、`artifact` 並推導 `produceSpanMs`。
-5. phase artifact gate 全部通過或 blocker 判定完成後，寫入 `completedAt` 與 phase status。
-6. 整體流程完成或中止時，以 run-state 寫入機制補上 `phaseDurations`，每個 phase 至少包含 `durationMs` 與 `source: "run-state"`。
+5. 每個 assignment artifact／formal gate 收斂後，使用 `--phase {phase} --assignment {assignmentId} --set completedAt=@now` 寫入自己的 `completedAt`；不得等到 phase 結束批次補同一時間。全部 assignments 收斂後再寫 phase `completedAt` 與 status。
+6. 整體流程完成或中止時，以 run-state 寫入機制補上 `phaseDurations.{phase}.durationMs` 與 `phaseDurations.{phase}.source=run-state`。phase duration 必須等於 phase completedAt 減該 phase 最早 assignment dispatchIssuedAt。
+7. 同一 closeout 呼叫寫入 `overallWallClock.end=@now`，並以 `--derive overallWallClock.durationMs=overallWallClock.end-overallWallClock.start` 產生巢狀 duration；不得留下 null 或建立字面 dotted top-level key。
+8. 補上 `profilingSummary.timingSource=run-state`、concrete `bottleneck`、`bottleneckBreakdown`、concrete `rootCauseCandidate` 與 boolean `deferredOptimization`。`rootCauseCandidate` 不得使用 `unresolved`；沒有更細證據時以最大 phase／assignment 的可觀察 span 作候選並在 notes 說明限制。
 
-若某 phase 內有多個平行 assignment（例如多 Controller Analyzer、分兩次 Writer、多 Reviewer），run-state 必須保留每個 assignment 的 timing evidence，不得只記一個彙總時間。
+若某 phase 內有多個 assignment（例如多 Controller Analyzer、每 Controller 一個 Writer、多 Reviewer），run-state 必須保留每個 assignment 的 timing evidence，不得只記一個彙總時間。
 
 ---
 
@@ -384,7 +490,7 @@ run-state 寫入規則：
 | Reviewer 回傳後 | `✅ 階段 4 完成（{run-state 耗時}）` |
 | 結果呈現後 | 輸出 `### ⏱ 各階段耗時`、`### Timing Evidence` 與 `### Estimated Token Usage` |
 
-耗時摘要必須讀取 `{testProjectDir}/.orchestrator/run-state.json`，再從該檔的 `dispatchIssuedAt`、`artifactReadyAt`、`completedAt` 計算。若多個 Writer 並行或分兩次啟動，階段 2 耗時取整個 Writer phase 的最長可觀察跨度。總計為四個階段之和。
+耗時摘要必須讀取 `{testProjectDir}/.orchestrator/run-state.json`，再從該檔的 `dispatchIssuedAt`、`artifactReadyAt`、`completedAt` 計算。多 target Writer phase 耗時取第一個 Writer dispatch 到最後一個 Writer completed 的完整可觀察跨度。總計為四個階段之和。
 
 ```markdown
 ### ⏱ 各階段耗時
@@ -404,7 +510,7 @@ run-state 寫入規則：
 | Phase | Source | dispatchIssuedAt | artifactReadyAt | completedAt | Notes |
 | --- | --- | --- | --- | --- | --- |
 | Analyzer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | endpoint analysis |
-| Writer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | single/two-step |
+| Writer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | one single Writer per target |
 | Executor | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | dotnet test |
 | Reviewer | `.orchestrator/run-state.json` | 2026-... | 2026-... | 2026-... | reviewer-result verified |
 ```
@@ -486,7 +592,7 @@ node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}
 | --- | --- |
 | Analyzer 找不到專案 | 向使用者確認路徑，用 Read/Grep 找到目標，重新啟動 Analyzer |
 | Docker 未啟動 | 在結果中告知需啟動 Docker Desktop；若測試不涉及容器則繼續 |
-| Writer 回應超出長度限制 | 強制改用分兩次啟動策略（第一次基礎設施，第二次測試案例） |
+| Writer 回應超出長度限制 | 將該 single-Writer attempt 判定為 blocker；不得在同一 attempt 自動 split 或刪減 scenarios |
 | Executor 3 輪修正後仍失敗 | 將失敗訊息傳給 Reviewer，在結果中標示失敗，區分環境問題與邏輯問題 |
 | reviewer-result 未落地 | 判定 Reviewer phase blocker，不採信回傳文字 |
 
@@ -499,20 +605,22 @@ node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}
 | 階段 | 執行方式 | 說明 |
 | --- | --- | --- |
 | Phase 1 Analyzer | 平行 | 每個 Controller / endpoint slice 獨立分析 |
-| Phase 2 Writer | 平行 | 每個 Controller / endpoint slice 獨立撰寫；單一 Controller 內 `scenarioCount > 15` 才分兩次 |
+| Phase 2 Writer | 共用測試專案時循序 | 每個 Controller／endpoint slice 恰有一個 `single`／`full` Writer；後續 Writer 重用並補充共享 infrastructure，不得 split |
 | Phase 3 Executor | 循序 | `dotnet build` 不可並行，容器避免 port 衝突 |
 | Phase 4 Reviewer | 平行 | 每份測試獨立審查 |
 
-多目標完成後彙整：概覽表格 + 各目標詳細結果 + 共用改善建議。
+多目標的所有 Writers 完成後，最後一個 Executor phase 必須額外產出 `regressionScope: "test-project"` 的完整 project-level `dotnet test` evidence，並以 `--project-regression` 傳給 execution contract validator，避免後建立或補充的共享 Factory／Fixture／TestBase 使較早 target 的 green result 失效。多目標完成後彙整：概覽表格 + 各目標詳細結果 + 共用改善建議。
 
 ---
 
 ## 重要原則
 
-1. **交接檔案路徑優先** — 傳 `analysisFilePath`、`writerResultFilePath`、`executorResultFilePath`、`reviewResultFilePath`，而非嵌入 JSON。Subagent 會在 Step 0 自行讀取交接檔案
+1. **交接檔案路徑優先** — 傳 `analysisFilePath`、`writerResultFilePaths[]`、`executorResultFilePath`、`reviewResultFilePath`，而非嵌入 JSON。Subagent 會在 Step 0 自行讀取交接檔案
 2. **保持主 context 精簡** — 只保留 subagent 回傳的摘要，不展開中間過程
 3. **端點粒度** — 整合測試以 HTTP endpoint 為粒度，`suggestedTestScenarios` 使用中文三段式（`端點_情境_預期`）
 4. **執行模型固定** — `dotnet test` + xUnit + Docker/Testcontainers；不得改成 TUnit `dotnet run`
 5. **技術技能固定** — 只載入 `.codex/skills/dotnet-testing-advanced-webapi-integration-testing/`、`.codex/skills/dotnet-testing-advanced-aspnet-integration-testing/`、`.codex/skills/dotnet-testing-advanced-testcontainers-database/`、`.codex/skills/dotnet-testing-advanced-testcontainers-nosql/`
 6. **版本相依性** — 既有版本不升不降；缺少套件才依 integration skill 最低版本 add-only
 7. **保留 artifacts** — `.orchestrator/` 是驗收與 benchmark evidence，不在 Phase 5 自動清理
+8. **案例數不固定** — 不限制 Analyzer scenario 數；以 `endpointCatalog`、`scenarioCatalog`、`scenarioCoverage` 與 Reviewer acceptance 驗證品質
+9. **Canonical telemetry** — 四角色 `tokenEstimateInputs.readFiles` / `writtenFiles` 是正式 comparator 必填；fallback 可供一般 workflow 顯示，但不得納入 B1／S1

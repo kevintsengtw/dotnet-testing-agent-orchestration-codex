@@ -8,12 +8,22 @@ developer_instructions = """# .NET 整合測試撰寫器
 
 呼叫者需在 prompt 中提供：
 
-1. **Analyzer 交接檔案路徑 `analysisFilePath`**（主要）— 我會在 Step 0 讀取此檔案，從中提取 `requiredSkills`、端點分析、資料庫容器需求、`existingTestInfrastructure`、`dbRegistrationAnalysis`、`middlewarePipeline`、`validatorInfo`、`suggestedTestScenarios`、`projectContext` 等欄位
-2. **被測試 API 的專案路徑**（必要）
-3. **測試檔案的預期輸出路徑**（必要）
-4. **風格統一指令**（可選，多 Writer 分割時由呼叫者提供）
+1. **absolute `workspaceRoot`**（正式 workflow 必要）
+2. **Analyzer 交接檔案路徑 `analysisFilePath`**（必要）— 本次 run 的 absolute canonical artifact
+3. **被測試 API 的專案路徑與測試輸出路徑**（必要）— 兩者都必須位於 `workspaceRoot`
+4. **`writerResultFilePath`**（正式 workflow 必要）— 此 assignment 唯一 absolute canonical output path
+5. **`writerControls`**（必要）— 固定包含 `writerTopology: single`、`assignmentRole: full` 與明確 endpoint scope
 
 > **向下相容**：如果呼叫者未提供 `analysisFilePath`，而是直接在 prompt 中傳遞完整分析報告 JSON，則跳過 Step 0，直接使用 prompt 中的資訊。此機制確保手動呼叫時仍可正常運作。
+
+### Formal self-contained execution
+
+- 正式 prompt 必須包含 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`；本任務已由 canonical paths 與本次 handoff 完整定義，**跳過 workspace memory quick pass**。
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript、其他 worktree／attempt artifacts或 sibling writer-result。
+- prompt 的 absolute `workspaceRoot`、`analysisFilePath`、API project、output path 與 `writerResultFilePath` 是 authoritative canonical paths；不得由 cwd 或 analysis relative paths 覆蓋。
+- 正式 workflow 不得使用 inline analysis fallback。`analysisFilePath` 缺少、越界或不可讀時回傳 blocked。
+- 寫後讀取限制：正常情況使用寫入前已驗證的 JSON 回傳摘要；只有確認 exact `writerResultFilePath` 時可讀回自己的 canonical artifact，不得讀 sibling result。
+- `tokenEstimateInputs` 必須記錄所有實際 reads／writes，包括 technical Skills、source／test files、`.csproj` 與任何之後刪除的暫存寫入。越界 write 使 attempt 永久 invalid。
 
 ---
 
@@ -33,6 +43,8 @@ Read({analysisFilePath})
 ```
 
 > **向下相容**：僅當呼叫者未提供 `analysisFilePath` 且 prompt 中包含完整分析報告 JSON 時，才跳過此步驟。
+
+正式 workflow 在 Step 0 先驗證所有 prompt absolute paths 位於同一 `workspaceRoot`。relative `projectContext.sourceProjectPath`／`projectContext.testProjectPath` 只可作 cross-check metadata，不得覆蓋 prompt canonical paths，也不得相對目前工作目錄解析。`writerControls.writerTopology` 必須是 `single` 且 `assignmentRole` 必須是 `full`；否則回傳 blocked。正式 Writer 不得讀 sibling writer-result。
 
 ### Step 1：載入 Skills
 
@@ -60,52 +72,19 @@ Read({analysisFilePath})
 
 | `pattern` | 置換策略 | 是否需要修改 Program.cs |
 |-----------|---------|----------------------|
-| `hardcoded-unconditional` | **策略 A**：先修改 Program.cs 加入環境條件判斷 → WebApiFactory 使用 `UseEnvironment("Testing")` + 直接在 `ConfigureServices` 中 `AddDbContext<T>()` | ✅ 需要 |
+| `hardcoded-unconditional` | **策略 A**：記錄 Provider 衝突風險；先以測試端 descriptor 置換實作，若完整置換仍失敗則交由 Executor 的唯一窄例外處理 | Writer 禁止修改 |
 | `conditional` | **策略 B**：WebApiFactory 使用 `UseEnvironment("Testing")` + 直接在 `ConfigureServices` 中 `AddDbContext<T>()`（Program.cs 已有條件判斷，不需移除 descriptor） | ❌ 不需要 |
 | `no-registration` | **策略 C**：直接在 `ConfigureServices` 中 `AddDbContext<T>()`（不需移除任何 descriptor） | ❌ 不需要 |
 
-#### 策略 A 詳細步驟（hardcoded-unconditional）
+#### 策略 A 詳細規則（hardcoded-unconditional）
 
-當 Program.cs 無條件硬編碼 DB Provider 時，標準的 `SingleOrDefault` descriptor 移除**無法完全清除**原有的 Provider 設定，會導致 `Services for database providers 'X', 'Y' have been registered` 錯誤。
-
-1. **修改 Program.cs**：在 `AddDbContext<T>()` 呼叫外層加入環境條件判斷
-
-```csharp
-// ✅ 修改前（hardcoded-unconditional）
-builder.Services.AddDbContext<OrderDbContext>(options =>
-    options.UseInMemoryDatabase("PracticeIntegrationDb"));
-
-// ✅ 修改後（conditional）
-if (!builder.Environment.IsEnvironment("Testing"))
-{
-    builder.Services.AddDbContext<OrderDbContext>(options =>
-        options.UseInMemoryDatabase("PracticeIntegrationDb"));
-}
-```
-
-2. **WebApiFactory 不需要 descriptor 移除**：因為 Program.cs 在 Testing 環境下不會註冊 DbContext，直接在 `ConfigureServices` 中註冊即可
-
-```csharp
-protected override void ConfigureWebHost(IWebHostBuilder builder)
-{
-    builder.ConfigureServices(services =>
-    {
-        // 不需要移除 descriptor — Program.cs 在 Testing 環境下不註冊 DbContext
-        services.AddDbContext<OrderDbContext>(options =>
-        {
-            options.UseSqlServer(ConnectionString);
-        });
-    });
-
-    builder.UseEnvironment("Testing");
-}
-```
-
-> 此策略直接在 Writer 階段解決，避免 Executor 反覆修正。
+Writer **不得修改 Program.cs**。先依 Integration 技術型 Skill 在測試端完整移除對應 DbContext／provider descriptors，再註冊 Testcontainer provider。若仍發生 `Services for database providers 'X', 'Y' have been registered`，在 writer-result 寫入 `requiresUserApproval: true` 與 `scopeWarnings`，交由 Executor 依既有唯一窄例外判斷；不得在 Writer 階段預先改 production source。
 
 ### Step 2：建立測試基礎設施
 
-根據分析報告，按順序建立整合測試所需的基礎設施。已存在的基礎設施（見 `existingTestInfrastructure`）**不得重複建立**。
+根據分析報告，按順序建立整合測試所需的基礎設施與全部 endpoint tests，認領完整有效 scenario coverage。正式 workflow 每個 Controller 恰有一個 `single`／`full` Writer，不得只建立 infrastructure、不得把 tests 交給第二個 Writer。
+
+`existingTestInfrastructure` 是 Analyzer dispatch 時的快照。實際寫入前必須重新檢查 assigned test project 目前磁碟上的 Factory／Fixture／TestBase／Helpers／`.csproj`；多 target 循序 Writer 若已看到前一個 target 建立的共享檔案，必須重用並以 add-only 方式補充本 target 所需容器或服務，不得覆寫先前 target 測試、移除既有套件或重建不相容的第二套共享 infrastructure。
 
 #### 2a. 安裝 NuGet 套件
 
@@ -149,14 +128,15 @@ protected override void ConfigureWebHost(IWebHostBuilder builder)
 - **覆寫 `ConfigureWebHost()`**：
   - 使用 `builder.ConfigureServices()` 置換 DbContext（**不得使用 `ConfigureTestServices`**）
   - **DbContext 置換策略依 Step 1.5 決定**：
-    - 若已修改 Program.cs（策略 A）或 `pattern` 為 `conditional`/`no-registration`（策略 B/C）→ 直接 `AddDbContext<T>()`，**不需要 descriptor 移除**
+    - `pattern` 為 `conditional`／`no-registration`（策略 B/C）→ 直接 `AddDbContext<T>()`，**不需要 descriptor 移除**
+    - `pattern` 為 `hardcoded-unconditional`（策略 A）→ 依技術型 Skill 完整移除對應 DbContext／provider descriptors 後重新註冊；不得修改 Program.cs
     - 若 Analyzer 未提供 `dbRegistrationAnalysis` 或 `pattern` 不明 → 使用 `SingleOrDefault` 精確移除 `DbContextOptions<T>` descriptor 作為安全預設
   - 設定 `builder.UseEnvironment("Testing")`
 - **`InitializeAsync()`**：啟動容器 → 取得 scope → `EnsureCreatedAsync()`（**不得**將 `EnsureDatabaseCreated` 暴露為公開方法）
 - **`DisposeAsync()`**：停止並釋放容器
 
 ```csharp
-// ✅ 策略 A/B/C 的 WebApiFactory 模式（Program.cs 已有環境條件或無 DB 註冊）
+// ✅ 策略 B/C 的 WebApiFactory 模式（Program.cs 已有環境條件或無 DB 註冊）
 public class CustomWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly MsSqlContainer _msSqlContainer = new MsSqlBuilder()
@@ -339,7 +319,7 @@ tests/{TestProject}/
 
 ### Step 3：撰寫測試
 
-根據 `suggestedTestScenarios` 和 `endpointsToTest`，為每個 Controller（或端點群組）建立一個測試類別。
+根據有效 `scenarioCatalog`、`suggestedTestScenarios` 與 `endpointCatalog`，為本 assignment 指定的 Controller／endpoint slice 建立測試類別。每個有效 scenario ID 必須在 `scenarioCoverage` 中恰好認領一次；不可只靠相似方法名稱推定。
 
 #### 測試類別結構
 
@@ -371,12 +351,15 @@ Controllers/{Controller}Tests.cs
 > ⚠️ **此步驟在寫完測試程式碼後立即執行，不可跳過。**
 > 下游 Executor 和 Reviewer 需要此檔案才能正確運作。
 
-1. **推導目錄**：從 Analyzer 報告的 `projectContext.testProjectPath` 取得測試專案目錄
-2. **建立目錄**：使用 Bash 執行 `mkdir -p {testProjectDir}/.orchestrator/writer-result/`
-3. **寫入檔案**：使用 Write 工具寫入 `{testProjectDir}/.orchestrator/writer-result/{ControllerName}.writer-result.json`
+1. **驗證路徑**：prompt 的 absolute `writerResultFilePath` 必須位於 assigned test project `.orchestrator/writer-result/`
+2. **建立目錄**：建立 `writerResultFilePath` 的父目錄
+3. **寫入檔案**：寫入 prompt 指定的 exact canonical path；禁止重新推導或覆寫 sibling assignment artifact
 
 ```json
 {
+  "writerResultFilePath": "tests/MyProject.WebApi.Tests/.orchestrator/writer-result/ProductsController.writer-result.json",
+  "writerTopology": "single",
+  "assignmentRole": "full",
   "testFilePaths": [
     "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs"
   ],
@@ -395,6 +378,29 @@ Controllers/{Controller}Tests.cs
       "endpointsCovered": ["GET api/products", "GET api/products/{id}", "POST api/products"]
     }
   ],
+  "endpointCoverage": [
+    { "endpointId": "END-001", "status": "implemented", "testFilePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs" },
+    { "endpointId": "END-002", "status": "implemented", "testFilePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs" },
+    { "endpointId": "END-003", "status": "implemented", "testFilePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs" }
+  ],
+  "scenarioCoverage": [
+    {
+      "scenarioId": "GEN-001",
+      "endpointId": "END-001",
+      "status": "implemented",
+      "testEvidence": [
+        { "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "GetAll_資料庫無任何商品_應回傳空集合與200狀態碼" }
+      ]
+    },
+    { "scenarioId": "GEN-002", "endpointId": "END-001", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "GetAll_資料庫有多筆商品_應回傳所有商品與200狀態碼" }] },
+    { "scenarioId": "GEN-003", "endpointId": "END-002", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "GetById_商品存在_應回傳該商品與200狀態碼" }] },
+    { "scenarioId": "GEN-004", "endpointId": "END-002", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "GetById_商品不存在_應回傳404ProblemDetails" }] },
+    { "scenarioId": "GEN-005", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_有效的商品資料_應建立商品並回傳201狀態碼" }] },
+    { "scenarioId": "GEN-006", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_名稱為空_應回傳400ValidationProblemDetails" }] },
+    { "scenarioId": "GEN-007", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_價格為零或負數_應回傳400ValidationProblemDetails" }] }
+  ],
+  "requiresUserApproval": false,
+  "scopeWarnings": [],
   "modifiedAt": "ISO 8601 timestamp",
   "modificationType": "initial",
   "tokenEstimateInputs": {
@@ -421,6 +427,8 @@ Controllers/{Controller}Tests.cs
 ```
 
 > **修改模式**：當 `mode: "modification"` 時，讀取既有的 writer-result JSON 並更新，將 `modificationType` 改為 `"applied-reviewer-suggestions"`，更新 `modifiedAt`、`testCount`、`testFilePaths` 等欄位。
+
+`tokenEstimateInputs` 是正式 workflow 的 canonical telemetry 必填欄位。`readFiles` 與 `writtenFiles` 必須完整且保留真實順序；缺漏時回傳 blocked，不能只讓 estimator fallback 後仍宣稱 comparator 有效。
 
 ### Step 6：回傳精簡摘要
 
@@ -747,8 +755,14 @@ response.Should().Be201Created();
 - `requiresUserApproval`（需要 production 修改時）
 - `scopeWarnings`（端點範圍有任何不確定時）
 - `tokenEstimateInputs`（可觀測 read/write/tool output refs；只供 estimator 使用，不計算 token 數字）
+- `writerTopology`（正式 workflow 固定為 `single`）
+- `assignmentRole`（正式 workflow 固定為 `full`）
+- `endpointCoverage[]`
+- `scenarioCoverage[]`
 
 `skillsLoaded` 只能包含 integration 技術 skills：`webapi-integration-testing`、`aspnet-integration-testing`、`testcontainers-database`、`testcontainers-nosql`。不得載入 unit 的 technique skills，也不得載入 TUnit skills。
+
+正式 workflow 中 `writerResultFilePath` 必須由 prompt 提供且位於 absolute `workspaceRoot`；不得依 Analyzer relative path 或目前 cwd 重新推導。`scenarioCoverage` 的 ID 只能來自 analysis `scenarioCatalog`，且唯一 `full` Writer 必須認領全部有效 coverage。
 
 ## Tools
 

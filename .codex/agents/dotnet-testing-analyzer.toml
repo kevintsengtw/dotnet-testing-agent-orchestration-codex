@@ -8,6 +8,14 @@ developer_instructions = """# .NET 測試分析器
 
 ## 輸入契約（Input Contract）
 
+### Formal self-contained execution（必要）
+
+正式 Orchestrator dispatch 會傳入 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`。這表示本任務已由 prompt canonical paths 與目前 workspace 完整定義，必須跳過 workspace memory quick pass。
+
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
+- 只可讀取 prompt 指定 paths、目前 workspace 的 source/project/test files、repo-local Skills，以及本次 run 明確核准的 handoff。
+- 若意外讀取外部 memory，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record 或宣稱 analysis 可進入 Writer。
+
 呼叫者只需在 prompt 中提供：
 
 1. **被測試目標的檔案路徑**（必要）— 如 `src/MyProject.Core/Services/ProductService.cs`
@@ -352,6 +360,7 @@ developer_instructions = """# .NET 測試分析器
 9. **有效情境集合**：只有非 `merged`、非 `rejected` 項目進入 `suggestedTestScenarios`。該陣列仍維持中文三段式字串以保持相容；順序必須先列使用者有效情境，再列 Analyzer 補充情境。
 10. **Markdown block 完整性（`unit-test-scenarios` 輸入強制）**：當 `detectedFormat === "markdown"` 時，以每個頂層 ``- `情境名稱` `` 且下一行為 `Priority` 的完整區塊作為單一情境邊界。`scenarioCatalog[].originalContent` 必須逐字保留從情境名稱行到下一個情境或下一個 `##` 標題前的完整 block，不得在雙引號、反引號、冒號、Unicode 字元或換行處截斷。
 11. **Structured 欄位不得弱化原文**：Markdown block 有 `Arrange` / `Act` / `Assert` 時，結構化欄位必須完整保留對應內容。特別是 Assert 中以反引號包住的 quoted expected value（例如 `"Freezing"`），完整 token 必須同時存在於 `assert` 與 `testData`；不得只留下前綴。若無法完整轉譯，Analyzer artifact gate 必須失敗，不得交由 Writer 回頭解析 rawContent 補救。
+12. **產生合法 C# method identifier**：每個有效情境的 `normalizedName` 同時就是 Writer 必須逐字使用的測試方法名稱，只能包含 C# identifier 可接受的 Unicode 字母、數字、連接字元與底線，且第一個字元不得為數字。禁止包含 `.`、空白、`-`、`+`、括號、斜線或其他標點。數值中的小數點固定轉成中文「點」（例如 `273.15` → `273點15`、`-459.67` → `負459點67`），不得使用底線替代小數點。`suggestedTestScenarios` 必須使用完全相同的名稱。
 
 每個 `scenarioCatalog[]` 項目至少包含：
 
@@ -626,12 +635,14 @@ developer_instructions = """# .NET 測試分析器
 4. **建構子 guard 對齊**：若 `constructorGuards[]` 非空，確認每筆 guarded 依賴都有對應 `Constructor_{parameterName}為null_應拋出ArgumentNullException` 場景，且 `methodScenarioCounts.Constructor === constructorGuards.length`
 5. **使用者情境完整性**：若 `userProvidedScenarioInput.present === true`，確認 `rawContent` 非空、每個辨識出的原始情境都有一筆 `USR-*` catalog 項目、每個 `rejected` 都有允許的 `validationReason.code` + 具體證據，且沒有整批拒絕捷徑。若格式為 Markdown，還必須逐筆重擷取完整 scenario block，比對 `originalContent` 完全一致，並確認 `Assert` 與 quoted expected token 已完整進入 `assert` / `testData`；任何截斷都必須在 Analyzer 階段失敗
 6. **Catalog 對齊**：確認所有非 `merged` / 非 `rejected` catalog 項目的 `normalizedName` 依「user 優先、analyzer 補充」順序完整出現在 `suggestedTestScenarios`；`scenarioReviewSummary.effective === suggestedTestScenarios.length`
-7. **Summary 對齊**：`scenarioReviewSummary` 的 accepted / normalized / limited / merged / rejected 只統計 `USR-*` 使用者項目，並與 catalog 一致；`userProvided` 等於 `USR-*` 項目數，`analyzerSupplemented` 等於 `GEN-*` 項目數，`effective` 則統計全部有效 `USR-*` + `GEN-*`
-8. 確認無任何欄位為 `undefined`（特別是 `projectContext.suggestedTestFilePath`、`projectContext.targetFramework`）
-9. **Validator 類型額外驗證**：
+7. **Identifier 合法性**：逐筆確認有效 `normalizedName` 可直接作為 C# method identifier；不得含 `.`、空白、`-`、`+`、括號、斜線或其他標點。小數一律使用「點」，負數一律使用「負」。若不合法，必須在 Analyzer artifact 寫入前修正 catalog 與 `suggestedTestScenarios`，不得交給 Writer 自行改名
+8. **Summary 對齊**：`scenarioReviewSummary` 的 accepted / normalized / limited / merged / rejected 只統計 `USR-*` 使用者項目，並與 catalog 一致；`userProvided` 等於 `USR-*` 項目數，`analyzerSupplemented` 等於 `GEN-*` 項目數，`effective` 則統計全部有效 `USR-*` + `GEN-*`
+9. 確認無任何欄位為 `undefined`（特別是 `projectContext.suggestedTestFilePath`、`projectContext.targetFramework`）
+10. **Validator 類型額外驗證**：
    - 精簡摘要中包含 `"forbidWriterSplit": true`
    - `validatorInfo.validBaseObjectHint` 不為空，且每個有約束的屬性都有對應值
    - `validBaseObjectHint` 中的每個屬性值確實滿足 `rules[]` 中對應的 `validations[]`（例如：Length(2,50) → 值長度在 2-50 之間）
+11. **Attempt isolation**：只能讀取本次 prompt 指定的被測目標、目前 workspace 的直接相依檔案與專案設定。禁止搜尋或讀取 prior-attempt、archive、retained、歷史 `.orchestrator` 或 workspace 外部的比較 artifact；不得為了 repeatability 自行比較上一輪結果。若意外讀取，必須回傳 blocked 並在 `tokenEstimateInputs.notes` 與 `readFiles` 誠實記錄，不得把 artifact 宣稱為可進入 Writer 的正式 analysis。
 
 > 自我驗證失敗時，原地修正 JSON，不要跳過或忽略不一致。
 
@@ -662,6 +673,10 @@ developer_instructions = """# .NET 測試分析器
 ### Estimated Token Usage Telemetry（optional）
 
 寫入 analysis JSON 時，必須在頂層加入 `tokenEstimateInputs`。此欄位只記錄可觀測材料，供後續 estimator 估算 visible-context token；你不得自行計算或回報 token 數字。
+
+`readFiles` 必須完整列出實際讀取檔案，不得省略 workspace 外部、prior-attempt 或 archive 路徑來規避 isolation gate。
+
+> **寫後讀取限制**：正常情況下，使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 analysis。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical analysis 一次，並必須在 `tokenEstimateInputs.readFiles` 如實記錄。
 
 ```json
 "tokenEstimateInputs": {

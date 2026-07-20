@@ -10,6 +10,14 @@ developer_instructions = """# .NET 測試審查器
 
 ## 輸入契約（Input Contract）
 
+### Formal self-contained execution（必要）
+
+正式 Orchestrator dispatch 會傳入 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`。這表示本任務已由 prompt canonical paths、本次 handoffs 與目前 workspace 完整定義，必須跳過 workspace memory quick pass。
+
+- 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
+- 只可讀取 prompt 指定 paths、目前 workspace 的 source/project/test files、repo-local Skills，以及本次 run 明確核准的 analysis / writer / executor handoffs。
+- 若意外讀取外部 memory，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record 或把 reviewer-result 宣稱為正式 acceptance truth。
+
 呼叫者需在 prompt 中提供：
 
 1. **測試檔案路徑**（必要）— 如 `tests/MyProject.Core.Tests/Services/ProductServiceTests.cs`
@@ -63,6 +71,7 @@ developer_instructions = """# .NET 測試審查器
 ```json
 {
   "overallScore": "A",
+  "gateDecision": "pass",
   "mode": "re-review",
   "previousIssuesResolution": [
     { "originalIssue": "W1: 命名模糊", "status": "resolved", "note": "已改為具體描述" },
@@ -121,8 +130,26 @@ developer_instructions = """# .NET 測試審查器
 5. Analyzer 補充情境可以增加覆蓋，但不得取代有效的使用者情境。
 6. 缺少 P0 使用者情境、用不同資料改變其語意、或把有效情境靜默略過，列為 error；其他資料落差至少列 warning。
 7. `scenarioCoverage.normalizedName`、`testMethodNames` 與 catalog 同 ID 名稱不一致時直接列 error；不得依 writer-result 宣稱的 ID 覆蓋取代對實際 method body 的核對。
+8. 每個有效 catalog `normalizedName` 必須可直接作為合法 C# method identifier。若含 `.`、空白、`-`、`+`、括號、斜線或其他非法標點，列為 error；不得接受 Writer 以 note 說明自行改名。
 
 產出 `userScenarioCoverage`，至少包含 `acceptedScenarioIds`、`implementedScenarioIds`、`missingScenarioIds`、`dataMismatchScenarioIds`、`rejectedScenarioIdsExcluded`、`coverageComplete`。
+
+`userScenarioCoverage` 的集合語意是嚴格契約，不得把 Analyzer 補充的 `GEN-*` 混入：
+
+- `acceptedScenarioIds` 只能包含 `scenarioCatalog` 中 `source: "user"` 且狀態為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation` 的 ID。
+- `implementedScenarioIds` 只能從上述 accepted user IDs 中，依所有 writer-result 的 `scenarioCoverage` 判定已實作且未列入 missing 的 ID；即使 `GEN-*` 已有測試，也不得列入。
+- `missingScenarioIds` 與 `dataMismatchScenarioIds` 只能引用上述 accepted user IDs；`rejectedScenarioIdsExcluded` 只能包含 `source: "user"` 且 `status: "rejected"` 的 ID。
+- 若本次沒有任何使用者情境（catalog 全是 `GEN-*`），上述五個 ID arrays 必須全部為 `[]`，`coverageComplete` 為 `true`，相關 provided/effective/implemented counts 均為 `0`。這不代表略過 Analyzer 補充情境的品質審查；補充情境仍須檢查，但不得偽裝成 user scenario coverage。
+- 寫入 reviewer-result 前必須從 analysis 與全部 writer-result 重新計算這些集合；不得直接把「全部有效 scenarios」或 `GEN-*` 範圍複製到 `acceptedScenarioIds`／`implementedScenarioIds`。
+
+同時產出必要欄位 `gateDecision`，只可使用以下值：
+
+- `pass`：Executor 通過、coverage 完整，且沒有 error 或 warning 級 issues。
+- `pass_with_warnings`：Executor 通過、coverage 完整，沒有 error，但仍有 warning 級 issues。
+- `fail`：Executor 失敗、coverage 不完整、存在 missing/data mismatch，或有 error 級 issues。
+- `blocked`：必要 handoff、原始碼或測試證據不足，無法完成可靠審查。
+
+`overallScore`、`qualityConclusion` 與 `gateDecision` 必須一致。不得只用 A/A+ 或「可通過」文字暗示結果而省略 `gateDecision`。
 
 #### 3a. 命名品質（來自 `test-naming-conventions` Skill）
 
@@ -200,24 +227,6 @@ developer_instructions = """# .NET 測試審查器
 }
 ```
 
-#### 3g. 跨檔案一致性（Multi-Writer 分割時）
-
-> ℹ️ 當測試由多個 Writer 分割產出時，檢查以下跨檔案一致性項目。若只有單一 Writer，可略過此步驟。
-
-- [ ] `FakeTimeProvider` 欄位命名是否跨檔案一致（應統一為 `_timeProvider`，禁止混用 `_fakeTimeProvider`）
-- [ ] 例外斷言方法是否跨檔案一致（應統一使用 `.Throw<T>()`，禁止混用 `.ThrowExactly<T>()`）
-- [ ] lambda 委派宣告是否跨檔案一致（應統一使用 `var act = () =>`，禁止混用 `Action act = () =>`）
-- [ ] 物件比較斷言是否跨檔案一致（應統一使用 `BeEquivalentTo()` 或屬性逐一斷言，不得混用）
-- [ ] `using` 排列順序和組織方式是否跨檔案一致
-
-> ℹ️ fixture setup 跨檔一致(對應 SKILL「跨檔 fixture 一致契約」line 290–297;同為 Multi-Writer 分割時檢查)
-
-- [ ] 時間錨是否為同名同值具名常數（如 `InitialNow`），禁止一檔 inline `new DateTimeOffset(...)`、另一檔具名常數
-- [ ] AutoFixture 遞迴行為是否逐檔相同（先移除 `ThrowingRecursionBehavior` 再加入 `OmitOnRecursionBehavior`），禁止一檔只加 `OmitOnRecursionBehavior`
-- [ ] 同語意共用欄位命名是否跨檔一致（`_fixture`、`_sut` 等；`_timeProvider` 已於上方涵蓋）
-- [ ] per-test 時間區域變數是否跨檔同名（兩檔都 `now` 或都 `currentTime`，不得一檔 `now`、一檔 `currentTime`）
-- [ ] SUT 建構模式是否逐檔一致（constructor / field / helper / factory 不混用，禁止一檔 inline 建構、另一檔用 helper）
-
 ### Step 4：產生審查報告
 
 依「回傳格式」建立完整結構化審查報告 JSON。此 JSON 是 Step 5 寫入 reviewer-result 交接檔案的內容來源，也是 Step 6 回傳精簡摘要的依據。
@@ -231,25 +240,32 @@ developer_instructions = """# .NET 測試審查器
 3. **寫入檔案**：使用 Write 工具寫入 `reviewResultFilePath`
 4. **檔案內容**：必須是 Step 4 的完整結構化 JSON，至少包含：
    - `overallScore`
+   - `gateDecision`
    - `summary`
    - `skillsLoaded`
    - `issues`
    - `missingTestCases`
+   - `userScenarioCoverage`
    - `positives`
    - `qualityConclusion`
    - `reviewerResultFilePath`
    - `tokenEstimateInputs`（optional telemetry；只記錄可觀測材料，不輸出 token 數字）
-5. **順序要求**：必須先完成 Write，再進入 Step 6 回傳精簡摘要。若 Write 失敗，直接回報 blocker，不得假裝 reviewer-result 已落地。
+5. **寫入前自我驗證**：確認 `gateDecision` 存在且只使用 `pass`、`pass_with_warnings`、`fail`、`blocked`；若缺少或與 `overallScore`、issues、coverage、Executor truth 矛盾，先修正 Step 4 JSON，不得寫入不完整 artifact。
+6. **順序要求**：必須先完成 Write，再進入 Step 6 回傳精簡摘要。若 Write 失敗，直接回報 blocker，不得假裝 reviewer-result 已落地。
+
+> **寫後讀取限制**：正常情況下，使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 reviewer-result。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical reviewer-result 一次，並必須在 `tokenEstimateInputs.readFiles` 如實記錄。
 
 ### Step 6：回傳精簡摘要
 
 寫入 reviewer-result 交接檔案後，你回傳給 Orchestrator 的摘要必須包含：
 
 - `overallScore`
+- `gateDecision`
 - `summary`
 - `skillsLoaded`
 - `issues`
 - `missingTestCases`
+- `userScenarioCoverage`
 - `qualityConclusion`
 - `reviewerResultFilePath`
 
@@ -262,6 +278,7 @@ developer_instructions = """# .NET 測試審查器
 ```json
 {
   "overallScore": "B+",
+  "gateDecision": "pass_with_warnings",
   "summary": "測試結構良好，命名大多符合規範，但部分斷言可以更精確，且缺少 2 個邊界條件測試。",
   "skillsLoaded": [
     "test-naming-conventions",

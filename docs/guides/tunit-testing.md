@@ -150,7 +150,7 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 - Analyzer 偵測到繼承 `AbstractValidator<LibraryMember>`，設定 `targetType: "validator"` 與 `forbidWriterSplit: true`，並產出 `validBaseObjectHint`
 - Writer 以 `validBaseObjectHint` 建立 `CreateValidLibraryMember()` helper，測試用 `_sut.TestValidate(model)` 搭配 `ShouldHaveValidationErrorFor()` / `ShouldNotHaveValidationErrorFor()`（Validator 測試**不需要** AwesomeAssertions `.Should()`，Reviewer 不視為警告）
-- Validator 類別**永不分割**（無論 scenarioCount 多大都用單一 Writer，確保 CrossField 與一般規則一致、不重複）
+- 所有 target 都固定單一 Writer；Validator 的 `forbidWriterSplit` 只保留為相容性 metadata，CrossField 與一般規則仍由同一 Writer 完整處理
 
 ---
 
@@ -361,8 +361,9 @@ TUnit Analyzer subagent 接收 Orchestrator 委派後，執行以下工作：
 - **框架偵測**：依測試專案 `.csproj` PackageReference 判定 `migrationSource`（xUnit / NUnit / null），遷移時產出 `migrationAnalysis`
 - 判斷 TUnit 功能需求（`tunitFeatureRequirements`），決定 `requiredSkills`（`tunit-fundamentals` 必載、`tunit-advanced` 條件載入）
 - **版本感知選取 `.slnx`**：依 `<TargetFramework>` 選 net8/net9/net10 對應方案檔，填入 `projectContext.solutionPath`
-- 估算各方法測試情境數量（`methodScenarioCounts`），決定是否需要分割 Writer
+- 估算各方法測試情境數量（`methodScenarioCounts`），供 coverage 對齊與摘要；不影響單一 Writer topology
 - 產出結構化 JSON 分析報告（compact JSON），寫入 `.orchestrator/analysis/{ClassName}.analysis.json`
+- 搜尋根限定於 assigned source/test project；除了 run-state 已計入的 assigned Analyzer definition，其他 `.codex/agents/**`、orchestrator Skills 與 workflow definitions 由 role read-scope gate 拒絕。必要技術型 Skills 仍可依 target 實作載入，不以固定 Skill 數量作 gate
 
 Analyzer 完成後回傳摘要（方法數、情境數、`requiredSkills`、`tunitFeatureRequirements`、`projectContext`），Orchestrator 驗證交接檔案存在後進入 Phase 2。
 
@@ -378,13 +379,13 @@ TUnit Writer subagent 接收 Orchestrator 委派後，執行以下工作：
 - 按中文三段式命名（`方法_情境_預期`）撰寫測試；所有 `[Test]` 方法為 `async Task`（無 await 時補 `await Task.CompletedTask`）；生命週期用 `[Before(Test)]` / `[After(Test)]`
 - 斷言優先 AwesomeAssertions（`.Should()`）；Validator 用 FluentValidation TestHelper
 
-**分割策略**：當 `methodCount > 5` 或 `scenarioCount > 20`（且 `forbidWriterSplit != true`）時，Orchestrator 同時 SpawnAgent 兩個 Writer subagent 平行撰寫：
+**單一 Writer topology**：每個 target 固定 SpawnAgent 一個 Writer，不依 `methodCount`、`scenarioCount`、`targetType` 或 `forbidWriterSplit` 分割。Analyzer 的案例數不受限制；單一 Writer 必須完成全部有效 scenarios 與 constructor guards。
 
-- Writer 1（主要組）：輸出至 `{ClassName}Tests.cs`
-- Writer 2（分割組）：輸出至 `{ClassName}_{代表方法/群組}Tests.cs`
-- 兩個 Writer 接收相同的風格統一指令（例外斷言 `.Throw<T>()`、lambda `var act = () =>`、物件比較 `BeEquivalentTo()`、FakeTimeProvider 欄位 `_timeProvider`、`using` 排序），確保多檔逐檔一致
+- 預設輸出 `{ClassName}Tests.cs`
+- 同一 Writer 可因組織需要產生多個測試檔，但全部檔案與 coverage 必須寫入唯一 `{ClassName}.writer-result.json`
+- 若 context / output limit 無法完成，phase 回報 blocker；不得臨時改用 split 或刪減案例
 
-Writer 回傳後 Orchestrator 讀實體 `writer-result.json` 驗欄位齊全與方法範圍（artifact gate），缺欄或不一致可 bounded re-dispatch 最多 2 次。
+Writer 回傳後 Orchestrator 讀實體 `writer-result.json` 驗欄位齊全、全部方法與 scenario coverage（artifact gate），缺欄或不一致可 bounded re-dispatch 同一 Writer 最多 2 次。
 
 ---
 
@@ -416,6 +417,6 @@ TUnit Reviewer subagent 接收 Orchestrator 委派後，審查以下項目（無
 | 並行與執行控制 | `[NotInParallel]` / `[Retry]` / `[Timeout]` 合理性 |
 | 覆蓋完整性 | Happy path、邊界、例外、分支；建構子 null-guard；Validator 巢狀 + CrossField 覆蓋 |
 
-Reviewer 完成後回傳品質評分報告（`overallScore`）與具體改善建議（`issues`、`missingTestCases`），寫入 `.orchestrator/reviewer-result/{ClassName}.reviewer-result.json`。
+Reviewer 完成後回傳品質評分報告（`overallScore`）與具體改善建議（`issues`、`missingTestCases`），寫入 `.orchestrator/reviewer-result/{ClassName}.reviewer-result.json`。寫入工具沒有 error 即視為成功，不因缺少額外成功訊息讀回自己的 artifact；role read-scope gate 會排除這項非必要 token 成本。
 
 Orchestrator 呈現完整結果後**等待使用者決定**是否啟動修改流程（**禁止自動觸發、禁止預先授權**）。若需套用建議，告知 Orchestrator 後進入三階段修改流程（Writer 修改 → Executor 重新執行 → Reviewer re-review）。各階段耗時取自 `run-state.json` 的 wall-clock 時間戳；Token 不回報正式 usage，只能以 `Estimated Token Usage` optional telemetry 作相對成本比較。
