@@ -22,13 +22,13 @@
 
 - 保留 v1.1.0 的每 target 單一 Writer、scenario 數不設上限、fresh/self-contained dispatch、canonical artifact truth chain、attempt isolation、role read scope、Executor runtime truth 與 strict timing gates
 - Unit／TUnit 的共用 scenario validator 不再假設 `unit-test-scenarios` 是 public bundle 內建資產；shared Skill 安裝完整性由 setup、lock 與 lab preflight 負責
-- Public bundle 固定為 16 個 Agents、5 個 Codex-specific Skills 與 12 個 runtime scripts；外部 shared Skills 不得混入 orchestration release
+- Public bundle 固定為 16 個 Agents、5 個 Codex-specific Skills 與 13 個 runtime scripts；外部 shared Skills 不得混入 orchestration release
 
 ### 驗證
 
 - 四工作流程功能驗證共 12 案：**289 passed、0 failed、0 skipped**；Unit 97、TUnit 141、Integration 28、Aspire 23
 - Failure Contracts F-01～F-06 全部通過，涵蓋缺 Skill fail closed、artifact schema gate、首次成功 accounting、Docker unavailable、Reviewer read scope 與 approval gate
-- 合併 v1.1.0 正式契約後 Node regression **189/189 passed**
+- 合併 v1.1.0 正式契約後 Node regression **190/190 passed**
 - 16 個 Agent TOML 全部保留明確模型設定；tracked samples、production、AppHost 與 test csproj 無發布 byproduct
 
 ### 相容性與升級
