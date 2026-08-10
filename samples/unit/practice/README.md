@@ -119,4 +119,4 @@ TemperatureConverter 撰寫單元測試。
 
 - **安裝與環境設定：** 參考 [docs/SETUP.md](../../../docs/SETUP.md)
 - **單元測試指南：** 參考 [docs/guides/unit-testing.md](../../../docs/guides/unit-testing.md)
-- **技術型 Skills：** 由 [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，安裝後位於 `.codex/skills/`
+- **技術型 Skills：** 由 [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，安裝後位於 `.agents/skills/`

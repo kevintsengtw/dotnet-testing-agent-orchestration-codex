@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-aspire-writer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u6839\u64da Analyzer \u5206\u6790\u7d50\u679c\u8f09\u5165 aspire-testing Skill\uff0c\u64b0\u5beb\u7b26\u5408\u6700\u4f73\u5be6\u8e10\u7684 .NET Aspire \u6574\u5408\u6e2c\u8a66"
 developer_instructions = """# .NET Aspire 整合測試撰寫器
 
@@ -59,9 +61,9 @@ Writer **固定載入唯一的 Skill**：
 
 | Skill | 路徑 | 載入條件 |
 |-------|------|---------|
-| `aspire-testing` | `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md` | **必載**（唯一 Skill） |
+| `aspire-testing` | `.agents/skills/dotnet-testing-advanced-aspire-testing/SKILL.md` | **必載**（唯一 Skill） |
 
-使用 `Read` 工具讀取 SKILL.md 檔案。
+以 `$dotnet-testing-advanced-aspire-testing` 啟用 Skill；canonical path 僅用於 readFiles 稽核與 supporting resources。
 
 **嚴格規則**：載入 Skill 檔案後，必須在後續的撰寫過程中**遵循 Skill 中定義的所有規則與模式**。這是最高優先級指令。
 
@@ -173,7 +175,7 @@ global using AwesomeAssertions.Web;
 
 ### Rule 5：Collection Fixture 共享 AppHost
 - AspireAppFixture 必須在 `StartAsync` 後，對測試實際會用到的資源做有界 readiness 等待，搭配 `CancellationTokenSource(TimeSpan.FromSeconds(90))`。
-- readiness 預設採跨版本通用形式：`Services.GetRequiredService<ResourceNotificationService>().WaitForResourceAsync(name, KnownResourceStates.Running, ct)`（Aspire 8.2.x / 9.x / 13.x 皆可用）。僅在 Analyzer 確認 Aspire >= 9.1 且需要健康檢查語意時，才使用 `ResourceNotifications.WaitForResourceHealthyAsync`；依 Analyzer 回報版本產生，避免 8.2.x / 9.0.0 使用不存在 API 造成編譯 fix 輪。
+- Analyzer 確認 Aspire >= 9.1 時，readiness 必須使用 `ResourceNotificationService.WaitForResourceHealthyAsync(name, ct)`；不得以 `WaitForResourceAsync(...KnownResourceStates.Running...)` 取代健康狀態。只有 Aspire 8.2.x / 9.0.0 缺少 healthy API 時，才允許以有界的 `WaitForResourceAsync(name, KnownResourceStates.Running, ct)` 作為相容 fallback，且 writer-result 必須記錄 fallback 原因。
 - readiness 逾時必須拋出點名資源的清楚例外；禁止無界等待、禁止 `Task.Delay` 硬等，且不得改 production / AppHost 來掩蓋 readiness 問題。
 ### Rule 6：Resource 名稱一致性
 ### Rule 7：System.Net.Http.Json
@@ -244,7 +246,7 @@ global using AwesomeAssertions.Web;
     "estimateKind": "visible-context",
     "readFiles": [
       { "path": "tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json", "reason": "analysis handoff artifact" },
-      { "path": ".codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md", "reason": "loaded aspire testing skill" },
+      { "path": ".agents/skills/dotnet-testing-advanced-aspire-testing/SKILL.md", "reason": "loaded aspire testing skill" },
       { "path": "<被測 API Controller 路徑>", "reason": "controller under test" },
       { "path": "tests/MyProject.AppHost.Tests/MyProject.AppHost.Tests.csproj", "reason": "test project context" }
     ],

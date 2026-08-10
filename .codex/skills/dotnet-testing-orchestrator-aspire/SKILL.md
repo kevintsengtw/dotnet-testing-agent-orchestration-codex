@@ -13,7 +13,7 @@ Aspire workflow 的核心語意：
 - 使用 `app.CreateHttpClient("servicename")`，服務名稱必須對齊 AppHost `AddProject("name")`。
 - 容器由 Aspire AppHost 宣告式管理，絕不使用程式化 Testcontainers。
 - 執行模型是 xUnit `dotnet test` + Docker + `--blame-hang-timeout`，絕不使用 `dotnet run`。
-- Writer / Reviewer 只載入 Aspire 技術技能 `.codex/skills/dotnet-testing-advanced-aspire-testing/`；Analyzer `requiredSkills` 固定 `["aspire-testing"]`。
+- Writer / Reviewer 只載入 Aspire 技術技能 `.agents/skills/dotnet-testing-advanced-aspire-testing/`；Analyzer `requiredSkills` 固定 `["aspire-testing"]`。
 - 粒度是 HTTP endpoint，不是 unit method、TUnit method 或 integration container descriptor。
 
 > **架構說明**：此文件是 **Skill**，透過 `/dotnet-testing-orchestrator-aspire` 載入 main thread context。
@@ -33,9 +33,11 @@ Aspire workflow 的核心語意：
 1. `Glob({testProjectDir}/.orchestrator/**)` 檢查殘留。
 2. 僅在有殘留時，委託 Executor cleanup。
 3. 建立 `{testProjectDir}/.orchestrator/run-state.json`，作為 phase timing truth。
-4. `SpawnAgent target=".codex/agents/dotnet-testing-advanced-aspire-analyzer.toml" payload={...}` 立即啟動 Analyzer。
+4. 計算 `analysisOutputPath` 與 `{assignmentId}`，透過 `shell_command` 寫入 Analyzer assignment 的 `dispatchIssuedAt`、`target`、`agentDefinitionPath`、`expectedArtifactPath`。
+5. `SpawnAgent target=".codex/agents/dotnet-testing-advanced-aspire-analyzer.toml" payload={...}` 立即啟動 Analyzer。
+6. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須透過 `run-state.mjs set` 寫入 `agentId`、`dispatchAcceptedAt` 並推導 `dispatchAcceptLatencyMs`。
 
-除上述步驟外，在啟動 Analyzer 之前不得讀 Controller、AppHost、Program.cs、DTO、DbContext、Validator，不得 Grep 探索 Resource 或 endpoint。
+步驟 4～6 合稱 **Analyzer dispatch transaction**，不可拆開、跳過或延後補寫。`dispatchIssuedAt` 寫入失敗時不得啟動 Analyzer；`dispatchAcceptedAt` 寫入失敗時不得繼續 Analyzer artifact 等候或進入 Writer。除上述步驟外，在啟動 Analyzer 之前不得讀 Controller、AppHost、Program.cs、DTO、DbContext、Validator，不得 Grep 探索 Resource 或 endpoint。
 
 Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本 workflow 不回報正式 token usage（billing / runtime truth），也不得把估算值包裝為正式用量；只允許在四階段完成後以 `Estimated Token Usage` optional telemetry 呈現 visible-context estimate，且不得作為 correctness gate。
 
@@ -43,7 +45,7 @@ Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source。本
 
 ## 硬性禁止條款
 
-1. 禁止直接讀取 `.codex/skills/**/SKILL.md`，Skills 載入是 Writer / Reviewer subagent 的職責。
+1. 禁止載入或直接讀取任何共用技術 Skill，且不得讀取 `.agents/skills/**`。除本 workflow 的 Orchestrator Skill 與明確允許的 Codex-specific Skill 外，不得讀取 `.codex/skills/**`；尤其不得讀取其他 `dotnet-testing-orchestrator-*` Skill。Skills 載入是 Writer / Reviewer subagent 的職責。
 2. 禁止直接撰寫任何測試程式碼。
 3. 禁止直接修改任何 `.csproj`。
 4. 禁止直接建立或修改任何 `.cs` 檔案；Reviewer 建議也必須交給 Writer / Executor。
@@ -175,6 +177,10 @@ node .codex/scripts/validators/validate-aspire-role-read-scope.mjs --role review
 
 ## 核心工作流程
 
+Writer 與 Reviewer artifact ready 後，Orchestrator 必須執行
+`node .codex/scripts/validators/validate-skill-read-scope.mjs --artifact <result.json> --analysis <analysis.json> --workflow aspire --role <writer|reviewer>`。
+此 gate 依 Skill ID 精確驗證 `.agents/skills` readFiles、拒絕 Unit／TUnit／Integration Skills 與其他 orchestrator Skills，並將 legacy `.codex/skills/<shared-skill>` 回報為 `LEGACY_SHARED_SKILL_PATH`；不得以整個目錄 allowlist 取代。
+
 ### Phase 0：前置清理
 
 檢查 `{testProjectDir}/.orchestrator/**/*` 是否有殘留。有殘留時委託 Executor cleanup；無殘留時直接進入 Phase 0.5。
@@ -230,6 +236,25 @@ run-state 必須記錄：
 
 Analyzer payload 必須包含 `workspaceRoot`、`executionContext`、`externalMemoryPolicy`、`apiProjectPath`、`appHostPath`、`targetServiceName`、`targetController`、`testProjectPath`、`analysisOutputPath`、`userRequest` 與未改寫的 `userProvidedScenarios`。
 
+#### Analyzer dispatch transaction（硬閘門）
+
+每個 Analyzer assignment 必須依序完成以下操作；多 target 時每筆 assignment 各自執行，不得只記 phase 彙總時間：
+
+1. SpawnAgent **之前**先執行：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath=.codex/agents/dotnet-testing-advanced-aspire-analyzer.toml --set expectedArtifactPath={analysisOutputPath}
+   ```
+
+2. 上述命令成功後才可 SpawnAgent；若失敗，不得啟動 Analyzer。
+3. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須是：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+   ```
+
+4. `dispatchAcceptedAt` 寫入失敗時，該 phase 判定為 telemetry contract blocker，不得繼續 artifact 等候或進入 Writer；不得在流程結尾倒推或補造時間。
+
 Analyzer 必須從 AppHost `Program.cs` 與 `.csproj` 分析 Resource graph，輸出頂層欄位：
 
 - `appHostInfo`（含 `aspireVersion`）
@@ -260,6 +285,20 @@ node .codex/scripts/validators/validate-aspire-scenario-contract.mjs --analysis 
 
 靜態 scenario gate、attempt isolation 或 Analyzer read-scope 任一失敗都不得進入 Writer。
 
+每個 Analyzer assignment 的 artifact gate 通過時，必須在同一操作邊界執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={analysisFilePath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+```
+
+全部 Analyzer assignments 的 artifact gate 都通過、phase 確定收斂後，才執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --set completedAt=@now
+```
+
+進入 Writer 前，Analyzer assignment 必須已有非 `null` 的 `dispatchIssuedAt`、`dispatchAcceptedAt`、`artifactReadyAt`、`produceSpanMs`，Analyzer phase 必須已有非 `null` 的 `completedAt`。Analyzer 的 canonical artifact 由 Orchestrator 主動執行 Glob/Read gate，因此其 `artifactReadyAt` 屬可獨立觀察邊界，不適用前文允許 `artifactReadyAt: null` 的例外。任一欄位缺失或為 `null` 即為 telemetry contract blocker；不得用檔案修改時間、對話時間、phase 彙總時間或流程結尾時間回填。
+
 #### 階段間主動釋放
 
 Analyzer phase 全部 assignment 完成且 analysis artifact 確認存在後，dispatch Writer phase 前，主動關閉已完成 Analyzer agents 釋放 Codex runtime agent thread slots。若 runtime 不支援主動關閉，停手並回報「runtime 不支援主動關閉已完成 agent」。
@@ -273,7 +312,7 @@ Writer payload 必須包含 `workspaceRoot`、`executionContext`、`externalMemo
 - 規則：`{TestDir}/Integration/{TestClassName}.cs`；檔名沿用 Aspire Writer 命名慣例（例：`BookingsControllerAspireTests.cs`）。
 - 測試基礎設施（AspireAppFixture、CollectionDefinition、IntegrationTestBase、DatabaseManager）沿用 Writer 規範置於 `{TestDir}/Infrastructure/`；`GlobalUsings.cs` 置於測試專案根。
 
-Writer 必須先讀 Analyzer 交接檔，再載入 `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`。不得載 unit 的 technique skills、TUnit skills、integration skills。
+Writer 必須先讀 Analyzer 交接檔，再載入 `.agents/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`。不得載 unit 的 technique skills、TUnit skills、integration skills。
 
 Writer 必須使用：
 
@@ -368,6 +407,8 @@ Executor 執行模型：
 
 Executor 必須寫 `{testProjectDir}/.orchestrator/executor-result/{ControllerName}.executor-result.json`，包含：
 
+- `executionMethod`（固定 `"dotnet test"`）
+- `blameHangTimeout`（8.x/9.x 為 `"10m"`；13.x+ 為 `"15m"`）
 - `dockerStatus`
 - `aspireWorkloadStatus`
 - `buildResult`
@@ -436,7 +477,13 @@ node .codex/scripts/run-state.mjs validate --path {p} --require-complete-timing
 
 ### Phase 5：保留 artifacts
 
-四階段完成後不自動清理 `.orchestrator/`。保留 analysis、writer-result、executor-result、reviewer-result、run-state 供驗收與 benchmark。殘留留待下一次 Phase 0 前置清理處理。
+四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），清理本次 `.orchestrator/executor-result/` 暫存結果目錄。為跨平台可靠（含 Windows VS Code Codex Extension 等非 bash shell），一律用 `node` 刪除，**不得用 `rm -rf`**：
+
+```bash
+node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{recursive:true,force:true})"
+```
+
+`.orchestrator/analysis/`、`.orchestrator/writer-result/`、`.orchestrator/reviewer-result/` 與 `.orchestrator/run-state.json` 必須保留，供驗收與 benchmark 讀取；下一次執行時，Phase 0 前置清理才處理其他殘留。
 
 ---
 

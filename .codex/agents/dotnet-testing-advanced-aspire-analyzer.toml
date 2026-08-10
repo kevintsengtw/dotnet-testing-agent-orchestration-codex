@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-aspire-analyzer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u5206\u6790 .NET Aspire AppHost \u5c08\u6848\u7684 Resource \u7d50\u69cb\u3001\u670d\u52d9\u4f9d\u8cf4\u3001\u5bb9\u5668\u9700\u6c42\uff0c\u7522\u51fa Aspire \u6574\u5408\u6e2c\u8a66\u5206\u6790\u5831\u544a"
 developer_instructions = """# .NET Aspire 整合測試分析器
 

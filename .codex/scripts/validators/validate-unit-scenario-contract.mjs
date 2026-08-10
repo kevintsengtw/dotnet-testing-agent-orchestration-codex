@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const expectedUpstreamSha256 = "148c9dcdfa74446ab837542d5b978479501f091d5b31008b41d0edc9bf4d98fb";
 const validScenarioStatuses = new Set([
   "accepted",
   "accepted_with_normalization",
@@ -178,20 +176,6 @@ function parseArgs(argv) {
 }
 
 function validateStaticContract(workflow) {
-  const skillPath = ".codex/skills/unit-test-scenarios/SKILL.md";
-  if (!fs.existsSync(skillPath)) {
-    fail(`missing bundled skill: ${skillPath}`);
-  } else {
-    // Git may materialize the pinned upstream Markdown with CRLF on Windows.
-    // Hash the canonical LF text so the immutable upstream-content check remains
-    // stable across checkout platforms without modifying the bundled Skill itself.
-    const canonicalSkillText = fs.readFileSync(skillPath, "utf8").replaceAll("\r\n", "\n");
-    const hash = crypto.createHash("sha256").update(canonicalSkillText, "utf8").digest("hex");
-    if (hash !== expectedUpstreamSha256) {
-      fail(`bundled unit-test-scenarios hash mismatch: ${hash}`);
-    }
-  }
-
   const contracts = workflow === "tunit"
     ? {
         analyzer: ".codex/agents/dotnet-testing-advanced-tunit-analyzer.toml",
@@ -503,8 +487,12 @@ function validateReviewer(reviewerPath, effective, analysis, writerCoverageById,
     if (!coverage.coverageComplete || missing.length > 0 || mismatch.length > 0) {
       fail(`${reviewerPath}: review acceptance requires complete user scenario coverage`);
     }
-    if (!gateDecision || gateDecision === "fail" || gateDecision === "blocked") {
+    if (!gateDecision) {
       fail(`${reviewerPath}: review acceptance rejected gateDecision ${reviewer.gateDecision ?? "missing"}`);
+    } else if (!["pass", "fail", "blocked"].includes(gateDecision)) {
+      fail(`${reviewerPath}: unsupported gateDecision ${reviewer.gateDecision}`);
+    } else if (gateDecision !== "pass") {
+      fail(`${reviewerPath}: review acceptance rejected gateDecision ${reviewer.gateDecision}`);
     }
   }
 }

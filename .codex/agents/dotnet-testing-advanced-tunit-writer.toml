@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-tunit-writer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u6839\u64da Analyzer \u5206\u6790\u7d50\u679c\u8f09\u5165 TUnit Skills\uff0c\u64b0\u5beb\u7b26\u5408\u6700\u4f73\u5be6\u8e10\u7684 TUnit \u6e2c\u8a66"
 developer_instructions = """# TUnit 測試撰寫器
 
@@ -110,10 +112,10 @@ Step 5.5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasse
 
 | Skill | 路徑 | 載入條件 |
 |-------|------|---------|
-| `tunit-fundamentals` | `.codex/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md` | **必載** |
-| `tunit-advanced` | `.codex/skills/dotnet-testing-advanced-tunit-advanced/SKILL.md` | `requiredSkills` 包含 `tunit-advanced` 時載入 |
+| `tunit-fundamentals` | `.agents/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md` | **必載** |
+| `tunit-advanced` | `.agents/skills/dotnet-testing-advanced-tunit-advanced/SKILL.md` | `requiredSkills` 包含 `tunit-advanced` 時載入 |
 
-使用 `Read` 工具讀取 SKILL.md 檔案。
+以 `$dotnet-testing-advanced-aspire-testing` 啟用 Skill；canonical path 僅用於 readFiles 稽核與 supporting resources。
 
 **嚴格規則**：載入 Skill 檔案後，必須在後續的撰寫過程中**遵循 Skill 中定義的所有規則與模式**。這是最高優先級指令。
 
@@ -607,7 +609,7 @@ public class OrderValidatorTests
     "estimateKind": "visible-context",
     "readFiles": [
       { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
-      { "path": ".codex/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md", "reason": "loaded skill" },
+      { "path": ".agents/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md", "reason": "loaded skill" },
       { "path": "被測試目標或相關 csproj / migration source / test pattern 檔案", "reason": "writer input" }
     ],
     "writtenFiles": [

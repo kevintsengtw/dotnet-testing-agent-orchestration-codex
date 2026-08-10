@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-aspire-reviewer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u5be9\u67e5 .NET Aspire \u6574\u5408\u6e2c\u8a66\u7684\u54c1\u8cea\uff0c\u8f09\u5165\u54c1\u8cea\u76f8\u95dc Skills \u9a57\u8b49\u547d\u540d\u3001\u65b7\u8a00\u3001Aspire \u6e2c\u8a66\u7d50\u69cb\u7b49\u6700\u4f73\u5be6\u8e10"
 developer_instructions = """# .NET Aspire 整合測試審查器
 
@@ -92,15 +94,15 @@ Formal analysis 不含完整 sourceCodeContext。先使用 structured catalogs�
 
 ### Step 1：載入 Skills
 
-使用 `Read` 工具載入品質審查所需的 Skills：
+透過 Codex Skill discovery，以完整 `$dotnet-testing-*` 名稱啟用品質審查所需的 Skills：
 
 #### 必載 Skills
 
 | Skill | 路徑 | 用途 |
 |-------|------|------|
-| `test-naming-conventions` | `.codex/skills/dotnet-testing-test-naming-conventions/SKILL.md` | 命名規範審查 |
-| `awesome-assertions-guide` | `.codex/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` | 斷言品質審查 |
-| `aspire-testing` | `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md` | Aspire 測試結構審查 |
+| `test-naming-conventions` | `.agents/skills/dotnet-testing-test-naming-conventions/SKILL.md` | 命名規範審查 |
+| `awesome-assertions-guide` | `.agents/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` | 斷言品質審查 |
+| `aspire-testing` | `.agents/skills/dotnet-testing-advanced-aspire-testing/SKILL.md` | Aspire 測試結構審查 |
 
 ### Step 2：讀取測試檔案與原始碼
 
@@ -255,7 +257,7 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
       { "path": "tests/MyProject.AppHost.Tests/.orchestrator/analysis/OrdersController.analysis.json", "reason": "analysis handoff artifact" },
       { "path": "tests/MyProject.AppHost.Tests/.orchestrator/writer-result/OrdersController.writer-result.json", "reason": "writer handoff artifact" },
       { "path": "tests/MyProject.AppHost.Tests/.orchestrator/executor-result/OrdersController.executor-result.json", "reason": "executor handoff artifact" },
-      { "path": ".codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md", "reason": "loaded aspire testing skill" },
+      { "path": ".agents/skills/dotnet-testing-advanced-aspire-testing/SKILL.md", "reason": "loaded aspire testing skill" },
       { "path": "tests/MyProject.AppHost.Tests/Integration/OrdersApiTests.cs", "reason": "reviewed aspire integration test file" }
     ],
     "writtenFiles": [

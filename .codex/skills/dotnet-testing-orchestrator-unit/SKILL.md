@@ -15,7 +15,7 @@ description: ".NET 單元測試指揮中心 — 分析被測目標、決定技�
 
 > **語言規定**：所有輸出訊息、狀態更新、錯誤說明、摘要報告，一律使用**繁體中文**。禁止以英文輸出任何面向使用者的文字。
 
-> **可選前置 Skill 邊界**：`.codex/skills/unit-test-scenarios/SKILL.md` 是獨立的前置情境產生器，不是本 workflow 的第五個角色。本 Orchestrator 不直接讀取或內聯執行它。使用者若先呼叫 `$unit-test-scenarios`，該次請求只產出 Test Scenarios；後續再把完整產出帶入 `$dotnet-testing-orchestrator-unit`。使用者已提供任何形式的情境或測試資料時，直接進入本 workflow，由 Analyzer 逐項檢視，不得要求重新執行前置 Skill。
+> **可選前置 Skill 邊界**：`.agents/skills/unit-test-scenarios/SKILL.md` 是獨立的前置情境產生器，不是本 workflow 的第五個角色。本 Orchestrator 不直接讀取或內聯執行它。使用者若先呼叫 `$unit-test-scenarios`，該次請求只產出 Test Scenarios；後續再把完整產出帶入 `$dotnet-testing-orchestrator-unit`。使用者已提供任何形式的情境或測試資料時，直接進入本 workflow，由 Analyzer 逐項檢視，不得要求重新執行前置 Skill。
 
 ---
 
@@ -27,9 +27,12 @@ description: ".NET 單元測試指揮中心 — 分析被測目標、決定技�
 
 1. `Glob({testProjectDir}/.orchestrator/**)` — 檢查殘留（Phase 0）
 2. （僅在有殘留時）委託 Executor 清理
-3. `SpawnAgent target=".codex/agents/dotnet-testing-analyzer.toml" payload={...}` — **立即啟動 Analyzer**
+3. 透過 `shell_command` 執行 `node .codex/scripts/run-state.mjs init --path {testProjectDir}/.orchestrator/run-state.json --workflow unit --target {target}`（Phase 0.5）
+4. 計算 `analysisOutputPath` 與 `{assignmentId}`，透過 `shell_command` 執行 `node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath=.codex/agents/dotnet-testing-analyzer.toml --set expectedArtifactPath={analysisOutputPath}`
+5. `SpawnAgent target=".codex/agents/dotnet-testing-analyzer.toml" payload={...}` — **立即啟動 Analyzer**
+6. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須是 `node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt`
 
-**除上述步驟外，在啟動 Analyzer 之前不得執行任何其他動作（尤其禁止讀原始碼／Grep 探索）。** 這是非協商性的硬性要求。
+`run-state.mjs init` 與 Analyzer dispatch 前後的兩次 `run-state.mjs set` 是必要且允許的 runtime bookkeeping，不是原始碼探索。步驟 4～6 合稱 **Analyzer dispatch transaction**，不可拆開、跳過或延後補寫。`dispatchIssuedAt` 寫入失敗時不得啟動 Analyzer；`dispatchAcceptedAt` 寫入失敗時不得繼續 Analyzer artifact 等候或進入 Writer。**除上述步驟外，在啟動 Analyzer 之前不得執行任何其他動作（尤其禁止讀原始碼／Grep 探索）。** 這是非協商性的硬性要求。
 
 ---
 
@@ -39,7 +42,7 @@ description: ".NET 單元測試指揮中心 — 分析被測目標、決定技�
 
 ### 絕對禁止的行為
 
-1. **禁止直接讀取 SKILL.md 檔案** — Skills 的載入是 Writer subagent 的職責，不得讀取任何 `.codex/skills/` 目錄下的 SKILL.md
+1. **禁止直接讀取 SKILL.md 檔案** — Skills 的載入是 Writer subagent 的職責，不得載入或直接讀取任何共用技術 Skill；不得讀取 `.agents/skills/**`。除目前 workflow 的 Orchestrator Skill 與明確允許的 Codex-specific Skill 外，不得讀取 `.codex/skills/**`，且不得讀取其他 `dotnet-testing-orchestrator-*` Skill
 2. **禁止直接撰寫任何測試程式碼** — 包括測試類別、測試方法、Fixture、TestBase、GlobalUsings 等所有測試相關程式碼
 3. **禁止直接修改任何 .csproj 檔案** — NuGet 套件的新增與修改由 Writer 或 Executor 處理
 4. **禁止直接建立或修改任何 .cs 檔案** — 所有程式碼產出必須透過 subagent 完成。**即使是改善既有測試、套用 Reviewer 建議、修正命名、補充斷言等增量修改，也必須交給 Writer 或 Executor，絕不可自行使用 Edit/Write 工具修改測試程式碼**
@@ -63,10 +66,12 @@ description: ".NET 單元測試指揮中心 — 分析被測目標、決定技�
 
 ### ⚡ 快速啟動原則（MUST READ）
 
-**Orchestrator 在啟動 Analyzer 之前，除了 Glob 殘留檢查與（必要時）cleanup 外，不得有其他工具呼叫。** 你只需要：
+**Orchestrator 在啟動 Analyzer 之前，除了 Glob 殘留檢查、（必要時）cleanup、run-state 初始化、與 Analyzer dispatch transaction 必要的 `dispatchIssuedAt` 寫入外，不得有其他工具呼叫。** 你只需要：
 
 1. `Glob` 檢查 `.orchestrator/` 殘留（Phase 0）
-2. **立即計算 `analysisOutputPath` 並啟動 Analyzer**
+2. （清理完成後）透過 `shell_command` 執行 `run-state.mjs init`（Phase 0.5）
+3. 計算 `analysisOutputPath` 與 assignment ID，寫入 Analyzer `dispatchIssuedAt`
+4. **立即啟動 Analyzer，取得 `agentId` 後立即寫入 `dispatchAcceptedAt`**
 
 **深度分析是 Analyzer 的職責，不是你的。** 以下行為在啟動 Analyzer 之前**嚴格禁止**：
 
@@ -168,7 +173,9 @@ Gate 會拒絕 workspace 外部路徑、prior-attempt / archive / retained 路�
 
 在每次行動前，問自己：
 
-- ❓ 我是否還沒啟動 Analyzer？→ **停止一切其他動作，立即啟動 Analyzer**（這是最高優先級）
+- ❓ 我是否尚未完成 Phase 0.5 run-state 初始化？→ **停止，不得啟動 Analyzer；先依序完成 Glob、必要 cleanup 與 `run-state.mjs init`**
+- ❓ 我是否已完成 run-state 初始化但還沒啟動 Analyzer？→ **停止一切其他動作；先寫入 Analyzer `dispatchIssuedAt`，再立即啟動 Analyzer**（完整 Analyzer dispatch transaction 是最高優先級）
+- ❓ Analyzer SpawnAgent 是否剛回傳 `agentId`？→ **下一個工具呼叫立即寫入該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`，不得先做任何其他動作**
 - ❓ 我是否正在讀取 .cs 原始碼但還沒啟動 Analyzer？→ **停止，這是 Analyzer 的工作，不是你的**
 - ❓ 我是否正在嘗試讀取 SKILL.md？→ **停止，這是 Writer 的工作**
 - ❓ 我是否正在嘗試撰寫 C# 程式碼？→ **停止，交給 Writer**
@@ -196,7 +203,11 @@ externalMemoryPolicy: forbid
 
 ## 核心工作流程
 
-你必須嚴格遵循以下流程：Phase 0（清理）→ 階段 1～4（核心四階段）→ Phase 5（清理）。
+Writer 與 Reviewer artifact ready 後，Orchestrator 必須執行
+`node .codex/scripts/validators/validate-skill-read-scope.mjs --artifact <result.json> --analysis <analysis.json> --workflow unit --role <writer|reviewer>`。
+此 gate 依 Skill ID 精確驗證 `.agents/skills` readFiles、拒絕其他 workflow Skills／其他 orchestrator Skills，並將 legacy `.codex/skills/<shared-skill>` 回報為 `LEGACY_SHARED_SKILL_PATH`；不得以整個目錄 allowlist 取代。
+
+你必須嚴格遵循以下流程：Phase 0（清理）→ Phase 0.5（初始化 run-state）→ 階段 1～4（核心四階段）→ Phase 5（清理）。
 
 ### Phase 0：前置清理
 
@@ -204,11 +215,40 @@ externalMemoryPolicy: forbid
 
 1. 使用 Glob 檢查 `{testProjectDir}/.orchestrator/**/*` 是否有檔案
 2. **若有殘留**：委託 Executor subagent 以 `task: "cleanup"` 清理（傳入測試專案路徑）
-3. **若無殘留**：直接進入階段 1
+3. **若無殘留**：直接進入 Phase 0.5
+
+### Phase 0.5：初始化 run-state
+
+Phase 0 清理完成後、**啟動 Analyzer 之前**，必須透過 `shell_command` 執行：
+
+```bash
+node .codex/scripts/run-state.mjs init --path {testProjectDir}/.orchestrator/run-state.json --workflow unit --target {target}
+```
+
+此檔是本 workflow 的唯一 timing truth source。初始化屬於必要且允許的 runtime bookkeeping，不得延後到 Analyzer dispatch 之後。命令失敗時不得啟動 Analyzer；不得在流程結束時回頭補造初始化時間或推測 `overallWallClock.start`。
 
 ### 階段 1：啟動分析（Analyzer）
 
 使用 `SpawnAgent target=".codex/agents/dotnet-testing-analyzer.toml" payload={...}` 將使用者指定的被測試目標交給 analyzer 分析。
+
+#### Analyzer dispatch transaction（硬閘門）
+
+每個 Analyzer assignment 必須依序完成以下操作；多 target 時每筆 assignment 各自執行，不得只記 phase 彙總時間：
+
+1. SpawnAgent **之前**先執行：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath=.codex/agents/dotnet-testing-analyzer.toml --set expectedArtifactPath={analysisOutputPath}
+   ```
+
+2. 上述命令成功後才可 SpawnAgent；若失敗，不得啟動 Analyzer。
+3. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須是：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+   ```
+
+4. `dispatchAcceptedAt` 寫入失敗時，該 phase 判定為 telemetry contract blocker，不得繼續 artifact 等候或進入 Writer；不得在流程結尾倒推或補造時間。
 
 **傳給 Analyzer 的 prompt 必須包含：**
 
@@ -249,6 +289,20 @@ userProvidedScenarios: |
 - 非 `merged`、非 `rejected` 的 catalog 項目必須完整對齊 `suggestedTestScenarios`；使用者有效情境排在 Analyzer 補充情境之前。
 - `scenarioReviewSummary.effective`、`suggestedTestScenarios.length`、`scenarioCount`、`methodScenarioCounts` 加總必須相等。
 - 每個有效 `scenarioCatalog[].normalizedName` 必須可直接作為合法 C# method identifier；不得包含 `.`、空白、`-`、`+`、括號、斜線或其他非法標點。小數固定使用中文「點」，負數使用「負」。若不合法，Analyzer gate 失敗，不得讓 Writer 自行改名。
+
+每個 Analyzer assignment 的 artifact gate 通過時，必須在同一操作邊界執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={analysisFilePath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+```
+
+全部 Analyzer assignments 的 artifact gate 都通過、phase 確定收斂後，才執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --set completedAt=@now
+```
+
+進入 Writer 前，Analyzer assignment 必須已有非 `null` 的 `dispatchIssuedAt`、`dispatchAcceptedAt`、`artifactReadyAt`、`produceSpanMs`，Analyzer phase 必須已有非 `null` 的 `completedAt`。Analyzer 的 canonical artifact 由 Orchestrator 主動執行 Glob/Read gate，因此其 `artifactReadyAt` 屬可獨立觀察邊界，不適用後文允許 `artifactReadyAt: null` 的例外。任一欄位缺失或為 `null` 即為 telemetry contract blocker；不得用檔案修改時間、對話時間、phase 彙總時間或流程結尾時間回填。
 
 #### 階段間主動釋放（Analyzer → Writer 必要）
 
@@ -380,13 +434,17 @@ Reviewer payload 必須另外明確提醒：`userScenarioCoverage` 只計入 ana
 
 **驗證 Reviewer 交接檔案**：Reviewer 回傳後，Orchestrator 必須使用 Glob 確認 `reviewResultFilePath` 指向的檔案確實存在且可讀取。若檔案未落地，不得只採信 Reviewer 回傳訊息；必須將該 phase 判定為 blocker，分類為 `artifact 一直沒出現`，並更新 `run-state.json` 中 reviewer phase：`artifactReadyAt: null`、`artifact: null`、`failure` 填入原始症狀。
 
+檔案存在後，Orchestrator 必須讀取實體 reviewer-result JSON，確認頂層 `gateDecision` 存在且值只能是 `pass`、`fail`、`blocked`。此欄是 Reviewer 對 Unit 使用者情境 acceptance 的正式裁決，不得從 `overallScore`、`qualityConclusion`、issues 數量或 Executor 全綠結果推導或代填。
+
+若 `gateDecision` 缺失或值不合法，該 reviewer artifact 不完整：不得執行正式 acceptance validator、不得把 Reviewer phase 宣告完成。必須更新 `run-state.json` 的 reviewer assignment／phase failure，並可依 bounded re-dispatch 規則最多重新 dispatch Reviewer 2 次，要求只修復 reviewer-result 契約；仍不完整時 workflow 判定為 blocker。
+
 Reviewer artifact 存在後，必須以本次 analysis、所有 writer-result 與 reviewer-result 執行正式 acceptance gate：
 
 ```bash
 node .codex/scripts/validators/validate-unit-scenario-contract.mjs --analysis {analysisFilePath} --writer {writerResultFilePath} --reviewer {reviewResultFilePath} --require-review-pass
 ```
 
-若此命令失敗，workflow 最終結論必須為 fail；不得因 Executor 測試全綠改寫成通過。`--require-review-pass` 要求 `userScenarioCoverage.coverageComplete === true`、missing/dataMismatch 皆為空，且 `gateDecision` 不得為 fail／blocked。
+若此命令失敗，workflow 最終結論必須為 fail；不得因 Executor 測試全綠改寫成通過。`--require-review-pass` 要求 `userScenarioCoverage.coverageComplete === true`、missing/dataMismatch 皆為空，且 `gateDecision` 必須為 `pass`。
 
 所有 phase closeout、`phaseDurations`、`profilingSummary` 與 `overallWallClock.end` 寫入完成後，final report 前必須執行 deterministic run-state gate：
 

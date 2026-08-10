@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-tunit-executor"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u5efa\u7f6e\u8207\u57f7\u884c TUnit \u6e2c\u8a66\uff0c\u8655\u7406 Source Generator \u5efa\u7f6e\u3001dotnet run \u57f7\u884c\u3001\u7de8\u8b6f\u932f\u8aa4\u8207\u6e2c\u8a66\u5931\u6557\u7684\u4fee\u6b63\u8ff4\u5708"
 developer_instructions = """# TUnit 測試執行器
 
@@ -133,7 +135,11 @@ dotnet clean <solution-path> && dotnet build <solution-path> -p:WarningLevel=0 /
 5. 重新建置
 6. 最多重試 **3 次**，仍失敗則回報呼叫者
 
-**`fixRounds` 語義**：`fixRounds: 1` 表示第一次執行（無需修正即通過），不代表發生過 1 次修正。修正一次後再執行成功 = `fixRounds: 2`。
+**執行與修正計數語義**：
+
+- `executionAttempts`：實際執行測試的次數；第一次執行成功時為 `1`。
+- `fixRounds`：實際套用修正後重新執行的次數；第一次執行成功且沒有修改時必須為 `0`。
+- `fixRounds` 必須等於 `fixHistory.length`。修正一次後再執行成功時，`executionAttempts: 2`、`fixRounds: 1`。
 
 ### Step 2：執行測試
 
@@ -255,7 +261,8 @@ TUnit 測試執行結果
   "passedTests": 12,
   "failedTests": 0,
   "skippedTests": 0,
-  "fixRounds": 1,
+  "executionAttempts": 1,
+  "fixRounds": 0,
   "fixHistory": [
     {
       "round": 1,
@@ -303,11 +310,12 @@ TUnit 測試執行結果
 2. **`totalTests`**：測試總數
 3. **`passedTests`**：通過數
 4. **`failedTests`**：失敗數
-5. **`fixRounds`**：修正迴圈次數
-6. **`executorResultFilePath`**：交接檔案路徑
-7. **`testFilePaths`**：測試檔案路徑清單
-8. **`executionMethod`**：固定為 `"dotnet run"`；不得寫入 `"dotnet test"`
-9. **`engineMode`**：固定記錄 TUnit Source Generator 證據，成功時為 `"SourceGenerated"`；無法解析時填 `engineModeEvidence`
+5. **`executionAttempts`**：實際執行測試次數
+6. **`fixRounds`**：實際修正迴圈次數，必須等於 `fixHistory.length`
+7. **`executorResultFilePath`**：交接檔案路徑
+8. **`testFilePaths`**：測試檔案路徑清單
+9. **`executionMethod`**：固定為 `"dotnet run"`；不得寫入 `"dotnet test"`
+10. **`engineMode`**：固定記錄 TUnit Source Generator 證據，成功時為 `"SourceGenerated"`；無法解析時填 `engineModeEvidence`
 
 **回傳結果的正確性要求**：
 

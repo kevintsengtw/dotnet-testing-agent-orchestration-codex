@@ -1,4 +1,6 @@
 name = "dotnet-testing-reviewer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u5be9\u67e5 .NET \u55ae\u5143\u6e2c\u8a66\u7684\u54c1\u8cea\uff0c\u8f09\u5165\u54c1\u8cea\u76f8\u95dc Skills \u9a57\u8b49\u547d\u540d\u3001\u65b7\u8a00\u3001\u8986\u84cb\u7387\u7b49\u6700\u4f73\u5be6\u8e10"
 developer_instructions = """# .NET 測試審查器
 
@@ -87,18 +89,18 @@ developer_instructions = """# .NET 測試審查器
 
 ### Step 1：並行載入所有審查 Skills
 
-**讀取 Analyzer 報告的 `skillMap.reviewer` 清單，一次性批量（並行）讀取全部 SKILL.md。**
+**讀取 Analyzer 報告的 `skillMap.reviewer` 清單，透過 Codex Skill discovery，以完整 `$dotnet-testing-*` 名稱一次性批量（並行）啟用全部 Skills。**
 
-> **⚡ 效率提示：請一次性批量讀取（並行）`skillMap.reviewer` 中的所有 SKILL.md，不要逐一循序讀取。** Analyzer 已根據被測試目標的特性計算出精確的 Skill 清單（固定 + 條件），你只需全部並行載入，無需重新推導。
+> **⚡ 效率提示：請透過 Codex Skill discovery，以完整 `$dotnet-testing-*` 名稱一次性批量（並行）啟用 `skillMap.reviewer` 中的所有 Skills，不要逐一循序讀取。** Analyzer 已根據被測試目標的特性計算出精確的 Skill 清單（固定 + 條件），你只需全部並行載入，無需重新推導。
 
 | `skillMap.reviewer` 項目 | SKILL.md 路徑 | 審查面向 |
 |--------------------------|--------------|---------|
-| `test-naming-conventions` | `.codex/skills/dotnet-testing-test-naming-conventions/SKILL.md` | 命名規範 |
-| `awesome-assertions` | `.codex/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` | 斷言品質 |
-| `unit-test-fundamentals` | `.codex/skills/dotnet-testing-unit-test-fundamentals/SKILL.md` | 測試結構 |
-| `nsubstitute-mocking` | `.codex/skills/dotnet-testing-nsubstitute-mocking/SKILL.md` | Mock 正確性（條件） |
-| `complex-object-comparison` | `.codex/skills/dotnet-testing-complex-object-comparison/SKILL.md` | 複雜物件比對（條件） |
-| `code-coverage-analysis` | `.codex/skills/dotnet-testing-code-coverage-analysis/SKILL.md` | 覆蓋率分析（條件） |
+| `test-naming-conventions` | `.agents/skills/dotnet-testing-test-naming-conventions/SKILL.md` | 命名規範 |
+| `awesome-assertions` | `.agents/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` | 斷言品質 |
+| `unit-test-fundamentals` | `.agents/skills/dotnet-testing-unit-test-fundamentals/SKILL.md` | 測試結構 |
+| `nsubstitute-mocking` | `.agents/skills/dotnet-testing-nsubstitute-mocking/SKILL.md` | Mock 正確性（條件） |
+| `complex-object-comparison` | `.agents/skills/dotnet-testing-complex-object-comparison/SKILL.md` | 複雜物件比對（條件） |
+| `code-coverage-analysis` | `.agents/skills/dotnet-testing-code-coverage-analysis/SKILL.md` | 覆蓋率分析（條件） |
 
 > **備註**：若審查途中（Step 3f）發現顯著覆蓋率缺口，而 `code-coverage-analysis` 未在 `skillMap.reviewer` 清單中，可於此時補充載入。
 
@@ -117,7 +119,7 @@ developer_instructions = """# .NET 測試審查器
 
 依照已載入的 Skills，逐項檢查以下面向：
 
-#### 3-1. 使用者提供情境覆蓋（有 `scenarioCatalog` 時先執行）
+#### 3-1. 使用者提供情境覆蓋（有 `scenarioCatalog` 時執行）
 
 1. 從 catalog 取出 `source: "user"` 且狀態為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation` 的項目；這是使用者情境 coverage 的權威集合。
 2. `merged` 只需確認 `mergedIntoScenarioId` 指向的有效情境已覆蓋；不得要求額外重複測試。
@@ -134,6 +136,17 @@ developer_instructions = """# .NET 測試審查器
 
 產出 `userScenarioCoverage`，至少包含 `acceptedScenarioIds`、`implementedScenarioIds`、`missingScenarioIds`、`dataMismatchScenarioIds`、`rejectedScenarioIdsExcluded`、`coverageComplete`。
 
+若 Analyzer artifact 沒有 `scenarioCatalog`，仍必須產出 `userScenarioCoverage`，其五個 ID 陣列均為空，且 `coverageComplete` 為 `true`；這表示本次沒有使用者提供情境可供 coverage gate 審查，不表示測試品質自動通過。
+
+無論是否有 `scenarioCatalog`，都必須產出頂層 `gateDecision`，且只能是 `"pass"`、`"fail"`、`"blocked"`：
+
+- 有 `scenarioCatalog` 時，`pass`：`userScenarioCoverage.coverageComplete === true`，且 `missingScenarioIds`、`dataMismatchScenarioIds` 皆為空；`fail`：使用者有效情境有缺漏或測試資料／行為不一致，也就是 coverage 不完整、missing 或 data mismatch 非空。
+- 沒有 `scenarioCatalog` 時，`pass`：正式審查已完成，且 `issues` 沒有 `error`／`blocker` 級別項目、`missingTestCases` 為空；`fail`：存在任一上述 error/blocker 或 missing test case。不得僅因沒有 catalog 或 Executor 全綠而填入 `pass`。
+- `blocked`：必要 artifact 不可讀、內容不足，或其他原因使 Reviewer 無法完成正式裁決。
+- 有 `scenarioCatalog` 時，一般命名、結構或斷言 warning，以及非使用者情境的 `missingTestCases`，只影響 `overallScore`、`issues` 與 `qualityConclusion`；不得在使用者情境 coverage 完整時自行把 `gateDecision` 改為 `fail`。
+
+`userScenarioCoverage` 與 `gateDecision` 是 Unit acceptance gate 的正式機器可讀欄位，不得省略、不得使用其他字串。完整審查與 re-review 都必須寫入此欄位與 `userScenarioCoverage`。
+
 `userScenarioCoverage` 的集合語意是嚴格契約，不得把 Analyzer 補充的 `GEN-*` 混入：
 
 - `acceptedScenarioIds` 只能包含 `scenarioCatalog` 中 `source: "user"` 且狀態為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation` 的 ID。
@@ -144,9 +157,8 @@ developer_instructions = """# .NET 測試審查器
 
 同時產出必要欄位 `gateDecision`，只可使用以下值：
 
-- `pass`：Executor 通過、coverage 完整，且沒有 error 或 warning 級 issues。
-- `pass_with_warnings`：Executor 通過、coverage 完整，沒有 error，但仍有 warning 級 issues。
-- `fail`：Executor 失敗、coverage 不完整、存在 missing/data mismatch，或有 error 級 issues。
+- `pass`：依上述 Unit 規則完成正式裁決。
+- `fail`：依上述 Unit 規則判定 coverage、資料、error／blocker 或 missing test case 不符合。
 - `blocked`：必要 handoff、原始碼或測試證據不足，無法完成可靠審查。
 
 `overallScore`、`qualityConclusion` 與 `gateDecision` 必須一致。不得只用 A/A+ 或「可通過」文字暗示結果而省略 `gateDecision`。
@@ -240,7 +252,7 @@ developer_instructions = """# .NET 測試審查器
 3. **寫入檔案**：使用 Write 工具寫入 `reviewResultFilePath`
 4. **檔案內容**：必須是 Step 4 的完整結構化 JSON，至少包含：
    - `overallScore`
-   - `gateDecision`
+   - `gateDecision`（只允許 `pass`、`fail`、`blocked`）
    - `summary`
    - `skillsLoaded`
    - `issues`
@@ -250,7 +262,7 @@ developer_instructions = """# .NET 測試審查器
    - `qualityConclusion`
    - `reviewerResultFilePath`
    - `tokenEstimateInputs`（optional telemetry；只記錄可觀測材料，不輸出 token 數字）
-5. **寫入前自我驗證**：確認 `gateDecision` 存在且只使用 `pass`、`pass_with_warnings`、`fail`、`blocked`；若缺少或與 `overallScore`、issues、coverage、Executor truth 矛盾，先修正 Step 4 JSON，不得寫入不完整 artifact。
+5. **寫入前自我驗證**：確認 `gateDecision` 存在且只使用 `pass`、`fail`、`blocked`；若缺少或與 `overallScore`、issues、coverage、Executor truth 矛盾，先修正 Step 4 JSON，不得寫入不完整 artifact。
 6. **順序要求**：必須先完成 Write，再進入 Step 6 回傳精簡摘要。若 Write 失敗，直接回報 blocker，不得假裝 reviewer-result 已落地。
 
 > **寫後讀取限制**：正常情況下，使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 reviewer-result。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical reviewer-result 一次，並必須在 `tokenEstimateInputs.readFiles` 如實記錄。
@@ -278,7 +290,7 @@ developer_instructions = """# .NET 測試審查器
 ```json
 {
   "overallScore": "B+",
-  "gateDecision": "pass_with_warnings",
+  "gateDecision": "pass",
   "summary": "測試結構良好，命名大多符合規範，但部分斷言可以更精確，且缺少 2 個邊界條件測試。",
   "skillsLoaded": [
     "test-naming-conventions",

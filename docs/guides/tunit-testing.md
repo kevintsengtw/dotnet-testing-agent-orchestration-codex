@@ -13,7 +13,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills 已複製到 `.codex/skills/`**（Writer 載入 `tunit-fundamentals` / `tunit-advanced` 等技術型 Skill 所需）
+- **dotnet-testing-agent-skills@v2.4.1 已安裝到 `.agents/skills/`**（Writer 載入 `tunit-fundamentals` / `tunit-advanced` 等技術型 Skill 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**（`dotnet --version` 可確認）
 - **不需要 Docker**（基本 TUnit 測試不使用容器；僅 Testcontainers / WebApplicationFactory 進階場景需要）
 
@@ -247,7 +247,7 @@ git clean -fd samples/tunit/practice_tunit/tests/
 
 **症狀**：Orchestrator SpawnAgent 啟動 Writer 時，Writer 找不到 `dotnet-testing-advanced-tunit-fundamentals` 等技能。
 
-**解法**：確認 `dotnet-testing-agent-skills` 的技術型 skill 目錄都已複製到 `.codex/skills/`（每個目錄下需有 `SKILL.md`）。TUnit 工作流程至少需要 `dotnet-testing-advanced-tunit-fundamentals`（必載）與 `dotnet-testing-advanced-tunit-advanced`（條件載入）。重新啟動 Codex 工作階段後再次嘗試。
+**解法**：確認 `dotnet-testing-agent-skills` 的技術型 skill 目錄都已安裝到 `.agents/skills/`（每個目錄下需有 `SKILL.md`）。TUnit 工作流程至少需要 `dotnet-testing-advanced-tunit-fundamentals`（必載）與 `dotnet-testing-advanced-tunit-advanced`（條件載入）。重新啟動 Codex 工作階段後再次嘗試。
 
 ---
 

@@ -191,4 +191,4 @@ FluentValidation（ProblemDetails / ValidationProblemDetails 驗證）
 
 > 執行模型：`dotnet test`（xUnit）+ Docker / Testcontainers；測試專案含 `Microsoft.NET.Test.Sdk`、**無** `OutputType=Exe`。需 Docker 環境（有容器需求時 Executor 先 `docker info`）。
 >
-> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需直接複製到 `.codex/skills/`。
+> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需由 standalone installer 以精確 Release tag 安裝到 `.agents/skills/`。

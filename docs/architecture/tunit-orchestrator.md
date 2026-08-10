@@ -219,4 +219,4 @@ FluentValidation 11.x（含 TestHelper API，不需另裝 FluentValidation.TestH
 >
 > **命名空間陷阱**：FakeTimeProvider 套件名為 `Microsoft.Extensions.TimeProvider.Testing`，命名空間卻是 `Microsoft.Extensions.Time.Testing`（少了 `Provider`）。
 >
-> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需直接複製到 `.codex/skills/`。
+> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需由 standalone installer 以精確 Release tag 安裝到 `.agents/skills/`。

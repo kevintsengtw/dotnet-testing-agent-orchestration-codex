@@ -63,7 +63,7 @@ Orchestrator 收摘要後用 Glob **驗證 `analysisFilePath` 確實存在**，�
 
 ## 4. Phase 2 Writer
 
-Writer 在 Step 0 先讀 analysis.json，**只載入單一技術技能** `.codex/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`，撰寫 Aspire 整合測試。**不得載入** unit 的 20 個 technique skills、TUnit skills 或一般 integration skills。
+Writer 在 Step 0 先讀 analysis.json，**只載入單一技術技能** `.agents/skills/dotnet-testing-advanced-aspire-testing/SKILL.md`，撰寫 Aspire 整合測試。**不得載入** unit 的 20 個 technique skills、TUnit skills 或一般 integration skills。
 
 **測試命名**：中文三段式 `端點操作_情境_預期`。
 **基礎設施**：`AspireAppFixture`（`IAsyncLifetime`）+ `[CollectionDefinition]` + `ICollectionFixture<T>` 共享 AppHost；使用測試端有界 Resource readiness、通用持久化 sanitizer，必要時 Respawn 做資料隔離。
@@ -223,4 +223,4 @@ Respawn（資料庫狀態重置）
 
 > 執行模型：xUnit `dotnet test` + `--blame-hang-timeout`（8.x/9.x=10m、13.x=15m）+ Docker + Aspire AppHost 宣告式容器；測試 `.csproj` 含 `Microsoft.NET.Test.Sdk` + `xunit` + `Aspire.Hosting.Testing`、**無** `<OutputType>Exe</OutputType>`。需 Docker（Executor Step 0 `docker info` 硬前置，無 InMemory 退路）+ Aspire workload（Step 0.5 `dotnet workload list`，含 `Aspire.AppHost.Sdk` NuGet 免 workload 例外）。
 >
-> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需直接複製到 `.codex/skills/`。
+> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需由 standalone installer 以精確 Release tag 安裝到 `.agents/skills/`。

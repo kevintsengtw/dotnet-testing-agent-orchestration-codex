@@ -1,21 +1,22 @@
 # unit-test-scenarios 上游來源
 
-`.codex/skills/unit-test-scenarios/SKILL.md` 是外部 Agent Skill 的固定版本副本，不屬於本 repo 可自由修改的 orchestrator skills。
+`.agents/skills/unit-test-scenarios/SKILL.md` 是 lab setup 從公開 repository 抓取後建立的本機 Agent Skill，不是本 repo 內含、追蹤或發行的資產。
 
 ## 來源
 
 - Repository: `https://github.com/kevintsengtw/unit-test-scenarios`
 - Path: `skills/unit-test-scenarios/SKILL.md`
-- Ref: `main`
 - Commit: `d00501984383dfd0b111c33a091c48af20abec55`
 - SHA-256: `148c9dcdfa74446ab837542d5b978479501f091d5b31008b41d0edc9bf4d98fb`
+- Lab lock: `unit-test-scenarios-lock.json`（不隨 public orchestration assets 發佈）
 
 ## 維護規則
 
-1. 不直接修改 workspace 內的 `SKILL.md`。
-2. 更新時重新從上游指定 commit 匯入完整檔案。
-3. 更新本文件的 commit 與 SHA-256。
-4. 比對匯入檔案與上游 raw content 完全一致後，才可提交。
+1. 不直接修改 `.agents/skills/unit-test-scenarios/SKILL.md`。
+2. 更新時修改 `unit-test-scenarios-lock.json` 的 exact commit 與 SHA-256。
+3. 執行 `scripts/setup-lab-skills.mjs`，從公開 repo 重新抓取並安裝。
+4. 通過 scenario contract 與完整 lab workflow 驗證後才可提交 lock 更新。
+5. 不得把抓取後的 `.agents/skills/unit-test-scenarios` 加入 orchestration repository 或 public release。
 
 ## Workflow 關係
 

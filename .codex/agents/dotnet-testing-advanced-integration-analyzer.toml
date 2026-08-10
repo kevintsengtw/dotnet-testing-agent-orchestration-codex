@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-integration-analyzer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u5206\u6790 .NET WebAPI \u5c08\u6848\u7684\u7aef\u9ede\u7d50\u69cb\u3001\u8cc7\u6599\u5c64\u4f9d\u8cf4\u3001\u5bb9\u5668\u9700\u6c42\uff0c\u7522\u51fa\u6574\u5408\u6e2c\u8a66\u5206\u6790\u5831\u544a"
 developer_instructions = """# .NET 整合測試分析器
 
@@ -189,10 +191,10 @@ developer_instructions = """# .NET 整合測試分析器
 
 | 識別碼 | SKILL.md 路徑 | 載入條件 |
 |--------|--------------|---------|
-| `webapi-integration-testing` | `.codex/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md` | **必載**（整合測試基礎） |
-| `aspnet-integration-testing` | `.codex/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md` | API 為 Controller-based 或 Mixed 時載入 |
-| `testcontainers-database` | `.codex/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md` | `containerRequirements` 含 SQL Server 或 PostgreSQL 時載入 |
-| `testcontainers-nosql` | `.codex/skills/dotnet-testing-advanced-testcontainers-nosql/SKILL.md` | `containerRequirements` 含 MongoDB 或 Redis 時載入 |
+| `webapi-integration-testing` | `.agents/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md` | **必載**（整合測試基礎） |
+| `aspnet-integration-testing` | `.agents/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md` | API 為 Controller-based 或 Mixed 時載入 |
+| `testcontainers-database` | `.agents/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md` | `containerRequirements` 含 SQL Server 或 PostgreSQL 時載入 |
+| `testcontainers-nosql` | `.agents/skills/dotnet-testing-advanced-testcontainers-nosql/SKILL.md` | `containerRequirements` 含 MongoDB 或 Redis 時載入 |
 
 ### Step 5.5：建立 endpoint-scoped scenario provenance
 
@@ -456,7 +458,7 @@ developer_instructions = """# .NET 整合測試分析器
 - `analysisOutputPath` 由 Orchestrator 預先提供，必須照該路徑寫入，不得自行改名或改目錄。
 - `projectContext.testFramework` 固定為 `"xunit"`；`projectContext.targetFramework` 必須從 WebAPI `.csproj` 的 `<TargetFramework>` / `<TargetFrameworks>` 取得。
 - `endpointsToTest[]` 必須保留 HTTP endpoint 粒度，包含 `controller`、`action`、`httpMethod`、`route`、`parameters`、`returnType`、`dependencies`、`errorResponses`。
-- `requiredSkills` 的路徑必須指向 `.codex/skills/` 下既有 integration 技術 skills，不得要求建立新 skill。
+- `requiredSkills` 必須對應 `.agents/skills/` 下既有 integration 技術 Skills，不得要求建立新 Skill。
 - `containerRequirements[]` 必須依 SqlServer / PostgreSQL / MongoDB / Redis / InMemory 規則輸出；使用者明示真實容器時，即使 source 用 InMemory 也要列出容器需求。
 - `dbRegistrationAnalysis` 是必要欄位，不得省略。它直接決定 Writer 的 DbContext 置換策略與 Executor 是否可能觸發 Program.cs 窄例外。
 - `endpointCatalog`、`scenarioCatalog`、`scenarioReviewSummary`、`userProvidedScenarioInput` 與 `scenarioCount` 是正式 workflow 必填；不得限制 scenario 數來迎合 Writer topology。

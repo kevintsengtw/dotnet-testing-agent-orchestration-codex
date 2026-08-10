@@ -7,13 +7,13 @@
 
 - [dotnet-testing Agent Orchestration for Codex](#dotnet-testing-agent-orchestration-for-codex)
   - [目前涵蓋範圍](#目前涵蓋範圍)
-  - [v1.1.0 重要變更](#v110-重要變更)
+  - [v1.2.0 重要變更](#v120-重要變更)
   - [架構概覽](#架構概覽)
   - [系統需求](#系統需求)
   - [安裝與環境設定](#安裝與環境設定)
     - [步驟 1：取得本 repo 的 `.codex/` 內容](#步驟-1取得本-repo-的-codex-內容)
-    - [步驟 2：安裝 Agent Skills（dotnet-testing-agent-skills）](#步驟-2安裝-agent-skillsdotnet-testing-agent-skills)
-    - [步驟 3：確認完整 `.codex/` 目錄結構](#步驟-3確認完整-codex-目錄結構)
+    - [步驟 2：安裝外部 Agent Skills](#步驟-2安裝外部-agent-skills)
+    - [步驟 3：確認完整 workspace 目錄結構](#步驟-3確認完整-workspace-目錄結構)
     - [步驟 4：驗證安裝](#步驟-4驗證安裝)
   - [快速開始](#快速開始)
   - [練習專案](#練習專案)
@@ -33,7 +33,9 @@
 
 > 四種工作流程**共用同一個 1 + 4 模型**(1 Orchestrator Skill + 4 Subagent、Codex 原生 SpawnAgent、Analyzer → Writer → Executor → Reviewer);差別在**執行模型、測試粒度與技術棧**,如下。
 
-> **Unit 工作流程**:使用者可在一開始以 Markdown、free text、表格、JSON 或混合格式提供測試情境與測試資料。合理內容優先於 Analyzer 自行補充的情境，只有個別情境不合理或不正確時才能逐項拒絕。若未提供情境，可先呼叫內建的 `$unit-test-scenarios` 產生情境，再交給 `$dotnet-testing-orchestrator-unit`。
+> **Agent 預設模型**：`.codex/agents/` 內全部 16 個 agent TOML 預設使用 `gpt-5.6-sol`，推理強度為 `medium`。GPT-5.6 Sol 與 GPT-5.5 的標準 API 單位費率相同；完整的 GPT-5.4、GPT-5.5、GPT-5.6 Sol／Terra／Luna 計費比照表見 [模型計費與預設設定](docs/guides/model-pricing.md)。
+
+> **Unit 工作流程**:使用者可在一開始以 Markdown、free text、表格、JSON 或混合格式提供測試情境與測試資料。合理內容優先於 Analyzer 自行補充的情境，只有個別情境不合理或不正確時才能逐項拒絕。若已安裝外部 `unit-test-scenarios`，可先呼叫 `$unit-test-scenarios` 產生情境，再交給 `$dotnet-testing-orchestrator-unit`。
 
 > **TUnit 工作流程**:執行模型為 **`dotnet run`**(Source Generator / Microsoft.Testing.Platform,非 `dotnet test`),產出 `OutputType=Exe`、不含 `Microsoft.NET.Test.Sdk`;支援 `[Test]`/`[Arguments]`/`[MethodDataSource]`、`.slnx` 版本感知選擇、xUnit→TUnit 遷移與 Validator。呼叫 `$dotnet-testing-orchestrator-tunit`;練習素材見 `samples/tunit/practice_tunit/`,細節見 `docs/guides/tunit-testing.md`。
 
@@ -43,7 +45,22 @@
 
 ---
 
-## v1.1.0 重要變更
+## v1.2.0 重要變更
+
+v1.2.0 保留四個 Orchestrator Skill 名稱、每 target 單一 Writer topology 與各 framework runner，主要調整 shared Skill 發布邊界、可重建安裝與 runtime telemetry：
+
+- **Shared Skills 不再內含**：29 個技術型 `dotnet-testing-*` Skills 與可選的 `unit-test-scenarios` 改由 consumer deployment 安裝到 `.agents/skills/`；`.codex/skills/` 只發布 `dotnet-test` 與四個 Orchestrator
+- **外部依賴可重建**：正式來源以 tag／commit lock 固定，避免 orchestration repo 內含的 shared Skill 副本與上游版本漂移
+- **Analyzer timing fail closed**：四套流程都在 dispatch、接受與 artifact ready 的實際邊界記錄 telemetry；缺少必要時間欄位時停止，不以事後推算補值
+- **Unit Reviewer 三值裁決**：Unit reviewer-result 必須明確輸出 `pass`、`fail` 或 `blocked`，且與使用者情境 coverage、issues 與 Executor truth 一致
+- **固定 Agent 模型**：16 個 Subagent 預設使用 `gpt-5.6-sol` 與 `medium` reasoning；可依 consumer 需求覆寫
+- **完整功能驗證**：Unit、TUnit、Integration、Aspire 共 12 案，289 passed、0 failed、0 skipped；另有 6 個 failure-contract cases 全部通過
+
+升級時應完整替換 `.codex/` workflow assets，移除舊版放在 `.codex/skills/` 的 shared Skill 副本，再由 consumer deployment 將外部 Skills 安裝到 `.agents/skills/`。
+
+完整變更與驗證證據見 [CHANGELOG.md](CHANGELOG.md)。
+
+### v1.1.0 延續契約
 
 v1.1.0 保留四個 Orchestrator Skill 名稱、1 + 4 階段與各 framework runner，主要改進工作流程的 Token Usage、隔離與可稽核性：
 
@@ -97,11 +114,11 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 
 ## 安裝與環境設定
 
-本 repo 發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test` + 固定版本的 `unit-test-scenarios`）。完整可運作環境 = 本 repo 內容 **＋** 技術型 Agent Skills（步驟 2）。
+本 repo 發佈的是 **Orchestrator 契約本身**（4 個 Orchestrator Skill + 16 個 Subagent + `dotnet-test`）。完整可運作環境 = 本 repo 內容 **＋** 外部 Agent Skills（步驟 2）。
 
 ### 步驟 1：取得本 repo 的 `.codex/` 內容
 
-將本 repo 的 `.codex/` 放入你的專案根目錄（或合併進既有 `.codex/`）。內含 **6 個 Skill + 16 個 Subagent**（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）：
+將本 repo 的 `.codex/` 放入你的專案根目錄。內含 **5 個 Codex-specific Skill + 16 個 Subagent**（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）：
 
 ```text
 .codex/
@@ -123,17 +140,18 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
     ├── dotnet-testing-orchestrator-unit/
     ├── dotnet-testing-orchestrator-tunit/
     ├── dotnet-testing-orchestrator-integration/
-    ├── dotnet-testing-orchestrator-aspire/
-    └── unit-test-scenarios/
+    └── dotnet-testing-orchestrator-aspire/
 ```
 
-### 步驟 2：安裝 Agent Skills（dotnet-testing-agent-skills）
+### 步驟 2：安裝外部 Agent Skills
 
-Writer 需要的各技術 Skill 由獨立 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需放入本專案的 **`.codex/skills/`** 目錄下。
+Writer 需要的各技術 Skill 由獨立 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 的固定 Release 提供。可選的前置情境 Skill 不內含於本 repo，consumer deployment 必須從公開 repo [`kevintsengtw/unit-test-scenarios`](https://github.com/kevintsengtw/unit-test-scenarios) 抓取。兩者取得後放入 workspace 的 **`.agents/skills/`**。
 
-**直接複製即可**：從 [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 取得各 skill 目錄，複製到本專案的 `.codex/skills/` 下。
+Release version、managed files 與 rollback 由 `dotnet-testing-vscode-extensions` 管理；本 repository 不發布 standalone shared Skills installer。
 
-複製後，`.codex/skills/` 下會新增以下 **29 個** 技術型 Agent Skill：
+`unit-test-scenarios` 的抓取來源固定為公開 repo 的 `skills/unit-test-scenarios/`，目的地為 consumer workspace 的 `.agents/skills/unit-test-scenarios/`。目前驗證基準 commit 為 `d00501984383dfd0b111c33a091c48af20abec55`；orchestration release 不得攜帶該 Skill 的副本。
+
+安裝後，`.agents/skills/` 下會新增以下 **29 個**技術型 Agent Skill：
 
 ```text
 dotnet-testing/
@@ -167,9 +185,9 @@ dotnet-testing-unit-test-fundamentals/
 dotnet-testing-xunit-project-setup/
 ```
 
-### 步驟 3：確認完整 `.codex/` 目錄結構
+### 步驟 3：確認完整 workspace 目錄結構
 
-完成步驟 1、2 後，`.codex/` 的預期結構（節錄）：
+完成步驟 1、2 後，workspace 中 `.codex/` 與 `.agents/` 的預期結構（節錄）：
 
 ```text
 .codex/
@@ -185,9 +203,11 @@ dotnet-testing-xunit-project-setup/
     ├── dotnet-testing-orchestrator-unit/         ← 本 repo 內建
     ├── dotnet-testing-orchestrator-tunit/        ← 本 repo 內建
     ├── dotnet-testing-orchestrator-integration/  ← 本 repo 內建
-    ├── dotnet-testing-orchestrator-aspire/       ← 本 repo 內建
-    ├── unit-test-scenarios/                      ← 本 repo 內建（固定上游版本）
-    ├── dotnet-testing/                            ← 步驟 2 安裝
+    └── dotnet-testing-orchestrator-aspire/       ← 本 repo 內建
+.agents/
+└── skills/
+    ├── unit-test-scenarios/                      ← setup 從公開 repo 抓取（非內含資產）
+    ├── dotnet-testing/                           ← 步驟 2 安裝
     ├── dotnet-testing-unit-test-fundamentals/     ← 步驟 2 安裝
     └── …（其餘技術型 skill）
 ```
@@ -196,7 +216,7 @@ dotnet-testing-xunit-project-setup/
 
 - `.codex/agents/` 有 16 個 `.toml`（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）
 - `.codex/skills/` 含 4 個 orchestrator skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）的 `SKILL.md`
-- `.codex/skills/` 含 `dotnet-test`、`unit-test-scenarios` + 29 個技術型 skill
+- `.codex/skills/` 只含五個 Codex-specific Skills；setup 會從兩個外部來源抓取 `unit-test-scenarios` 與 29 個技術型 skill 到 `.agents/skills/`
 - `.codex/scripts/` 含 `run-state.mjs`、`estimate-token-usage.mjs` 與 `validators/`
 - 四個 Orchestrator 中的 `node .codex/scripts/...` 路徑全部存在
 - 在 Codex 呼叫任一 `$dotnet-testing-orchestrator-{unit,tunit,integration,aspire}` 時能正確 SpawnAgent 四階段

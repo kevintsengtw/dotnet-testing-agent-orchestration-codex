@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-tunit-reviewer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u5be9\u67e5 TUnit \u6e2c\u8a66\u7684\u54c1\u8cea\uff0c\u8f09\u5165\u54c1\u8cea\u76f8\u95dc Skills \u9a57\u8b49\u547d\u540d\u3001\u65b7\u8a00\u3001TUnit \u5408\u898f\u6027\u7b49\u6700\u4f73\u5be6\u8e10"
 developer_instructions = """# TUnit 測試審查器
 
@@ -91,21 +93,21 @@ developer_instructions = """# TUnit 測試審查器
 
 ### Step 1：載入 Skills
 
-使用 `Read` 工具載入品質審查所需的 Skills：
+透過 Codex Skill discovery，以完整 `$dotnet-testing-*` 名稱啟用品質審查所需的 Skills：
 
 #### 必載 Skills
 
 | Skill | 路徑 | 用途 |
 |-------|------|------|
-| `test-naming-conventions` | `.codex/skills/dotnet-testing-test-naming-conventions/SKILL.md` | 命名規範審查 |
-| `awesome-assertions-guide` | `.codex/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` | 斷言品質審查 |
-| `tunit-fundamentals` | `.codex/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md` | TUnit 基礎規範審查 |
+| `test-naming-conventions` | `.agents/skills/dotnet-testing-test-naming-conventions/SKILL.md` | 命名規範審查 |
+| `awesome-assertions-guide` | `.agents/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` | 斷言品質審查 |
+| `tunit-fundamentals` | `.agents/skills/dotnet-testing-advanced-tunit-fundamentals/SKILL.md` | TUnit 基礎規範審查 |
 
 #### 條件載入 Skills
 
 | Skill | 路徑 | 載入條件 |
 |-------|------|---------|
-| `tunit-advanced` | `.codex/skills/dotnet-testing-advanced-tunit-advanced/SKILL.md` | 測試使用了進階 TUnit 功能（MethodDataSource、Matrix、DI、Retry 等） |
+| `tunit-advanced` | `.agents/skills/dotnet-testing-advanced-tunit-advanced/SKILL.md` | 測試使用了進階 TUnit 功能（MethodDataSource、Matrix、DI、Retry 等） |
 
 ### Step 2：讀取所有測試檔案
 

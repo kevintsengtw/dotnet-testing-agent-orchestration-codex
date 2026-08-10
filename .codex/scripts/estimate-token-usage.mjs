@@ -97,6 +97,30 @@ function normalizeSlashes(value) {
   return value.replaceAll("\\", "/");
 }
 
+const CODEX_SPECIFIC_SKILLS = new Set([
+  "dotnet-test",
+  "dotnet-testing-orchestrator-unit",
+  "dotnet-testing-orchestrator-tunit",
+  "dotnet-testing-orchestrator-integration",
+  "dotnet-testing-orchestrator-aspire",
+]);
+
+function classifySkillPath(value) {
+  const normalized = normalizeSlashes(value ?? "");
+  const shared = normalized.match(/(?:^|\/)\.agents\/skills\/([^/]+)\//);
+  if (shared) {
+    return { kind: "technical", skillId: shared[1] };
+  }
+  const codex = normalized.match(/(?:^|\/)\.codex\/skills\/([^/]+)\//);
+  if (!codex) {
+    return { kind: "none", skillId: null };
+  }
+  if (CODEX_SPECIFIC_SKILLS.has(codex[1])) {
+    return { kind: "orchestration", skillId: codex[1] };
+  }
+  return { kind: "legacy-technical", skillId: codex[1] };
+}
+
 function resolvePath(workspaceRoot, testProjectDir, value) {
   if (!value || typeof value !== "string") {
     return null;
@@ -409,6 +433,7 @@ function fallbackFilesForArtifact(artifactJson, artifactPath) {
 function countFileRefs(tokenizer, workspaceRoot, testProjectDir, refs) {
   let total = 0;
   const details = [];
+  const seen = new Set();
   for (const ref of refs) {
     const value = typeof ref === "string" ? ref : ref?.path;
     const resolved = resolvePath(workspaceRoot, testProjectDir, value);
@@ -417,12 +442,18 @@ function countFileRefs(tokenizer, workspaceRoot, testProjectDir, refs) {
       continue;
     }
     const result = countFile(tokenizer, resolved);
-    total += result.tokens;
+    const canonicalKey = normalizeSlashes(path.resolve(resolved));
+    const duplicate = seen.has(canonicalKey);
+    seen.add(canonicalKey);
+    const classification = classifySkillPath(relativeOrNull(workspaceRoot, resolved) ?? resolved);
+    total += duplicate ? 0 : result.tokens;
     details.push({
       path: normalizeSlashes(path.relative(workspaceRoot, resolved) || resolved),
       reason: typeof ref === "string" ? undefined : ref?.reason,
-      tokens: result.tokens,
-      status: result.status,
+      tokens: duplicate ? 0 : result.tokens,
+      status: duplicate ? "deduped-read-file" : result.status,
+      skillType: classification.kind,
+      skillId: classification.skillId,
     });
   }
   return { total, details };
@@ -451,6 +482,15 @@ function assignmentIdFor(phase, assignment, index) {
 }
 
 function artifactPathFor(workspaceRoot, testProjectDir, assignment) {
+  // 逾時或失敗的 assignment 可能與 redispatch 共用 canonical path；
+  // 不得把後續 attempt 產物歸因到失敗 attempt。
+  if (Object.prototype.hasOwnProperty.call(assignment ?? {}, "artifactReadyAt")
+      && !assignment.artifactReadyAt) {
+    return null;
+  }
+  if (assignment?.failure || assignment?.status === "failed" || assignment?.status === "phase-timeout") {
+    return null;
+  }
   const candidates = [
     assignment?.artifact,
     assignment?.artifactPath,
@@ -611,9 +651,16 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow, 
         "deduped-canonical-artifact",
       );
       const toolOutput = sharedArtifactDeduped ? dedupeCounts(toolOutputRaw) : toolOutputRaw;
-      const skillTokens = readCounts.details
-        .filter((item) => item.path?.includes(".codex/skills/"))
+      const technicalSkillTokens = readCounts.details
+        .filter((item) => item.skillType === "technical")
         .reduce((sum, item) => sum + item.tokens, 0);
+      const orchestrationSkillTokens = readCounts.details
+        .filter((item) => item.skillType === "orchestration")
+        .reduce((sum, item) => sum + item.tokens, 0);
+      const legacyTechnicalSkillTokens = readCounts.details
+        .filter((item) => item.skillType === "legacy-technical")
+        .reduce((sum, item) => sum + item.tokens, 0);
+      const skillTokens = technicalSkillTokens + orchestrationSkillTokens;
       const nonSkillReadTokens = readCounts.total - skillTokens;
       const artifactTokens = sharedArtifactDeduped
         ? 0
@@ -683,6 +730,9 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow, 
           agentTomlTokens: agentToml.tokens,
           readFileTokens: nonSkillReadTokens,
           skillTokens,
+          technicalSkillTokens,
+          orchestrationSkillTokens,
+          legacyTechnicalSkillTokens,
           toolOutputTokens: toolOutput.total,
           subtotal: inputSubtotal,
         },
@@ -716,6 +766,13 @@ async function buildEstimate({ workspaceRoot, testProjectArg, explicitWorkflow, 
           writtenFiles: writeCounts.details,
           toolOutputRefs: toolOutput.details,
         },
+        diagnostics: readCounts.details
+          .filter((item) => item.skillType === "legacy-technical")
+          .map((item) => ({
+            code: "LEGACY_SHARED_SKILL_PATH",
+            path: item.path,
+            message: `共用 Skill 尚未遷移至 .agents/skills/${item.skillId}/；舊路徑不視為 canonical technical Skill source`,
+          })),
         knownMissing: [
           "Codex runtime hidden framing",
           "internal reasoning tokens",

@@ -37,9 +37,11 @@ description: ".NET TUnit 測試指揮中心 — 分析被測目標、決定 TUni
 1. `Glob({testProjectDir}/.orchestrator/**)` — 檢查殘留（Phase 0）
 2. （僅在有殘留時）委託 Executor 清理
 3. 建立 `{testProjectDir}/.orchestrator/run-state.json`（Phase timing truth）
-4. `SpawnAgent target=".codex/agents/dotnet-testing-advanced-tunit-analyzer.toml" payload={...}` — **立即啟動 Analyzer**
+4. 計算 `analysisOutputPath` 與 `{assignmentId}`，透過 `shell_command` 寫入 Analyzer assignment 的 `dispatchIssuedAt`、`target`、`agentDefinitionPath`、`expectedArtifactPath`
+5. `SpawnAgent target=".codex/agents/dotnet-testing-advanced-tunit-analyzer.toml" payload={...}` — **立即啟動 Analyzer**
+6. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須透過 `run-state.mjs set` 寫入 `agentId`、`dispatchAcceptedAt` 並推導 `dispatchAcceptLatencyMs`
 
-**除上述步驟外，在啟動 Analyzer 之前不得執行任何其他動作（尤其禁止讀原始碼／Grep 探索）。** 這是非協商性的硬性要求。
+步驟 4～6 合稱 **Analyzer dispatch transaction**，不可拆開、跳過或延後補寫。`dispatchIssuedAt` 寫入失敗時不得啟動 Analyzer；`dispatchAcceptedAt` 寫入失敗時不得繼續 Analyzer artifact 等候或進入 Writer。**除上述步驟外，在啟動 Analyzer 之前不得執行任何其他動作（尤其禁止讀原始碼／Grep 探索）。** 這是非協商性的硬性要求。
 
 ---
 
@@ -49,7 +51,7 @@ description: ".NET TUnit 測試指揮中心 — 分析被測目標、決定 TUni
 
 ### 絕對禁止的行為
 
-1. **禁止直接讀取 SKILL.md 檔案** — Skills 的載入是 TUnit Writer subagent 的職責，你不得讀取任何 `.codex/skills/` 目錄下的 SKILL.md
+1. **禁止直接讀取 SKILL.md 檔案** — Skills 的載入是 TUnit Writer subagent 的職責，你不得載入或直接讀取任何共用技術 Skill；不得讀取 `.agents/skills/**`。除目前 workflow 的 Orchestrator Skill 與明確允許的 Codex-specific Skill 外，不得讀取 `.codex/skills/**`，且不得讀取其他 `dotnet-testing-orchestrator-*` Skill
 2. **禁止直接撰寫任何測試程式碼** — 包括測試類別、測試方法、Fixture、GlobalUsings 等所有測試相關程式碼
 3. **禁止直接修改任何 .csproj 檔案** — NuGet 套件的新增與修改由 Writer 或 Executor 處理
 4. **禁止直接建立或修改任何 .cs 檔案** — 所有程式碼產出必須透過 subagent 完成。**即使是改善既有測試、套用 Reviewer 建議、修正命名、補充斷言等增量修改，也必須交給 Writer 或 Executor，絕不可自行使用 Edit/Write 工具修改測試程式碼**
@@ -73,11 +75,12 @@ description: ".NET TUnit 測試指揮中心 — 分析被測目標、決定 TUni
 
 ### ⚡ 快速啟動原則（MUST READ）
 
-**Orchestrator 在啟動 Analyzer 之前，除了 Glob 殘留檢查、（必要時）cleanup、與 run-state 初始化外，不得有其他工具呼叫。** 你只需要：
+**Orchestrator 在啟動 Analyzer 之前，除了 Glob 殘留檢查、（必要時）cleanup、run-state 初始化、與 Analyzer dispatch transaction 必要的 `dispatchIssuedAt` 寫入外，不得有其他工具呼叫。** 你只需要：
 
 1. `Glob` 檢查 `.orchestrator/` 殘留（Phase 0）
 2. （清理後）建立 `{testProjectDir}/.orchestrator/run-state.json`
-3. **立即計算 `analysisOutputPath` 並啟動 Analyzer**
+3. 計算 `analysisOutputPath` 與 assignment ID，寫入 Analyzer `dispatchIssuedAt`
+4. **立即啟動 Analyzer，取得 `agentId` 後立即寫入 `dispatchAcceptedAt`**
 
 **深度分析是 Analyzer 的職責，不是你的。** 以下行為在啟動 Analyzer 之前**嚴格禁止**：
 
@@ -189,7 +192,8 @@ node .codex/scripts/validators/validate-tunit-role-read-scope.mjs --role reviewe
 
 在每次行動前，問自己：
 
-- ❓ 我是否還沒啟動 Analyzer？→ **停止一切其他動作，立即啟動 Analyzer**（這是最高優先級）
+- ❓ 我是否還沒啟動 Analyzer？→ **停止一切其他動作；先寫入 Analyzer `dispatchIssuedAt`，再立即啟動 Analyzer**（完整 Analyzer dispatch transaction 是最高優先級）
+- ❓ Analyzer SpawnAgent 是否剛回傳 `agentId`？→ **下一個工具呼叫立即寫入該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`，不得先做任何其他動作**
 - ❓ 我是否正在讀取 .cs 原始碼但還沒啟動 Analyzer？→ **停止，這是 Analyzer 的工作，不是你的**
 - ❓ 我是否正在嘗試讀取 SKILL.md？→ **停止，這是 TUnit Writer 的工作**
 - ❓ 我是否正在嘗試撰寫 C# 程式碼？→ **停止，交給 TUnit Writer**
@@ -219,6 +223,10 @@ externalMemoryPolicy: forbid
 
 ## 核心工作流程
 
+Writer 與 Reviewer artifact ready 後，Orchestrator 必須執行
+`node .codex/scripts/validators/validate-skill-read-scope.mjs --artifact <result.json> --analysis <analysis.json> --workflow tunit --role <writer|reviewer>`。
+此 gate 依 Skill ID 精確驗證 `.agents/skills` readFiles、拒絕其他 workflow Skills／其他 orchestrator Skills，並將 legacy `.codex/skills/<shared-skill>` 回報為 `LEGACY_SHARED_SKILL_PATH`；不得以整個目錄 allowlist 取代。
+
 你必須嚴格遵循以下流程：Phase 0（清理）→ 階段 1～4（核心四階段）→ Phase 5（清理）。
 
 ### Phase 0：前置清理
@@ -236,6 +244,25 @@ Phase 0 清理完成後、**啟動 Analyzer 之前**，以 `node .codex/scripts/
 ### 階段 1：啟動分析（TUnit Analyzer）
 
 使用 `SpawnAgent target=".codex/agents/dotnet-testing-advanced-tunit-analyzer.toml" payload={...}` 將使用者指定的被測試目標交給 **dotnet-testing-advanced-tunit-analyzer** subagent 分析。
+
+#### Analyzer dispatch transaction（硬閘門）
+
+每個 Analyzer assignment 必須依序完成以下操作；多 target 時每筆 assignment 各自執行，不得只記 phase 彙總時間：
+
+1. SpawnAgent **之前**先執行：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath=.codex/agents/dotnet-testing-advanced-tunit-analyzer.toml --set expectedArtifactPath={analysisOutputPath}
+   ```
+
+2. 上述命令成功後才可 SpawnAgent；若失敗，不得啟動 Analyzer。
+3. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須是：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+   ```
+
+4. `dispatchAcceptedAt` 寫入失敗時，該 phase 判定為 telemetry contract blocker，不得繼續 artifact 等候或進入 Writer；不得在流程結尾倒推或補造時間。
 
 **傳給 Analyzer 的 prompt 必須包含：**
 
@@ -277,6 +304,20 @@ analysisOutputPath: C:\fresh-workspace\tests\MyProject.Core.Tests\.orchestrator\
 - 每個 `USR-*` 都逐項記錄，`rejected` 使用允許的 reason code 且附具體 evidence。
 - 所有有效 catalog `normalizedName` 依序等於 `suggestedTestScenarios`，並可直接作為合法 C# identifier。
 - `scenarioReviewSummary.effective`、`suggestedTestScenarios.length`、`scenarioCount` 與 `methodScenarioCounts` 加總一致。
+
+每個 Analyzer assignment 的 artifact gate 通過時，必須在同一操作邊界執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={analysisFilePath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+```
+
+全部 Analyzer assignments 的 artifact gate 都通過、phase 確定收斂後，才執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --set completedAt=@now
+```
+
+進入 Writer 前，Analyzer assignment 必須已有非 `null` 的 `dispatchIssuedAt`、`dispatchAcceptedAt`、`artifactReadyAt`、`produceSpanMs`，Analyzer phase 必須已有非 `null` 的 `completedAt`。Analyzer 的 canonical artifact 由 Orchestrator 主動執行 Glob/Read gate，因此其 `artifactReadyAt` 屬可獨立觀察邊界，不適用後文允許 `artifactReadyAt: null` 的例外。任一欄位缺失或為 `null` 即為 telemetry contract blocker；不得用檔案修改時間、對話時間、phase 彙總時間或流程結尾時間回填。
 
 #### 階段間主動釋放（Analyzer → Writer 必要）
 
@@ -395,6 +436,7 @@ Executor 回傳後，Orchestrator 必須讀取 `executorResultFilePath`，確認
 - `executionMethod` 必須是 `"dotnet run"`。
 - `engineMode` 或同義欄位必須記錄 `SourceGenerated`；若 TUnit 輸出無法提供，需在 result 內明確寫出 `engineModeEvidence`。
 - 通過/失敗/略過數量必須來自 TUnit `✓` / `x` / `↓` 輸出或 TUnit run summary，不得套用 xUnit `dotnet test` parser。
+- `executionAttempts` 記錄實際測試執行次數；`fixRounds` 記錄實際修正次數，且必須等於 `fixHistory.length`。首次成功必須是 `executionAttempts: 1`、`fixRounds: 0`。
 - `fixRounds` / `executorFixRounds` 必須落入 run-state，不得只寫在對話摘要。
 - `tokenEstimateInputs` 必須存在並通過 isolation；缺少 canonical telemetry 時該 attempt 不得納入 token comparator。
 
@@ -464,7 +506,13 @@ strict run-state gate 失敗時不得宣稱 timing evidence 完整，也不得�
 
 ### Phase 5：後置清理
 
-四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），不得自動清理本次 `.orchestrator/` artifacts。`.orchestrator/analysis/`、`.orchestrator/writer-result/`、`.orchestrator/executor-result/`、`.orchestrator/reviewer-result/` 與 `.orchestrator/run-state.json` 都必須保留，供驗收與 benchmark 讀取。下一次執行時，Phase 0 前置清理才處理殘留。
+四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），清理本次 `.orchestrator/executor-result/` 暫存結果目錄。為跨平台可靠（含 Windows VS Code Codex Extension 等非 bash shell），一律用 `node` 刪除，**不得用 `rm -rf`**：
+
+```bash
+node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{recursive:true,force:true})"
+```
+
+`.orchestrator/analysis/`、`.orchestrator/writer-result/`、`.orchestrator/reviewer-result/` 與 `.orchestrator/run-state.json` 必須保留，供驗收與 benchmark 讀取；下一次執行時，Phase 0 前置清理才處理其他殘留。
 
 ---
 

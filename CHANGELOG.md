@@ -4,6 +4,40 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.2.0] - 2026-08-10
+
+本版將 shared Agent Skills 從 orchestration repository 拆出，建立 lock-pinned 的外部安裝模型，並完成 Unit、TUnit、Integration、Aspire 四套工作流程的功能驗證、dispatch telemetry 與 Reviewer acceptance 契約強化。四個 Orchestrator Skill 名稱、Analyzer → Writer → Executor → Reviewer 四階段、每 target 單一 Writer topology 與各 framework runner 均維持不變。
+
+### 重大變更
+
+- **Shared Skills 改為外部 canonical location**：29 個 `dotnet-testing-*` 技術型 Skills 與可選的 `unit-test-scenarios` 不再內含於 `.codex/skills/`，改由 setup／consumer deployment 安裝至 `.agents/skills/`；lab 中的該目錄維持 ignored
+- **可重建的版本鎖定**：新增 `lab-shared-skills-lock.json` 與 `unit-test-scenarios-lock.json`，分別固定 `dotnet-testing-agent-skills` v2.4.1／`ff31b1a...` 與 `unit-test-scenarios`／`d005019...`
+- **Lab bootstrap 與驗證**：新增跨平台 `setup-lab-skills`、`verify-lab-workflow`、skill path contract 與安裝回歸測試；local source override 只供開發，CI 與正式 release validation fail closed
+- **Analyzer dispatch telemetry**：四個 Orchestrator 必須在 dispatch、接受與 artifact ready 的實際操作邊界記錄 `dispatchIssuedAt`、`dispatchAcceptedAt`、`artifactReadyAt` 與 phase completion；缺漏時不得進入下一階段或事後回填
+- **Unit Reviewer acceptance**：Unit reviewer-result 必須提供三值 `gateDecision`（`pass`／`fail`／`blocked`），並與 user scenario coverage、missing/data mismatch、issues 與 Executor truth 一致
+- **Token estimator 修正**：逾時／失敗 assignment 與 redispatch 共用 canonical path 時，不再把後續 attempt artifact 錯誤歸因到先前失敗 attempt
+- **Agent 預設模型**：16 個 Subagent TOML 統一明確指定 `gpt-5.6-sol`、`reasoning_effort = "medium"`；新增模型計費與選型說明
+
+### 正式工作流程契約
+
+- 保留 v1.1.0 的每 target 單一 Writer、scenario 數不設上限、fresh/self-contained dispatch、canonical artifact truth chain、attempt isolation、role read scope、Executor runtime truth 與 strict timing gates
+- Unit／TUnit 的共用 scenario validator 不再假設 `unit-test-scenarios` 是 public bundle 內建資產；shared Skill 安裝完整性由 setup、lock 與 lab preflight 負責
+- Public bundle 固定為 16 個 Agents、5 個 Codex-specific Skills 與 12 個 runtime scripts；外部 shared Skills 不得混入 orchestration release
+
+### 驗證
+
+- 四工作流程功能驗證共 12 案：**289 passed、0 failed、0 skipped**；Unit 97、TUnit 141、Integration 28、Aspire 23
+- Failure Contracts F-01～F-06 全部通過，涵蓋缺 Skill fail closed、artifact schema gate、首次成功 accounting、Docker unavailable、Reviewer read scope 與 approval gate
+- 合併 v1.1.0 正式契約後 Node regression **189/189 passed**
+- 16 個 Agent TOML 全部保留明確模型設定；tracked samples、production、AppHost 與 test csproj 無發布 byproduct
+
+### 相容性與升級
+
+- 使用者仍以原本四個 `$dotnet-testing-orchestrator-*` Skill 啟動流程，版本升為向下相容的 minor release `v1.2.0`
+- 升級時必須完整更新 `.codex/agents/`、4 個 Orchestrator Skills、`.codex/scripts/`、`.codex/config.toml`，並透過 consumer deployment 安裝外部 `.agents/skills/`
+- 舊版將 shared Skills 放在 `.codex/skills/` 的安裝不能與本版混用；先移除 legacy shared Skill 副本，再依新 setup／deployment 流程重建
+- `samples/*/tests/` 仍是空白練習起點；生成測試、`.orchestrator/`、`bin/obj/TestResults` 與 csproj 修改不屬於發布內容
+
 ## [v1.1.0] - 2026-07-19
 
 本版在不改變 Analyzer → Writer → Executor → Reviewer 四階段入口與主要功能的前提下，完成 Unit、TUnit、Integration、Aspire 四套工作流程的 Token Usage 最佳化、Single Writer 統一與 correctness contract 強化。
@@ -70,7 +104,7 @@
 
 ### 新增
 - **`unit-test-scenarios` Skill**:將 [`kevintsengtw/unit-test-scenarios`](https://github.com/kevintsengtw/unit-test-scenarios) 的固定版本納入 repo，讓使用者可先產生經分析的測試情境，再交給 unit workflow 使用；版本來源與更新方式記錄於 `docs/dependencies/unit-test-scenarios.md`
-- **使用者情境契約 validator**:`scripts/validate-unit-scenario-contract.mjs` 驗證 Analyzer catalog、Writer scenario coverage、Reviewer coverage consistency 與正式 acceptance gate；搭配正反向 fixture 測試
+- **使用者情境契約 validator**:`.codex/scripts/validators/validate-unit-scenario-contract.mjs` 驗證 Analyzer catalog、Writer scenario coverage、Reviewer coverage consistency 與正式 acceptance gate；搭配正反向 fixture 測試
 - **run-state 回歸測試**:補上巢狀 duration、缺失端點與 Executor fix rounds 的測試，防止 workflow 稽核欄位退化
 
 ### 變更

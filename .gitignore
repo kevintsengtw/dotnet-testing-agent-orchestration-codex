@@ -242,6 +242,9 @@ samples/**/tests/**/Services/
 samples/**/tests/**/Validators/
 samples/**/tests/**/Legacy/
 samples/**/tests/**/Infrastructure/
+samples/**/tests/**/Fixtures/
+samples/**/tests/**/TestBase/
+samples/**/tests/**/Helpers/
 
 # Codex CLI / .NET local home（驗證環境暫存）
 .codex-cli-home/
@@ -251,4 +254,7 @@ samples/**/tests/**/Infrastructure/
 .dotnet-testing-agent/
 tmp/
 .mcp/
+# Lab-only external shared Skills（由 scripts/setup-lab-skills.* 建立）
+.agents/skills/
+.agents/.setup-lab-skills-*/
 .release-preview/

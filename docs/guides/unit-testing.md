@@ -11,8 +11,8 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **`unit-test-scenarios` 已部署到 `.codex/skills/`**（可選前置情境產生器；安裝包內建）
-- **dotnet-testing-agent-skills 已複製到 `.codex/skills/`**（Writer 載入技術型 Skill 所需）
+- **setup 已從公開 repo `kevintsengtw/unit-test-scenarios` 抓取 Skill 到 `.agents/skills/`**（可選前置情境產生器；本 repo 不內含）
+- **dotnet-testing-agent-skills@v2.4.1 已安裝到 `.agents/skills/`**（Writer 載入技術型 Skill 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**（`dotnet --version` 可確認）
 - **不需要 Docker**（單元測試不使用容器）
 
@@ -274,7 +274,7 @@ git clean -fd samples/unit/practice/tests/
 
 **症狀**：Orchestrator SpawnAgent 啟動 Writer 時，Writer 找不到 `dotnet-testing-autofixture-basics` 等技能。
 
-**解法**：確認 `dotnet-testing-agent-skills` 的 29 個技術型 skill 目錄都已複製到 `.codex/skills/`（每個目錄下需有 `SKILL.md`）。重新啟動 Codex 工作階段後再次嘗試。
+**解法**：確認 `dotnet-testing-agent-skills` 的 29 個技術型 skill 目錄都已安裝到 `.agents/skills/`（每個目錄下需有 `SKILL.md`）。重新啟動 Codex 工作階段後再次嘗試。
 
 ---
 

@@ -76,6 +76,8 @@ graph TD
     EX -->|執行| DT[dotnet build / dotnet test]
 ```
 
+shared Skills 的唯一 canonical discovery path 是 `.agents/skills/<skill-id>/SKILL.md`；technical Skills 由外部安裝，`unit-test-scenarios` 則由 setup 從公開 repo `kevintsengtw/unit-test-scenarios` 抓取，兩者都不內含於本 repo。Codex-specific orchestrator 與 `dotnet-test` 保留在 `.codex/skills`。角色以 Skill 名稱按 Analyzer 的 `requiredSkills`／`requiredTechniques` 動態啟用，實體路徑只用於 read-scope、token estimate 與 supporting resource 稽核。
+
 ---
 
 ## 3. Agent 組成

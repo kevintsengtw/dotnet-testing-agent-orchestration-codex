@@ -41,4 +41,12 @@
 - **第一次使用** → 先看 [SETUP.md](SETUP.md) 完成安裝，再看 [guides/unit-testing.md](guides/unit-testing.md) 試跑第一個工作流程
 - **想了解架構** → 看 [architecture/overview.md](architecture/overview.md) 的 Mermaid 圖
 - **想了解單元 Orchestrator 細節** → 看 [architecture/unit-orchestrator.md](architecture/unit-orchestrator.md)
-- **想確認 v1.1.0 的共同契約** → 看 [guides/workflow-validation.md](guides/workflow-validation.md)
+
+## 歷史文件的路徑
+
+`specs/`、`comparison/` 與 `superpowers/plans/` 保存日期化設計和實驗紀錄。2026-07-24
+以前的文件可能記錄 shared Skills 位於 `.codex/skills/<shared-skill>`；現行 canonical
+path 一律是 `.agents/skills/<skill-id>/SKILL.md`。Codex-specific 的 `dotnet-test` 與四個
+orchestrator 仍位於 `.codex/skills/`。
+
+- **想確認正式版的共同契約** → 看 [guides/workflow-validation.md](guides/workflow-validation.md)

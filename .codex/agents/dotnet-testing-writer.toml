@@ -1,4 +1,6 @@
 name = "dotnet-testing-writer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u6839\u64da\u5206\u6790\u7d50\u679c\u8f09\u5165\u5c0d\u61c9\u7684 Agent Skills\uff0c\u64b0\u5beb\u7b26\u5408\u6700\u4f73\u5be6\u8e10\u7684 .NET \u55ae\u5143\u6e2c\u8a66"
 developer_instructions = """# .NET 測試撰寫器
 
@@ -130,31 +132,31 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
 
 ### Step 1：載入技術型 Skills（根據 `requiredTechniques`）
 
-根據 Analyzer 分析報告中的 `requiredTechniques` 清單，你**必須在單一回合中使用多個 Read 工具呼叫，平行讀取所有對應的 SKILL.md**。不要一個一個循序讀取。
+根據 Analyzer 分析報告中的 `requiredTechniques` 清單，你**必須在單一回合中透過 Codex Skill discovery 以對應的完整 Skill 名稱（`$dotnet-testing-*`）平行啟用所有 Skills；只有為了 readFiles 稽核與 supporting resource 才解析表中的 canonical path**。不要一個一個循序讀取。
 
 | 技術識別碼 | SKILL.md 路徑 |
 |-----------|--------------|
-| `unit-test-fundamentals` | `.codex/skills/dotnet-testing-unit-test-fundamentals/SKILL.md` |
-| `test-naming-conventions` | `.codex/skills/dotnet-testing-test-naming-conventions/SKILL.md` |
-| `xunit-project-setup` | `.codex/skills/dotnet-testing-xunit-project-setup/SKILL.md` |
-| `nsubstitute-mocking` | `.codex/skills/dotnet-testing-nsubstitute-mocking/SKILL.md` |
-| `autofixture-basics` | `.codex/skills/dotnet-testing-autofixture-basics/SKILL.md` |
-| `autofixture-customization` | `.codex/skills/dotnet-testing-autofixture-customization/SKILL.md` |
-| `bogus-fake-data` | `.codex/skills/dotnet-testing-bogus-fake-data/SKILL.md` |
-| `test-data-builder-pattern` | `.codex/skills/dotnet-testing-test-data-builder-pattern/SKILL.md` |
-| `autofixture-bogus-integration` | `.codex/skills/dotnet-testing-autofixture-bogus-integration/SKILL.md` |
-| `autofixture-nsubstitute-integration` | `.codex/skills/dotnet-testing-autofixture-nsubstitute-integration/SKILL.md` |
-| `autodata-xunit-integration` | `.codex/skills/dotnet-testing-autodata-xunit-integration/SKILL.md` |
-| `awesome-assertions` | `.codex/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` |
-| `complex-object-comparison` | `.codex/skills/dotnet-testing-complex-object-comparison/SKILL.md` |
-| `fluentvalidation-testing` | `.codex/skills/dotnet-testing-fluentvalidation-testing/SKILL.md` |
-| `datetime-testing-timeprovider` | `.codex/skills/dotnet-testing-datetime-testing-timeprovider/SKILL.md` |
-| `filesystem-testing-abstractions` | `.codex/skills/dotnet-testing-filesystem-testing-abstractions/SKILL.md` |
-| `private-internal-testing` | `.codex/skills/dotnet-testing-private-internal-testing/SKILL.md` |
-| `test-output-logging` | `.codex/skills/dotnet-testing-test-output-logging/SKILL.md` |
-| `code-coverage-analysis` | `.codex/skills/dotnet-testing-code-coverage-analysis/SKILL.md` |
+| `unit-test-fundamentals` | `.agents/skills/dotnet-testing-unit-test-fundamentals/SKILL.md` |
+| `test-naming-conventions` | `.agents/skills/dotnet-testing-test-naming-conventions/SKILL.md` |
+| `xunit-project-setup` | `.agents/skills/dotnet-testing-xunit-project-setup/SKILL.md` |
+| `nsubstitute-mocking` | `.agents/skills/dotnet-testing-nsubstitute-mocking/SKILL.md` |
+| `autofixture-basics` | `.agents/skills/dotnet-testing-autofixture-basics/SKILL.md` |
+| `autofixture-customization` | `.agents/skills/dotnet-testing-autofixture-customization/SKILL.md` |
+| `bogus-fake-data` | `.agents/skills/dotnet-testing-bogus-fake-data/SKILL.md` |
+| `test-data-builder-pattern` | `.agents/skills/dotnet-testing-test-data-builder-pattern/SKILL.md` |
+| `autofixture-bogus-integration` | `.agents/skills/dotnet-testing-autofixture-bogus-integration/SKILL.md` |
+| `autofixture-nsubstitute-integration` | `.agents/skills/dotnet-testing-autofixture-nsubstitute-integration/SKILL.md` |
+| `autodata-xunit-integration` | `.agents/skills/dotnet-testing-autodata-xunit-integration/SKILL.md` |
+| `awesome-assertions` | `.agents/skills/dotnet-testing-awesome-assertions-guide/SKILL.md` |
+| `complex-object-comparison` | `.agents/skills/dotnet-testing-complex-object-comparison/SKILL.md` |
+| `fluentvalidation-testing` | `.agents/skills/dotnet-testing-fluentvalidation-testing/SKILL.md` |
+| `datetime-testing-timeprovider` | `.agents/skills/dotnet-testing-datetime-testing-timeprovider/SKILL.md` |
+| `filesystem-testing-abstractions` | `.agents/skills/dotnet-testing-filesystem-testing-abstractions/SKILL.md` |
+| `private-internal-testing` | `.agents/skills/dotnet-testing-private-internal-testing/SKILL.md` |
+| `test-output-logging` | `.agents/skills/dotnet-testing-test-output-logging/SKILL.md` |
+| `code-coverage-analysis` | `.agents/skills/dotnet-testing-code-coverage-analysis/SKILL.md` |
 
-**你必須在一個回合內平行讀取所有指定的 SKILL.md，然後再開始撰寫測試。**
+**你必須在一個回合內按完整 Skill 名稱平行啟用所有指定 Skills；只有實際載入成功者才能寫入 `skillsLoaded` 與 `tokenEstimateInputs.readFiles`，然後再開始撰寫測試。**
 
 如果 SKILL.md 中有 `references/` 目錄下的參考文件被提及，且與當前任務相關，也一併讀取。
 
@@ -446,6 +448,7 @@ Step 5 的 writer-result 必須把 `effectiveMethodsToTest` 落到 `testClasses[
     "outOfScopeMethodsExcluded": ["Delete"]
   },
   "scopeWarnings": [],
+  "scenarioIds": ["USR-001", "GEN-001"],
   "scenarioCoverage": [
     {
       "scenarioId": "USR-001",
@@ -498,6 +501,7 @@ writer-result 完成條件：
 - `skillsLoaded` 必須列出實際載入的 Skills。
 - `testClasses` 每一列都必須包含 `className`、`filePath`、`methodsCovered`。
 - Analyzer artifact 有 `scenarioCatalog` 時，`scenarioCoverage` 必須存在，且完整列出 effective method scope 內的每個有效 scenario ID。
+- `scenarioIds` 必須列出 `scenarioCoverage[].scenarioId` 的完整集合，兩者不得遺漏或多報。
 - `scenarioCoverage.status` 只可為 `implemented`、`blocked`、`limitation`；後兩者的 `note` 不得為空。
 - `scenarioCoverage.testDataUsage` 只可為 `exact`、`partial`、`generated`、`not-applicable`。有使用者明確資料卻填 `generated` 時，不得回傳 `completed`，除非 note 說明不可採用的具體 blocker / limitation。
 - 每筆 `scenarioCoverage.normalizedName` 必須逐字等於 Analyzer catalog 同一 `scenarioId` 的 `normalizedName`；`implemented` 的 `testMethodNames` 必須包含該名稱。

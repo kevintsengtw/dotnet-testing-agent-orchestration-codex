@@ -33,9 +33,11 @@ description: ".NET 整合測試指揮中心 — 分析 WebAPI 端點結構、決
 1. `Glob({testProjectDir}/.orchestrator/**)` — 檢查殘留（Phase 0）
 2. （僅在有殘留時）委託 Executor 清理
 3. 建立 `{testProjectDir}/.orchestrator/run-state.json`（Phase timing truth）
-4. `SpawnAgent target=".codex/agents/dotnet-testing-advanced-integration-analyzer.toml" payload={...}` — **立即啟動 Analyzer**
+4. 計算 `analysisOutputPath` 與 `{assignmentId}`，透過 `shell_command` 寫入 Analyzer assignment 的 `dispatchIssuedAt`、`target`、`agentDefinitionPath`、`expectedArtifactPath`
+5. `SpawnAgent target=".codex/agents/dotnet-testing-advanced-integration-analyzer.toml" payload={...}` — **立即啟動 Analyzer**
+6. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須透過 `run-state.mjs set` 寫入 `agentId`、`dispatchAcceptedAt` 並推導 `dispatchAcceptLatencyMs`
 
-**除上述步驟外，在啟動 Analyzer 之前不得執行任何其他動作（尤其禁止讀原始碼／Grep 探索）。** 這是非協商性的硬性要求。
+步驟 4～6 合稱 **Analyzer dispatch transaction**，不可拆開、跳過或延後補寫。`dispatchIssuedAt` 寫入失敗時不得啟動 Analyzer；`dispatchAcceptedAt` 寫入失敗時不得繼續 Analyzer artifact 等候或進入 Writer。**除上述步驟外，在啟動 Analyzer 之前不得執行任何其他動作（尤其禁止讀原始碼／Grep 探索）。** 這是非協商性的硬性要求。
 
 ---
 
@@ -45,7 +47,7 @@ description: ".NET 整合測試指揮中心 — 分析 WebAPI 端點結構、決
 
 ### 絕對禁止的行為
 
-1. **禁止直接讀取 SKILL.md 檔案** — Skills 的載入是 Writer / Reviewer subagent 的職責，不得讀取任何 `.codex/skills/` 目錄下的 SKILL.md
+1. **禁止直接讀取 SKILL.md 檔案** — Skills 的載入是 Writer / Reviewer subagent 的職責，不得載入或直接讀取任何共用技術 Skill；不得讀取 `.agents/skills/**`。除目前 workflow 的 Orchestrator Skill 與明確允許的 Codex-specific Skill 外，不得讀取 `.codex/skills/**`，且不得讀取其他 `dotnet-testing-orchestrator-*` Skill
 2. **禁止直接撰寫任何測試程式碼** — 包括測試類別、WebApiFactory、TestBase、Collection Fixture、GlobalUsings 等所有測試相關程式碼
 3. **禁止直接修改任何 .csproj 檔案** — NuGet 套件的新增與修改由 Writer 或 Executor 處理
 4. **禁止直接建立或修改任何 .cs 檔案** — 所有程式碼產出必須透過 subagent 完成。**即使是改善既有測試、套用 Reviewer 建議、修正命名、補充斷言等增量修改，也必須交給 Writer 或 Executor，絕不可自行使用 Edit/Write 工具修改測試程式碼**
@@ -71,7 +73,7 @@ description: ".NET 整合測試指揮中心 — 分析 WebAPI 端點結構、決
 
 ### ⚡ 快速啟動原則（MUST READ）
 
-**Orchestrator 在啟動 Analyzer 之前，除了 Glob 殘留檢查、（必要時）cleanup、與 run-state 初始化外，不得有其他工具呼叫。**
+**Orchestrator 在啟動 Analyzer 之前，除了 Glob 殘留檢查、（必要時）cleanup、run-state 初始化、與 Analyzer dispatch transaction 必要的 `dispatchIssuedAt` 寫入外，不得有其他工具呼叫。**
 
 深度分析是 Analyzer 的職責，不是你的。以下行為在啟動 Analyzer 之前**嚴格禁止**：
 
@@ -180,7 +182,8 @@ Analyzer read-scope gate 失敗分類為 `analyzer-read-scope-violation`；Revie
 
 在每次行動前，問自己：
 
-- 我是否還沒啟動 Analyzer？→ **停止一切其他動作，立即啟動 Analyzer**
+- 我是否還沒啟動 Analyzer？→ **停止一切其他動作；先寫入 Analyzer `dispatchIssuedAt`，再立即啟動 Analyzer**（完整 Analyzer dispatch transaction 是最高優先級）
+- Analyzer SpawnAgent 是否剛回傳 `agentId`？→ **下一個工具呼叫立即寫入該 assignment 的 `agentId`、`dispatchAcceptedAt` 與 `dispatchAcceptLatencyMs`，不得先做任何其他動作**
 - 我是否正在讀取 .cs 原始碼但還沒啟動 Analyzer？→ **停止，這是 Analyzer 的工作，不是你的**
 - 我是否正在嘗試讀取 SKILL.md？→ **停止，這是 Writer / Reviewer 的工作**
 - 我是否正在嘗試撰寫 C# 程式碼？→ **停止，交給 Writer**
@@ -209,6 +212,10 @@ externalMemoryPolicy: forbid
 
 ## 核心工作流程
 
+Writer 與 Reviewer artifact ready 後，Orchestrator 必須執行
+`node .codex/scripts/validators/validate-skill-read-scope.mjs --artifact <result.json> --analysis <analysis.json> --workflow integration --role <writer|reviewer>`。
+此 gate 依 Skill ID 精確驗證 `.agents/skills` readFiles、拒絕其他 workflow Skills／其他 orchestrator Skills，並將 legacy `.codex/skills/<shared-skill>` 回報為 `LEGACY_SHARED_SKILL_PATH`；不得以整個目錄 allowlist 取代。
+
 你必須嚴格遵循以下流程：Phase 0（清理）→ Phase 0.5（run-state）→ 階段 1～4（核心四階段）→ Phase 5（保留 artifacts）。
 
 ### Phase 0：前置清理
@@ -227,6 +234,25 @@ Phase 0 清理完成後、**啟動 Analyzer 之前**，以 `node .codex/scripts/
 
 使用 `SpawnAgent target=".codex/agents/dotnet-testing-advanced-integration-analyzer.toml" payload={...}` 將使用者指定的 WebAPI 專案或 Controller 交給 Analyzer 分析。
 
+#### Analyzer dispatch transaction（硬閘門）
+
+每個 Analyzer assignment 必須依序完成以下操作；多 target 時每筆 assignment 各自執行，不得只記 phase 彙總時間：
+
+1. SpawnAgent **之前**先執行：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set dispatchIssuedAt=@now --set target={target} --set agentDefinitionPath=.codex/agents/dotnet-testing-advanced-integration-analyzer.toml --set expectedArtifactPath={analysisOutputPath}
+   ```
+
+2. 上述命令成功後才可 SpawnAgent；若失敗，不得啟動 Analyzer。
+3. SpawnAgent 回傳 `agentId` 後，下一個工具呼叫必須是：
+
+   ```bash
+   node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set agentId={agentId} --set dispatchAcceptedAt=@now --derive dispatchAcceptLatencyMs=dispatchAcceptedAt-dispatchIssuedAt
+   ```
+
+4. `dispatchAcceptedAt` 寫入失敗時，該 phase 判定為 telemetry contract blocker，不得繼續 artifact 等候或進入 Writer；不得在流程結尾倒推或補造時間。
+
 Analyzer payload 必須包含：
 
 - `apiProjectPath`：被測 WebAPI 專案路徑
@@ -239,6 +265,20 @@ Analyzer payload 必須包含：
 等候 Analyzer 回傳精簡摘要，包含 `projectName`、`apiArchitecture`、`endpointCount`、`scenarioCount`、`containerRequirements`、`requiredSkills`、`analysisFilePath`、`projectContext`。
 
 收到 Analyzer 摘要後，使用 Glob 確認 `analysisFilePath` 指向的檔案確實存在。若不存在，更新 run-state 並依 bounded re-dispatch 規則處理。
+
+每個 Analyzer assignment 的 artifact gate 通過時，必須在同一操作邊界執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --assignment {assignmentId} --set artifactReadyAt=@now --set artifact={analysisFilePath} --derive produceSpanMs=artifactReadyAt-dispatchAcceptedAt
+```
+
+全部 Analyzer assignments 的 artifact gate 都通過、phase 確定收斂後，才執行：
+
+```bash
+node .codex/scripts/run-state.mjs set --path {testProjectDir}/.orchestrator/run-state.json --phase analyzer --set completedAt=@now
+```
+
+進入 Writer 前，Analyzer assignment 必須已有非 `null` 的 `dispatchIssuedAt`、`dispatchAcceptedAt`、`artifactReadyAt`、`produceSpanMs`，Analyzer phase 必須已有非 `null` 的 `completedAt`。Analyzer 的 canonical artifact 由 Orchestrator 主動執行 Glob/Read gate，因此其 `artifactReadyAt` 屬可獨立觀察邊界，不適用後文允許 `artifactReadyAt: null` 的例外。任一欄位缺失或為 `null` 即為 telemetry contract blocker；不得用檔案修改時間、對話時間、phase 彙總時間或流程結尾時間回填。
 
 Analyzer artifact 必須包含 `endpointCatalog`、`scenarioCatalog`、`scenarioReviewSummary`、`userProvidedScenarioInput` 與 canonical `tokenEstimateInputs`。不得以固定 scenario 數作 gate；只驗證每個 scenario 的 provenance、endpoint attribution、狀態與 evidence。artifact ready 後立即執行：
 
@@ -421,7 +461,13 @@ node .codex/scripts/run-state.mjs validate --path {p} --require-complete-timing
 
 ### Phase 5：保留 artifacts
 
-四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），不得自動清理本次 `.orchestrator/` artifacts。`.orchestrator/analysis/`、`.orchestrator/writer-result/`、`.orchestrator/executor-result/`、`.orchestrator/reviewer-result/` 與 `.orchestrator/run-state.json` 都必須保留，供驗收與 benchmark 讀取。下一次執行時，Phase 0 前置清理才處理殘留。
+四階段流程全部完成、結果呈現給使用者之後（包含修改流程完成後），清理本次 `.orchestrator/executor-result/` 暫存結果目錄。為跨平台可靠（含 Windows VS Code Codex Extension 等非 bash shell），一律用 `node` 刪除，**不得用 `rm -rf`**：
+
+```bash
+node -e "require('fs').rmSync('{testProjectDir}/.orchestrator/executor-result',{recursive:true,force:true})"
+```
+
+`.orchestrator/analysis/`、`.orchestrator/writer-result/`、`.orchestrator/reviewer-result/` 與 `.orchestrator/run-state.json` 必須保留，供驗收與 benchmark 讀取；下一次執行時，Phase 0 前置清理才處理其他殘留。
 
 ---
 
@@ -619,7 +665,7 @@ node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}
 2. **保持主 context 精簡** — 只保留 subagent 回傳的摘要，不展開中間過程
 3. **端點粒度** — 整合測試以 HTTP endpoint 為粒度，`suggestedTestScenarios` 使用中文三段式（`端點_情境_預期`）
 4. **執行模型固定** — `dotnet test` + xUnit + Docker/Testcontainers；不得改成 TUnit `dotnet run`
-5. **技術技能固定** — 只載入 `.codex/skills/dotnet-testing-advanced-webapi-integration-testing/`、`.codex/skills/dotnet-testing-advanced-aspnet-integration-testing/`、`.codex/skills/dotnet-testing-advanced-testcontainers-database/`、`.codex/skills/dotnet-testing-advanced-testcontainers-nosql/`
+5. **技術技能固定** — 只載入 `.agents/skills/dotnet-testing-advanced-webapi-integration-testing/`、`.agents/skills/dotnet-testing-advanced-aspnet-integration-testing/`、`.agents/skills/dotnet-testing-advanced-testcontainers-database/`、`.agents/skills/dotnet-testing-advanced-testcontainers-nosql/`
 6. **版本相依性** — 既有版本不升不降；缺少套件才依 integration skill 最低版本 add-only
 7. **保留 artifacts** — `.orchestrator/` 是驗收與 benchmark evidence，不在 Phase 5 自動清理
 8. **案例數不固定** — 不限制 Analyzer scenario 數；以 `endpointCatalog`、`scenarioCatalog`、`scenarioCoverage` 與 Reviewer acceptance 驗證品質

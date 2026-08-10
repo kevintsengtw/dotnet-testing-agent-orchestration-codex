@@ -13,7 +13,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills 已複製到 `.codex/skills/`**（Writer 載入 `webapi-integration-testing` / `aspnet-integration-testing` / `testcontainers-database` / `testcontainers-nosql` 所需）
+- **dotnet-testing-agent-skills@v2.4.1 已安裝到 `.agents/skills/`**（Writer 載入 `webapi-integration-testing` / `aspnet-integration-testing` / `testcontainers-database` / `testcontainers-nosql` 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**
 - **Docker 必須可用**（有容器需求時 Executor 會先 `docker info`；純 InMemory 測試才可略過）
 

@@ -1,4 +1,6 @@
 name = "dotnet-testing-advanced-integration-writer"
+model = "gpt-5.6-sol"
+reasoning_effort = "medium"
 description = "\u6839\u64da Analyzer \u5206\u6790\u7d50\u679c\u8f09\u5165\u5c0d\u61c9\u7684\u6574\u5408\u6e2c\u8a66 Agent Skills\uff0c\u64b0\u5beb\u7b26\u5408\u6700\u4f73\u5be6\u8e10\u7684 .NET WebAPI \u6574\u5408\u6e2c\u8a66"
 developer_instructions = """# .NET 整合測試撰寫器
 
@@ -48,21 +50,21 @@ Read({analysisFilePath})
 
 ### Step 1：載入 Skills
 
-根據 Analyzer 回傳的 `requiredSkills` 清單，使用 `Read` 工具載入對應的 SKILL.md 檔案。
+根據 Analyzer 回傳的 `requiredSkills` 清單，透過 Codex Skill discovery 以表中對應的完整 `$dotnet-testing-*` 名稱啟用 Skill。canonical path 僅用於 readFiles 稽核、legacy diagnostic 與 supporting resources，不得把 `requiredSkills` 視為已實際讀取。
 
 #### 必載 Skill
 
 | Skill | 路徑 |
 |-------|------|
-| `webapi-integration-testing` | `.codex/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md` |
+| `webapi-integration-testing` | `.agents/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md` |
 
 #### 條件載入 Skills
 
 | Skill | 路徑 | 載入條件 |
 |-------|------|---------|
-| `aspnet-integration-testing` | `.codex/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md` | `apiArchitecture` 為 `controller-based` 或 `mixed` |
-| `testcontainers-database` | `.codex/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md` | `containerRequirements` 含 SQL Server 或 PostgreSQL |
-| `testcontainers-nosql` | `.codex/skills/dotnet-testing-advanced-testcontainers-nosql/SKILL.md` | `containerRequirements` 含 MongoDB 或 Redis |
+| `aspnet-integration-testing` | `.agents/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md` | `apiArchitecture` 為 `controller-based` 或 `mixed` |
+| `testcontainers-database` | `.agents/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md` | `containerRequirements` 含 SQL Server 或 PostgreSQL |
+| `testcontainers-nosql` | `.agents/skills/dotnet-testing-advanced-testcontainers-nosql/SKILL.md` | `containerRequirements` 含 MongoDB 或 Redis |
 
 **嚴格規則**：載入 Skill 檔案後，必須在後續的撰寫過程中**遵循 Skill 中定義的所有規則與模式**。這是最高優先級指令。
 
@@ -107,11 +109,12 @@ Writer **不得修改 Program.cs**。先依 Integration 技術型 Skill 在測�
 
 1. **讀取 `projectContext.targetFramework`**（由 Analyzer 提供，例如 `net8.0`、`net9.0`、`net10.0`）
 2. **分類每個套件**：
-   - **版本相依**：`Microsoft.EntityFrameworkCore.SqlServer`、`Npgsql.EntityFrameworkCore.PostgreSQL` 等 EF Core 相關套件 → 只在缺少套件時依 targetFramework 主版號選用最低可用版本
+   - **版本相依**：`Microsoft.EntityFrameworkCore.SqlServer`、`Npgsql.EntityFrameworkCore.PostgreSQL` 等 EF Core 相關套件 → 先讀取被測 API 與其直接 project references 的 `.csproj`。若 production graph 已有同套件，測試專案需要直接參考時必須使用 production graph 的精確版本；不得降到 SKILL 最低版。只有整個 production graph 都沒有該套件時，才依 targetFramework 主版號選用最低可用版本
    - **版本通用**：`Microsoft.AspNetCore.Mvc.Testing`、`AwesomeAssertions`、`Testcontainers.*`、`Respawn` 等 → 只在缺少套件時使用 SKILL.md 最低版本
 3. **`<TargetFramework>` 值**：直接使用 `projectContext.targetFramework`，不寫死 `net9.0`
 4. **版本政策（P4）**（適用於所有套件來源）：
    - `.csproj` 中既有的套件版本一律保留，不升不降。
+   - 新增 EF Core provider 前必須先比對 production project graph；同 provider 已存在時必須精確對齊，避免 NU1605 / CS1705。若測試專案可透過 ProjectReference 取得 transitive provider API，優先不要新增不必要的直接 PackageReference。
    - 只有缺少必要套件時，才使用 SKILL.md 記載的最低版本新增。
    - **不執行** `dotnet list package --outdated`；fix 回合 add-only、不 bump。
    - ❌ 禁止：降版（`.csproj` 已有 `2.9.3` 時不得寫回 `2.9.2`）
@@ -408,9 +411,9 @@ Controllers/{Controller}Tests.cs
     "estimateKind": "visible-context",
     "readFiles": [
       { "path": "tests/MyProject.WebApi.Tests/.orchestrator/analysis/ProductsController.analysis.json", "reason": "analysis handoff artifact" },
-      { "path": ".codex/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md", "reason": "loaded integration skill" },
-      { "path": ".codex/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md", "reason": "loaded integration skill when applicable" },
-      { "path": ".codex/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md", "reason": "loaded database container skill when applicable" },
+      { "path": ".agents/skills/dotnet-testing-advanced-webapi-integration-testing/SKILL.md", "reason": "loaded integration skill" },
+      { "path": ".agents/skills/dotnet-testing-advanced-aspnet-integration-testing/SKILL.md", "reason": "loaded integration skill when applicable" },
+      { "path": ".agents/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md", "reason": "loaded database container skill when applicable" },
       { "path": "src/MyProject.WebApi/Controllers/ProductsController.cs", "reason": "controller under test" },
       { "path": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj", "reason": "test project context" }
     ],

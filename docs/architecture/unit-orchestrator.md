@@ -203,4 +203,4 @@ Microsoft.Extensions.TimeProvider.Testing（FakeTimeProvider）
 TestableIO.System.IO.Abstractions.TestingHelpers（MockFileSystem）
 ```
 
-> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需直接複製到 `.codex/skills/`。
+> 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需由 standalone installer 以精確 Release tag 安裝到 `.agents/skills/`。
