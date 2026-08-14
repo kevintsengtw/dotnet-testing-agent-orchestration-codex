@@ -20,7 +20,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    "Usage: node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow <unit|tunit|integration|aspire> --test-project <path> --artifact <path> [--artifact <path> ...] [--allow-read <path> ...] [--workspace-root <path>]",
+    "Usage: node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow <unit|tunit|integration|aspire> --test-project <project-file-or-directory> --artifact <path> [--artifact <path> ...] [--allow-read <path> ...] [--workspace-root <path>]",
     "",
     "Rejects external, prior-attempt/archive, undeclared .orchestrator reads, and out-of-workspace writes recorded in tokenEstimateInputs.",
   ].join("\n");
@@ -28,6 +28,13 @@ function usage() {
 
 function canonical(root, value) {
   return path.normalize(path.isAbsolute(value) ? value : path.resolve(root, value));
+}
+
+function resolveTestProjectDir(testProject) {
+  const projectFileExtensions = new Set([".csproj", ".fsproj", ".vbproj"]);
+  return projectFileExtensions.has(path.extname(testProject).toLowerCase())
+    ? path.dirname(testProject)
+    : testProject;
 }
 
 function isWithin(parent, child) {
@@ -76,7 +83,7 @@ function main() {
 
   const workspaceRoot = canonical(process.cwd(), args.workspaceRoot);
   const testProject = canonical(workspaceRoot, args.testProject);
-  const testProjectDir = path.extname(testProject) ? path.dirname(testProject) : testProject;
+  const testProjectDir = resolveTestProjectDir(testProject);
   const currentOrchestratorRoot = path.join(testProjectDir, ".orchestrator");
   const allowedReads = new Set(args.allowedReads.map((value) => canonical(workspaceRoot, value).toLowerCase()));
   const errors = [];

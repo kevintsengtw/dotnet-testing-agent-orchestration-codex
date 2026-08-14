@@ -4,6 +4,28 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.2.1] - 2026-08-14
+
+本版修正 attempt-isolation validator 在接收名稱含點號的測試專案目錄時，誤判 canonical artifact 位於另一個 `.orchestrator` root，導致工作流程在 Analyzer 完成後錯誤中止的問題。
+
+### 修正內容
+
+- **正確辨識測試專案路徑**：`validate-unit-attempt-isolation.mjs` 不再以任意副檔名判斷 `--test-project` 是檔案；僅將 `.csproj`、`.fsproj`、`.vbproj` 視為專案檔，其餘路徑保留為專案目錄
+- **支援含點號的專案目錄**：`Practice.Core.Tests`、`Sample.Tests` 等常見 .NET 測試專案目錄不再因 `.Tests` 被 `path.extname()` 視為副檔名而錯誤上移 orchestrator root
+- **維持既有相容性**：傳入完整專案檔路徑的既有 Unit、TUnit、Integration、Aspire workflow 行為不變；目錄與專案檔兩種輸入皆受支援
+- **補上回歸測試**：新增 dotted project directory fixture，驗證 canonical self-write artifact 能通過 attempt-isolation gate，並保留 workspace 外寫入、archive、sibling artifact 與未核准 handoff 的拒絕行為
+
+### 問題原因與影響
+
+舊版以 `path.extname(testProject)` 判斷輸入是專案檔或目錄。Node.js 在 Windows 與 macOS 都會把 `Practice.Core.Tests` 的 `.Tests` 視為副檔名，因此 validator 將測試專案目錄誤當成檔案並取其父目錄，最後把 artifact 自身錯誤判定為「另一個 orchestrator root」。這是 gate 的 false positive，不是 subagent 讀寫越界或 context 污染。
+
+### 驗證
+
+- Windows：repository Node regression **191/191 passed**，attempt-isolation 專項測試 **20/20 passed**
+- Windows：以目錄形式指定 `samples/unit/practice/tests/Practice.Core.Tests` 執行完整 Unit Analyzer → Writer → Executor → Reviewer workflow，**26/26 tests passed**、Reviewer **A+**、四階段 attempt-isolation gates 全部通過
+- macOS：使用相同修正完成實機驗證，確認含點號的測試專案目錄與完整 workflow 使用正常
+- 生成測試、`.orchestrator/`、`bin/obj/TestResults` 與測試專案修改均未納入發布內容
+
 ## [v1.2.0] - 2026-08-10
 
 本版將 shared Agent Skills 從 orchestration repository 拆出，建立 lock-pinned 的外部安裝模型，並完成 Unit、TUnit、Integration、Aspire 四套工作流程的功能驗證、dispatch telemetry 與 Reviewer acceptance 契約強化。四個 Orchestrator Skill 名稱、Analyzer → Writer → Executor → Reviewer 四階段、每 target 單一 Writer topology 與各 framework runner 均維持不變。
