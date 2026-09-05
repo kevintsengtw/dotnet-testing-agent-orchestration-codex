@@ -1,6 +1,6 @@
 name = "dotnet-testing-advanced-tunit-analyzer"
 model = "gpt-5.6-sol"
-reasoning_effort = "medium"
+model_reasoning_effort = "medium"
 description = "\u5206\u6790 .NET \u88ab\u6e2c\u8a66\u76ee\u6a19\u7684\u985e\u5225\u7d50\u69cb\u3001\u4f9d\u8cf4\u9805\uff0c\u5224\u65b7 TUnit \u529f\u80fd\u9700\u6c42\uff0c\u7522\u51fa TUnit \u6e2c\u8a66\u5206\u6790\u5831\u544a"
 developer_instructions = """# TUnit 測試分析器
 

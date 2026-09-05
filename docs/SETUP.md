@@ -24,7 +24,7 @@
 | **.NET SDK** | 支援 net8.0 / net9.0 / net10.0，至少安裝一個版本              |
 
 > **Docker**：**integration / aspire 工作流程必需**（啟動真實容器）；**unit / tunit 不需要**。aspire 以 `Aspire.AppHost.Sdk` 9.0+ NuGet 提供，**免安裝 Aspire workload**。
-> **Node.js**（任一近期 LTS）：四工作流程的 `run-state.json` 稽核需要 `.codex/scripts/run-state.mjs`，正式 runtime gates 使用 `.codex/scripts/validators/`；optional Estimated Token Usage 使用 `.codex/scripts/estimate-token-usage.mjs`。全部都是零相依腳本，無需 `npm install`。
+> **Node.js**（任一近期 LTS）：四工作流程的 `run-state.json` 稽核需要 `.codex/scripts/run-state.mjs`；Unit machine truth 使用 `.codex/scripts/unit-runtime/`；共同與其他流程 gates 使用 `.codex/scripts/validators/`；optional Estimated Token Usage 使用 `.codex/scripts/estimate-token-usage.mjs`。全部都是零相依腳本，無需 `npm install`。
 
 ### 驗證必要工具已安裝
 
@@ -71,7 +71,7 @@ cd dotnet-testing-agent-orchestration-codex
 
 Writer 撰寫測試時，會依 Analyzer 判定的技術需求，載入對應的技術型 Agent Skill。這些 Skill **不內含於本 repo**，由獨立 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供。可選的前置情境 Skill 同樣不內含；setup 必須從公開 repo [`kevintsengtw/unit-test-scenarios`](https://github.com/kevintsengtw/unit-test-scenarios) 抓取來源內容。
 
-Consumer deployment 必須使用明確 Release tag 與 exact commit，將 Skills 部署到 consumer workspace 的 **`.agents/skills/`**。Codex 直接以 repository-level Skill discovery 發現它們；缺少必要 Skill 時 workflow 必須明確失敗，不得跳過。本 repository 不發布 standalone shared Skills installer；正式 consumer deployment 由 `dotnet-testing-vscode-extensions` 管理。
+Consumer deployment 必須使用明確 Release tag 與 exact commit，將 Skills 部署到 consumer workspace 的 **`.agents/skills/`**。Codex 直接以 repository-level Skill discovery 發現它們；缺少必要 Skill 時 workflow 必須明確失敗，不得跳過。本 repository 不發布 standalone shared Skills installer，consumer deployment 工具不屬於本版規劃範圍。
 
 `unit-test-scenarios` 從公開 repository 的 `skills/unit-test-scenarios/` 抓取到 consumer workspace 的 `.agents/skills/unit-test-scenarios/`。目前驗證基準 commit 為 `d00501984383dfd0b111c33a091c48af20abec55`。該目的地是安裝後的本機 discovery path，不是 orchestration repository 的發行內容。
 
@@ -147,7 +147,7 @@ dotnet-testing-xunit-project-setup/
 - `.codex/skills/` 含 4 個 orchestrator skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）的 `SKILL.md`
 - `.codex/skills/` 含 `dotnet-test` 與四個 orchestrator，不含 shared skills
 - setup 已從外部來源抓取 `unit-test-scenarios` 與 29 個技術型 skill 到 `.agents/skills/`
-- `.codex/scripts/` 含 `run-state.mjs`、`estimate-token-usage.mjs` 與 `validators/`；四個 Orchestrator 引用的 runtime script 路徑全部存在
+- `.codex/scripts/` 含 `run-state.mjs`、`unit-runtime/`、`estimate-token-usage.mjs` 與 `validators/`；四個 Orchestrator 引用的 runtime script 路徑全部存在
 - `.codex/config.toml` 存在且 `[features] multi_agent = true`
 - 在 Codex 呼叫任一 `$dotnet-testing-orchestrator-{unit,tunit,integration,aspire}` 時能正確 SpawnAgent 四階段
 

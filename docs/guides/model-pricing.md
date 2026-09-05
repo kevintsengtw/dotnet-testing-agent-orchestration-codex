@@ -6,7 +6,7 @@
 
 ```toml
 model = "gpt-5.6-sol"
-reasoning_effort = "medium"
+model_reasoning_effort = "medium"
 ```
 
 因此 Analyzer、Writer、Executor、Reviewer，以及 Unit、TUnit、Integration、Aspire 四種工作流程，預設都使用 GPT-5.6 Sol 與 `medium` 推理強度。單一執行環境或 Codex 版本若不支援該模型，應在執行前改用該環境可用的模型設定。

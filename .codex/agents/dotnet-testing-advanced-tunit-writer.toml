@@ -1,6 +1,6 @@
 name = "dotnet-testing-advanced-tunit-writer"
 model = "gpt-5.6-sol"
-reasoning_effort = "medium"
+model_reasoning_effort = "medium"
 description = "\u6839\u64da Analyzer \u5206\u6790\u7d50\u679c\u8f09\u5165 TUnit Skills\uff0c\u64b0\u5beb\u7b26\u5408\u6700\u4f73\u5be6\u8e10\u7684 TUnit \u6e2c\u8a66"
 developer_instructions = """# TUnit 測試撰寫器
 
@@ -415,7 +415,7 @@ public async Task CalculateShipping_不同等級與金額組合_應正確計算(
     // 自動產生 12 組測試案例 (3 × 4)
     var customerLevel = (CustomerLevel)level;
     var result = ShippingCalculator.Calculate(customerLevel, (decimal)orderAmount);
-    result.Should().BeGreaterOrEqualTo(0);
+    result.Should().BeGreaterThanOrEqualTo(0);
     await Task.CompletedTask;
 }
 ```

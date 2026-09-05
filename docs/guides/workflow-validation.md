@@ -29,7 +29,9 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
 ├── scripts/
 │   ├── run-state.mjs
 │   ├── estimate-token-usage.mjs
+│   ├── unit-runtime/                              # Unit machine truth（8 支）
 │   └── validators/
+│       ├── validate-skill-read-scope.mjs
 │       ├── validate-unit-attempt-isolation.mjs
 │       ├── validate-unit-scenario-contract.mjs
 │       ├── validate-tunit-role-read-scope.mjs
@@ -45,11 +47,10 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
     ├── dotnet-testing-orchestrator-unit/
     ├── dotnet-testing-orchestrator-tunit/
     ├── dotnet-testing-orchestrator-integration/
-    ├── dotnet-testing-orchestrator-aspire/
-    └── unit-test-scenarios/
+    └── dotnet-testing-orchestrator-aspire/
 ```
 
-另外需要安裝外部 [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills)。
+另外需要安裝外部 [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills)。`unit-test-scenarios` 是可選外部前置 Skill，兩者都不在公開 bundle。
 
 ## Fresh workspace 前提
 
@@ -102,16 +103,27 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
 - 以 Executor artifact 作 runtime truth，不自行重跑測試取代它。
 - scenario／endpoint／Resource acceptance 與 Analyzer、Writer、Executor 對帳。
 - `gateDecision=pass|pass_with_warnings` 時不得仍有未揭露的 missing scenario。
-- Unit/TUnit 的 `userScenarioCoverage` 只計 `source: "user"`；Analyzer `GEN-*` 不得混入 user arrays。
+- Unit/TUnit 的 `userScenarioCoverage` 只計 `source: "user"`；Analyzer `GEN-*` 不得混入 user arrays。Unit blocked acceptance 另從 Writer coverage 對帳全部有效 scenarios，因此 GEN-only limitation不必污染 user-only missing 集合。
+- Unit GEN-only live case必須以結構化 input固定`userProvidedScenarios: null`，並分別驗證 Analyzer的空 user input truth、全`GEN-*` catalog、Writer對全部有效 scenarios的 coverage，以及 Reviewer空的 user-only統計；操作限制不得被正規化為`USR-*`。
 - 綠色 runtime 後照常回報 warnings，但不自動啟動 remediation pass。
 
 ## Runtime validator 命令
+
+Unit v1.3.0 的 phase state、artifact normalization、build/test evidence、project integrity 與 final projection 由 `.codex/scripts/unit-runtime/` 負責。舊的 Unit validators 保留相容性與既有 artifact 驗證，但不再要求模型輸出固定說明文字。
+
+```bash
+node .codex/scripts/unit-runtime/project-integrity.mjs capture --root <workspace> --output <baseline.json>
+node .codex/scripts/unit-runtime/run-unit-execution.mjs --help
+node .codex/scripts/unit-runtime/workflow-result.mjs --help
+```
 
 Attempt isolation 由四工作流程共用：
 
 ```bash
 node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow <unit|tunit|integration|aspire> --workspace-root <workspace> --test-project <test-project> --artifact <artifact> --allow-read <approved-handoff>
 ```
+
+Unit Executor 同 assignment retry 只接受 canonical executor-result 以遞增 `executionEvidencePaths` 明確宣告的目前 target evidence；最後一筆必須等於 final pointer。未宣告 attempts、跨 run、其他 target、archive 與 retained artifacts仍拒絕。
 
 Unit/TUnit scenario acceptance：
 
@@ -135,19 +147,25 @@ node .codex/scripts/validators/validate-aspire-scenario-contract.mjs --analysis 
 node .codex/scripts/validators/validate-aspire-execution-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --executor <executor-result.json> --require-pass --forbid-production-mutation --require-single-writer
 ```
 
-所有 phase closeout 後驗證 strict timing：
+Unit terminal 先從 workflow-state 做 deterministic closeout與 profiling finalize，再驗證 strict timing：
 
 ```bash
+node .codex/scripts/run-state.mjs closeout --path <test-project>/.orchestrator/run-state.json
+node .codex/scripts/run-state.mjs finalize --path <test-project>/.orchestrator/run-state.json
 node .codex/scripts/run-state.mjs validate --path <test-project>/.orchestrator/run-state.json --require-complete-timing
 ```
 
-最後產生 optional Estimated Token Usage：
+Analyzer／Writer／Executor／Reviewer 任一 terminal 都走相同 closeout。Assignment `completedAt` 必須在角色完成當下記錄，closeout只驗證而不以 phase timestamp回填。Canonical artifact access／permission failure不得以 ACL、ownership、permission mutation或替代 path繞過，必須保留結構化 failure並停止下游 dispatch。
+
+TUnit、Integration 與 Aspire 最後產生 optional Estimated Token Usage：
 
 ```bash
 node .codex/scripts/estimate-token-usage.mjs --test-project <test-project>
 ```
 
 Estimator unavailable 不會讓 correctness workflow 失敗，但必須回報 unavailable 原因；不得補猜 token 或改稱 billing usage。
+
+Unit 的 `workflow-result.mjs --test-project <test-project>` 會在 finalization 內自動執行同一 estimator，並固定輸出 timing、Timing Evidence、Profiling Summary 與 Estimated Token Usage；不再由 Orchestrator 分別組裝這些區塊。
 
 ## 修改流程
 

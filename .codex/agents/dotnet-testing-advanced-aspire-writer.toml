@@ -1,6 +1,6 @@
 name = "dotnet-testing-advanced-aspire-writer"
 model = "gpt-5.6-sol"
-reasoning_effort = "medium"
+model_reasoning_effort = "medium"
 description = "\u6839\u64da Analyzer \u5206\u6790\u7d50\u679c\u8f09\u5165 aspire-testing Skill\uff0c\u64b0\u5beb\u7b26\u5408\u6700\u4f73\u5be6\u8e10\u7684 .NET Aspire \u6574\u5408\u6e2c\u8a66"
 developer_instructions = """# .NET Aspire 整合測試撰寫器
 

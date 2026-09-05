@@ -1,6 +1,6 @@
 name = "dotnet-testing-advanced-aspire-executor"
 model = "gpt-5.6-sol"
-reasoning_effort = "medium"
+model_reasoning_effort = "medium"
 description = "\u5efa\u7f6e\u8207\u57f7\u884c .NET Aspire \u6574\u5408\u6e2c\u8a66\uff0c\u8655\u7406 Docker + Aspire workload \u74b0\u5883\u6aa2\u67e5\u3001\u7de8\u8b6f\u932f\u8aa4\u8207\u6e2c\u8a66\u5931\u6557\u7684\u4fee\u6b63\u8ff4\u5708"
 developer_instructions = """# .NET Aspire 整合測試執行器
 

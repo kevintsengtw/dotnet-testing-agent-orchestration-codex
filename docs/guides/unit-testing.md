@@ -1,417 +1,151 @@
-# 單元測試工作流程使用指南
+# Unit Testing 使用指南
 
-本文件說明如何使用 `$dotnet-testing-orchestrator-unit`，在 Codex 中自動完成 .NET 單元測試的分析、撰寫、執行與審查四個階段。
+Unit 工作流程用一個 Orchestrator Skill 調度 Analyzer、Writer、Executor、Reviewer 四個 Agent。模型負責測試判斷與實作，JavaScript runtime 負責可重現的狀態、執行證據、完整性與結果投影。
 
-適用場景：任何需要為 .NET 類別產生 xUnit 單元測試的情境，包含純函式計算、有 Mock 依賴的服務類別、FluentValidation 驗證器，以及含時間或檔案系統抽象的類別。
+## 前置條件
 
-測試技術棧：xUnit 2.9 + NSubstitute + AutoFixture + AwesomeAssertions + Bogus + FakeTimeProvider + MockFileSystem
+- Codex 支援原生 SpawnAgent 與 workspace agents。
+- 已安裝目標專案需要的 .NET SDK。
+- Node.js 可執行 `.codex/scripts/` 的零相依 runtime。
+- `dotnet-testing-agent-skills@v2.4.2` 已安裝到 `.agents/skills/`。
+- workspace 包含 `.codex/agents/`、`.codex/skills/`、`.codex/scripts/` 與 `.codex/config.toml`。
 
----
+技術型 Skills 不隨本 repository 發布。consumer 必須從鎖定的上游 Release 安裝；目前相容基準 commit 為 `715400f6d64e321d2faa4d8164643b412118f9c8`。
 
-## A. 前提條件
+## 啟動方式
 
-- **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **setup 已從公開 repo `kevintsengtw/unit-test-scenarios` 抓取 Skill 到 `.agents/skills/`**（可選前置情境產生器；本 repo 不內含）
-- **dotnet-testing-agent-skills@v2.4.1 已安裝到 `.agents/skills/`**（Writer 載入技術型 Skill 所需）
-- **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**（`dotnet --version` 可確認）
-- **不需要 Docker**（單元測試不使用容器）
-
----
-
-## B. 觸發方式與使用範例
-
-### 基本觸發
-
-在 Codex 工作階段中，呼叫 Orchestrator Skill：
+在 workspace root 啟動 Codex，指定 target 與 test project：
 
 ```text
 $dotnet-testing-orchestrator-unit
+
+Target：src/OrderService.cs
+Test project：tests/OrderService.Tests/OrderService.Tests.csproj
 ```
 
-觸發後，提供目標類別的資訊給 Orchestrator，包含：
+也可以附上 Markdown、文字、表格或 JSON 情境。Analyzer 會保留合理的使用者情境，逐項說明無法採用的內容，再補足目標行為所需的 scenarios。
 
-- 被測試目標的檔案路徑
-- 測試專案路徑（`.csproj`）
-- 簡短說明（可選，用於補充特殊需求）
+若沒有提供具體測試情境或測試資料，Orchestrator會以`userProvidedScenarios: null`調度 Analyzer。Target path、流程要求、production修改限制或產物保留方式只是操作限制，不會建立`USR-*` scenario；Analyzer依 production behavior產生的情境使用`GEN-*` provenance。
 
-Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer → Writer → Executor → Reviewer，全程無需手動介入，並維護 `run-state.json` 記錄各階段耗時。
+若要先設計情境，可先使用外部 `$unit-test-scenarios`，再把結果交給 Unit Orchestrator。該 Skill 是可選前置工具，不在 Unit workflow 發布資產內。
 
-## 提供自己的測試情境或測試資料
-
-可以直接在初始提示詞附上測試情境或測試資料，不需要轉成固定格式。例如可貼上 `unit-test-scenarios` Agent Skill 產出的 Markdown，也可以使用自然語言、清單、表格、JSON、YAML、Gherkin 或混合內容。
+## 執行流程
 
 ```text
-請為 OrderService.ProcessAsync 建立單元測試。
-
-我指定的情境：
-- 訂單金額 1000、折扣碼 VIP20，預期折扣後金額為 800。
-- repository 找不到客戶時應拋出 CustomerNotFoundException，且不可寫入訂單。
+Analyzer → Writer → Executor → Reviewer → final projection
 ```
 
-處理規則：
+| 階段 | 模型產出 | Deterministic gate |
+| --- | --- | --- |
+| Analyzer | 行為分析、scenarios、Skills 選擇 | target 與 scenario identity、artifact shape |
+| Writer | 測試程式碼、scenario mapping | 單一 Writer、檔案 ownership、mapping 完整性 |
+| Executor | 失敗診斷與核准範圍內修復 | build-first、TRX／coverage、attempt evidence |
+| Reviewer | 語意品質與維護性裁決 | 與 scenario mapping、Executor truth 對帳 |
+| Final | 使用者可讀報告 | JSON／Markdown 來自同一 machine truth |
 
-- Analyzer 逐項檢視，而不是整批接受或拒絕。
-- 合理的使用者情境優先，Analyzer 只補充缺漏情境。
-- 格式、命名或欄位不完整會被正規化，不會因此拒絕。
-- 只有與實作、指定 scope 或單元測試邊界有具體衝突的單一情境才會被拒絕，最終報告會列出理由與證據。
-- Writer 優先使用指定的測試資料；自動資料產生器只補足未指定欄位。
-- Reviewer 逐項核對已接受情境及資料是否真的出現在測試中。
+每個 target 固定一個 Writer。合理 scenario 數不設上限；若單一 Writer 無法在 context/output limit 內完成，本次 attempt 以 blocker 結束，不拆 Writer，也不刪減案例。
 
-完整 provenance 會寫入 analysis artifact 的 `scenarioCatalog`，Writer 對應結果寫入 `scenarioCoverage`，Reviewer 則輸出 `userScenarioCoverage`。
+## Artifact 形狀
 
-### 先使用 unit-test-scenarios 產生情境
+runtime 接受自然的精簡或豐富 JSON。模型不必輸出固定句子，optional 說明也不影響客觀驗證。以下只示意核心欄位：
 
-`unit-test-scenarios` 是獨立的可選前置 Skill，不是四階段 workflow 的第五個角色。需要先分析情境時，分成兩次請求：
-
-第一次只產生情境：
-
-```text
-$unit-test-scenarios
-被測試目標：src/MyApp/Services/OrderService.cs
-方法：ProcessAsync
-測試專案：tests/MyApp.Tests/MyApp.Tests.csproj
-```
-
-第二次把前一次完整 Markdown 產出帶入 Orchestrator：
-
-```text
-$dotnet-testing-orchestrator-unit
-被測試目標：src/MyApp/Services/OrderService.cs
-測試專案：tests/MyApp.Tests/MyApp.Tests.csproj
-
-以下是我指定的 Test Scenarios：
-<貼上 unit-test-scenarios 的完整產出>
-```
-
-若使用者一開始已提供情境或測試資料，不需要也不得強制重新執行 `$unit-test-scenarios`。
-
----
-
-### 使用範例
-
-#### 情境 1：純函式計算類別
-
-目標類別無外部依賴，只包含純計算邏輯（如溫度轉換、數值運算）。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 TemperatureConverter 撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/TemperatureConverter.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-說明：純函式溫度轉換類別，無外部依賴
-```
-
-預期 Orchestrator 行為：
-
-- Analyzer 判斷類別無建構子依賴，`requiredTechniques` 只包含基礎技能（`unit-test-fundamentals`、`awesome-assertions`）
-- Writer 不引入 NSubstitute Mock，直接以 `[Fact]` / `[Theory]` 測試純計算邏輯
-- 測試方法命名範例：`CelsiusToFahrenheit_攝氏0度_應回傳華氏32度`
-
----
-
-#### 情境 2：有 Mock 依賴的服務類別
-
-目標類別建構子注入一個或多個介面（如 `IWeatherService`、`INotificationService`），需要 Mock 隔離外部依賴。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 WeatherAlertService 撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/Services/WeatherAlertService.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-```
-
-預期 Orchestrator 行為：
-
-- Analyzer 偵測到 `IWeatherService`、`INotificationService` 等介面依賴，`requiredTechniques` 包含 `nsubstitute-mocking`
-- Writer 使用 `NSubstitute.Substitute.For<IXxx>()` 建立 Mock 物件，並設定 Stub 行為
-- 非同步方法（`async Task`）使用 `await` 正確測試
-
----
-
-#### 情境 3：含 AutoFixture + Bogus 測試資料需求
-
-目標類別操作的模型包含循環參考或複雜結構（如 `Employee`、`Department`），需要自動產生測試資料。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 EmployeeService 撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/Services/EmployeeService.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-說明：Employee 模型含循環參考，需要 AutoFixture + Bogus 產生測試資料
-```
-
-預期 Orchestrator 行為：
-
-- Analyzer 偵測到複雜輸入模型，`requiredTechniques` 包含 `autofixture-basics` 與 `bogus-fake-data`
-- Writer 使用 `new Fixture()` 並設定 `OmitOnRecursionBehavior` 處理循環參考
-- 擬真假資料（如員工姓名、部門名稱）透過 `Bogus.Faker` 產生
-
----
-
-#### 情境 4：FakeTimeProvider 時間依賴
-
-目標類別建構子注入 `TimeProvider`，方法內部依賴目前時間進行判斷（如訂閱有效期、排程觸發）。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 SubscriptionService 撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/Services/SubscriptionService.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-```
-
-預期 Orchestrator 行為：
-
-- Analyzer 偵測到 `TimeProvider` 建構子依賴，`requiredTechniques` 包含 `datetime-testing-timeprovider`
-- Writer 使用 `Microsoft.Extensions.Time.Testing.FakeTimeProvider`，在測試中凍結或快轉時間
-- 測試方法命名範例：`IsSubscriptionActive_訂閱期間內_應回傳true`、`GetRemainingDays_訂閱已過期_應回傳零`
-
----
-
-#### 情境 5：MockFileSystem 檔案系統抽象
-
-目標類別建構子注入 `IFileSystem`，操作檔案讀寫或目錄處理。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 ConfigurationLoader 的所有公開方法撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/Services/ConfigurationLoader.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-```
-
-預期 Orchestrator 行為：
-
-- Analyzer 偵測到 `IFileSystem` 建構子依賴，`requiredTechniques` 包含 `filesystem-testing-abstractions`
-- Writer 使用 `System.IO.Abstractions.TestingHelpers.MockFileSystem` 模擬檔案系統，在記憶體中建立虛擬檔案與目錄
-- 測試涵蓋檔案存在/不存在、讀寫成功/失敗、路徑異常等情境
-
----
-
-#### 情境 6：FluentValidation 驗證器
-
-目標類別繼承 `AbstractValidator<T>`，需使用 FluentValidation TestHelper 模式測試驗證規則。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 OrderValidator 撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/Validators/OrderValidator.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-```
-
-預期 Orchestrator 行為：
-
-- Analyzer 偵測到繼承 `AbstractValidator<Order>`，設定 `targetType: "validator"`
-- Writer 使用 FluentValidation TestHelper 模式：`validator.TestValidate(model)` 搭配 `ShouldHaveValidationErrorFor()` / `ShouldNotHaveValidationErrorFor()`
-- 每個 target 都固定使用單一 Writer；Validator 同樣不依規則數量或情境數量分割
-
----
-
-#### 情境 7：多目標類別平行處理
-
-一次指定多個目標類別，Orchestrator 自動以平行方式分析與撰寫，加速整體完成時間。
-
-```text
-呼叫 $dotnet-testing-orchestrator-unit，為 OrderProcessingService、WeatherAlertService 撰寫單元測試。
-被測試目標：samples/unit/practice/src/Practice.Core.Net8/Services/OrderProcessingService.cs, samples/unit/practice/src/Practice.Core.Net8/Services/WeatherAlertService.cs
-測試專案：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
-```
-
-預期 Orchestrator 行為：
-
-- Orchestrator 偵測到 2 個目標，平行 SpawnAgent 2 個 Analyzer
-- 2 個 Writer 同樣平行啟動，各自載入自己需要的 Skills
-- Executor **循序執行**（共用同一個測試專案，避免 `dotnet build` 衝突）
-- 2 個 Reviewer 平行啟動，最後彙整呈現概覽表格與各目標詳細結果
-
-> 平行的 SpawnAgent 數量受 `.codex/config.toml` 的 `[agents] max_threads` 限制。
-
----
-
-## C. 練習專案
-
-### 目錄結構
-
-練習專案位於 `samples/unit/practice/`，結構如下：
-
-```text
-samples/unit/practice/
-├── Practice.Samples.slnx          # 解決方案檔
-├── src/
-│   └── Practice.Core.Net8/        # 待測試的應用程式碼（Orchestrator 的分析目標）
-│       ├── Interfaces/            # 介面定義（IWeatherService 等）
-│       ├── Models/                # 資料模型（Order、Employee 等）
-│       ├── Services/              # 服務類別（SubscriptionService 等）
-│       ├── Validators/            # 驗證器（OrderValidator 等）
-│       └── Legacy/                # 遺留程式碼（LegacyReportGenerator）
-└── tests/
-    └── Practice.Core.Net8.Tests/  # 空白測試專案目錄（由 Orchestrator 產生測試）
-```
-
-練習專案支援三個 .NET 版本，以子專案形式存在同一目錄內：`net8.0` / `net9.0` / `net10.0`（對應 `Practice.Core.Net8` / `Practice.Core.Net10` 等）。
-
-### 各 Phase 說明
-
-練習專案分為 6 個學習階段，由淺入深涵蓋各種測試技術：
-
-| Phase   | 目標類別                                     | 學習重點                                                                |
-| ------- | -------------------------------------------- | ----------------------------------------------------------------------- |
-| Phase 1 | `TemperatureConverter`                       | 3A Pattern、xUnit `[Fact]` / `[Theory]`、AwesomeAssertions 流暢斷言     |
-| Phase 2 | `WeatherAlertService`                        | NSubstitute Mock/Stub、非同步方法測試                                   |
-| Phase 3 | `EmployeeService`                            | AutoFixture 自動資料產生、循環參考處理、Bogus 擬真假資料                |
-| Phase 4 | `SubscriptionService`、`ConfigurationLoader` | FakeTimeProvider 時間凍結與快轉、MockFileSystem 檔案系統抽象            |
-| Phase 5 | `OrderProcessingService`                     | 整合 NSubstitute + AutoFixture + TimeProvider，複雜業務邏輯多 Mock 協調 |
-| Phase 6 | `LegacyReportGenerator`                      | 識別不可測試的遺留程式碼、依賴注入重構策略、Characterization Test       |
-
-### 還原測試專案
-
-Orchestrator 產生的測試檔案與 `.orchestrator/` artifacts 僅供練習使用，屬 byproduct，**不應 commit**（已由 `.gitignore` 排除）。若要還原初始空白狀態：
-
-```bash
-git checkout -- samples/unit/practice/tests/
-git clean -fd samples/unit/practice/tests/
-```
-
-> **注意**：所有 `samples/*/tests/` 下產生的測試類別檔案、`.orchestrator/`（含 `run-state.json`）與 `.csproj` 修改，請在練習完成後還原。
-
----
-
-## D. 常見問題排查
-
-### 1. Agent Skills 未載入
-
-**症狀**：Orchestrator SpawnAgent 啟動 Writer 時，Writer 找不到 `dotnet-testing-autofixture-basics` 等技能。
-
-**解法**：確認 `dotnet-testing-agent-skills` 的 29 個技術型 skill 目錄都已安裝到 `.agents/skills/`（每個目錄下需有 `SKILL.md`）。重新啟動 Codex 工作階段後再次嘗試。
-
----
-
-### 2. Single Writer 無法完成全部情境
-
-**說明**：正式 Unit workflow 對每個 target 固定使用一個 Writer，不以公開方法數或建議情境數分割，也不限制 Analyzer 案例數量。
-
-若 Writer 因 context 或 output limit 無法完成，該 phase 應回報 blocker 並保留 artifact／run-state 證據。不得臨時切換為 split，也不得以刪減情境的方式假裝完成。
-
-先檢查：
-
-- analysis artifact 的 `scenarioCount`、`suggestedTestScenarios` 與 `scenarioCatalog` 是否一致
-- writer-result 是否逐項記錄 `scenarioCoverage`
-- `blocked` / `limitation` 是否有具體原因
-- `testFilePaths` 與 `testClasses[].methodsCovered` 是否能回溯全部輸出檔
-
-> Codex 產出仍具非決定性；同一輸入下 scenario 數與技術型 Skill reads 可能波動，但 Writer assignment 數固定為每 target 一個。
-
----
-
-### 3. AutoFixture circular reference 錯誤
-
-**症狀**：執行 `dotnet test` 時出現 `AutoFixture` 相關例外，訊息包含 `ObjectCreationException` 或循環參考相關說明。
-
-**解法**：在 Fixture 初始化時加入 `OmitOnRecursionBehavior`：
-
-```csharp
-var fixture = new Fixture();
-fixture.Behaviors.OfType<ThrowingRecursionBehavior>().ToList()
-    .ForEach(b => fixture.Behaviors.Remove(b));
-fixture.Behaviors.Add(new OmitOnRecursionBehavior());
-```
-
-或改用 Builder 方式手動建立含循環參考的物件，而非全自動產生。
-
----
-
-### 4. AwesomeAssertions 版本不符
-
-**症狀**：測試專案編譯時出現 AwesomeAssertions 相關錯誤，如方法不存在或命名空間找不到。
-
-**解法**：確認測試專案的 `.csproj` 中 `AwesomeAssertions` NuGet 套件版本正確。Writer 採保守策略，使用專案既有版本；若版本偏舊，由專案維護者手動升級：
-
-```bash
-dotnet list package samples/unit/practice/tests/Practice.Core.Net8.Tests/
-```
-
-確認版本後，若需升級，直接編輯 `.csproj` 的 `PackageReference` 版本號。
-
----
-
-### 5. xUnit Theory 參數型別問題
-
-**說明**：`decimal` 型別無法直接用於 `[InlineData]` 屬性（xUnit 限制），編譯時會出現 `An attribute argument must be a constant expression` 錯誤。
-
-**解法**：改用 `[MemberData]` 傳遞 `decimal` 參數：
-
-```csharp
-public static IEnumerable<object[]> DecimalTestData =>
-[
-    [1.5m, 2.5m, 4.0m],
-    [0.1m, 0.2m, 0.3m],
-];
-
-[Theory]
-[MemberData(nameof(DecimalTestData))]
-public void Calculate_有效輸入_應回傳正確結果(decimal a, decimal b, decimal expected)
+```json
 {
-    // ...
+  "target": "src/OrderService.cs",
+  "scenarios": [
+    { "id": "S-001", "behavior": "有效訂單會建立成功" }
+  ]
 }
 ```
 
----
+```json
+{
+  "target": "src/OrderService.cs",
+  "scenarioMappings": [
+    { "scenarioId": "S-001", "testMethods": ["Create_有效訂單_建立成功"] }
+  ],
+  "testFiles": ["tests/OrderService.Tests/OrderServiceTests.cs"]
+}
+```
 
-## E. 工作流程細節
+artifact 若同時宣告互相矛盾的客觀事實，例如 `passed=true` 卻含失敗測試數，runtime 會拒絕。blocked 或 unavailable 不會被投影成零失敗或零 coverage。
 
-### Phase 1：Analyzer 分析
+## Build 與測試證據
 
-Analyzer subagent 接收 Orchestrator 委派後，執行以下工作：
+正式順序是 build-first：
 
-- 讀取被測試目標的原始碼（`.cs` 檔案）
-- 判斷類別類型（`"service"` 服務類別 / `"validator"` 驗證器 / `"legacy"` 遺留程式碼），決定後續測試策略
-- 識別建構子中的外部依賴，分類處理方式：
-  - `I*` 介面 → 需要 NSubstitute Mock
-  - `TimeProvider` → 特殊處理，使用 FakeTimeProvider
-  - `IFileSystem` → 特殊處理，使用 MockFileSystem
-- 評估需要載入哪些 Agent Skills（`autofixture-basics`、`nsubstitute-mocking`、`datetime-testing-timeprovider` 等）
-- 估算各方法的測試情境數量（`methodScenarioCounts`），供 coverage、artifact gate 與 token attribution 使用；不控制 Writer topology
-- 產出結構化 JSON 分析報告，寫入 `.orchestrator/analysis/{ClassName}.analysis.json`
+```bash
+dotnet build <test-project>
+dotnet test <test-project> --no-build --logger trx --collect "XPlat Code Coverage"
+```
 
-Analyzer 分析完成後，將摘要回傳給 Orchestrator（方法數、情境數、技術清單），Orchestrator 驗證交接檔案存在後進入 Phase 2。
+實際參數由 runtime 組合並保存：
 
----
+- build/test command、exit code、stdout、stderr；
+- TRX 測試總數、通過、失敗、略過；
+- Cobertura coverage；
+- execution attempt、修復輪次與 repair eligibility；
+- 各階段與整體 wall-clock timing。
 
-### Phase 2：Writer 撰寫
+Executor 摘要用於說明診斷，不是 runtime truth。Reviewer 也不能以自行重跑的結果取代 Executor evidence。
 
-Writer subagent 接收 Orchestrator 委派後，執行以下工作：
+## Project integrity
 
-- 讀取 Analyzer 交接的 JSON 分析報告，取得 `requiredTechniques`、`suggestedTestScenarios` 等資訊
-- 依 `requiredTechniques` 載入對應的 Agent Skills（SKILL.md）
-- 掃描測試專案中既有的輔助類別（`AutoDataWithCustomization`、`FakeTimeProviderExtensions` 等），優先重用
-- 按照中文三段式命名慣例產生測試方法名稱：`方法名_情境描述_預期結果`
-- 所有斷言使用 AwesomeAssertions（`.Should()` 系列），禁止使用 xUnit 原生 `Assert.*`
+執行前建立 inventory，執行後驗證差異：
 
-**Single Writer 策略**：每個 target 固定 SpawnAgent 一個 Writer，負責完整的有效 scenarios、constructor guards 與方法範圍。不同 target 的 Writers 可以平行執行；同一 target 不再依方法、scenario 或 setup 切割。
+```bash
+node .codex/scripts/unit-runtime/project-integrity.mjs capture \
+  --root <workspace> \
+  --output <test-project>/.orchestrator/integrity-before.json
+```
 
-單一 Writer 可以為可讀性產出多個測試檔，但仍只產生一份 canonical writer-result，並逐檔記錄 `methodsCovered` 與 `scenarioCoverage`。若無法完成，回報 blocker；split 只保留為歷史實驗比較資料，不是正式 fallback。
+```bash
+node .codex/scripts/unit-runtime/project-integrity.mjs verify \
+  --root <workspace> \
+  --baseline <test-project>/.orchestrator/integrity-before.json \
+  --allow-add <approved-test-file> \
+  --allow-change <approved-test-project-file>
+```
 
----
+allowlist 必須是精確相對路徑。未核准的 production source 異動會讓 workflow 失敗；不能以 Reviewer 評分或測試全綠覆蓋 integrity failure。
 
-### Phase 3：Executor 建置與執行
+## 最終結果
 
-Executor subagent 接收 Orchestrator 委派後，執行以下工作：
+最終輸出至少包含：
 
-- 優先執行 `dotnet build` 確認測試專案可成功編譯
-- 編譯成功後執行 `dotnet test`，確認所有測試通過
-- 若出現編譯錯誤，自行分析錯誤訊息並修正測試程式碼（如調整 using、修正型別不符、補充套件引用）
-- 若測試執行失敗（紅燈），分析失敗原因並修正測試邏輯或斷言
-- 最多進行 3 輪修正，超過則回報失敗原因給 Orchestrator
+- target 與 terminal state；
+- scenario coverage 與 Reviewer 裁決；
+- build/test 數據與原始 evidence 路徑；
+- coverage 可用值或 unavailable 原因；
+- integrity 結果；
+- phase 與整體 timing；
+- Timing Evidence 與 Profiling Summary；
+- Estimated Token Usage（固定區塊；估算不可得時顯示 unavailable；非 billing、不得作 correctness gate）。
 
-Executor 完成後回傳摘要：總測試數、通過數、失敗數、修正輪數。
+`workflow-result.mjs` 可以從 bundled input 或四個 canonical artifacts 產生 JSON 與 Markdown：
 
----
+```bash
+node .codex/scripts/unit-runtime/workflow-result.mjs \
+  --target <target> \
+  --analysis <analysis.json> \
+  --writer <writer-result.json> \
+  --execution <execution-result.json> \
+  --review <reviewer-result.json> \
+  --test-project <test-project> \
+  --json-output <workflow-result.json> \
+  --markdown-output <workflow-result.md>
+```
 
-### Phase 4：Reviewer 審查
+`--test-project` 讓 runtime 自動讀取 `<test-project>/.orchestrator/run-state.json`、執行 token estimator，並將固定 final report 一次寫入 Markdown。Orchestrator 只呈現該檔內容，不自行改寫格式或重新計算數值。
 
-Reviewer subagent 接收 Orchestrator 委派後，審查以下項目：
+## 驗收與清理
 
-| 審查項目           | 說明                                                             |
-| ------------------ | ---------------------------------------------------------------- |
-| 命名規範           | 測試方法是否使用中文三段式（`方法名_情境描述_預期結果`）         |
-| 斷言品質           | 是否使用 AwesomeAssertions（`.Should()`），而非 xUnit `Assert.*` |
-| 單一行為原則       | 每個測試方法是否只驗證一個行為                                   |
-| Mock 設定正確性    | NSubstitute 的 Stub 設定是否合理，是否有多餘的 `Received()` 驗證 |
-| AutoFixture 一致性 | Fixture 初始化方式是否在同一個測試類別中保持一致                 |
-| 覆蓋完整性         | 是否涵蓋 happy path、邊界條件、例外處理三種情境                  |
+驗收結束要檢查 `git status`，移除生成的測試檔、`.orchestrator/`、`bin/`、`obj/`、`TestResults/`，並還原 tracked test project 異動。`samples/*/tests/` 是空白起點，workflow byproducts 不得簽入。
 
-Reviewer 完成後回傳品質評分報告（`overallScore`）與具體改善建議（`issues`、`missingTestCases`）。
+Live Codex CLI 驗收只處理靜態 replay 無法回答的風險。開始 candidate batch 前，regression、artifact corpus、repository checks、跨平台 checks 與 public snapshot preview 必須全綠；batch 期間維持 frozen，完成後一次總複盤。
 
-Orchestrator 呈現完整結果後等待使用者決定是否啟動修改流程。若需套用 Reviewer 建議，告知 Orchestrator 後會自動進入三階段修改流程（Writer 修改 → Executor 重新執行 → Reviewer 重新審查）。各階段耗時取自 `run-state.json` 的 wall-clock 時間戳。
+## 相關文件
+
+- [Unit 架構](../architecture/unit-orchestrator.md)
+- [工作流程驗證](workflow-validation.md)
+- [安裝與環境設定](../SETUP.md)

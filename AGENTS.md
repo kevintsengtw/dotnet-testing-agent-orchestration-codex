@@ -13,7 +13,7 @@ dotnet-testing Agent Orchestration for Codex。提供 **Codex 原生 Subagent** 
 | Integration | `dotnet-testing-orchestrator-integration` |
 | Aspire | `dotnet-testing-orchestrator-aspire` |
 
-四種工作流程共用同一個 1 + 4 模型，差別在執行模型、測試粒度與技術棧。本版由上游 [`dotnet-testing-agent-orchestration-claude`](https://github.com/kevintsengtw/dotnet-testing-agent-orchestration-claude) 經 migrate-to-codex 轉換，並在 Codex 平台多輪實驗優化驗證而成。安裝與使用見 [README.md](README.md) 與 [docs/README.md](docs/README.md)。
+四種工作流程各自擁有一套 1 Orchestrator Skill + 4 Agent TOML，差別在分析粒度、執行模型與技術棧。本版由上游 [`dotnet-testing-agent-orchestration-claude`](https://github.com/kevintsengtw/dotnet-testing-agent-orchestration-claude) 經 migrate-to-codex 轉換，並在 Codex 平台驗證。安裝與使用見 [README.md](README.md) 與 [docs/README.md](docs/README.md)。
 
 ## 關鍵目錄
 
@@ -22,13 +22,13 @@ dotnet-testing Agent Orchestration for Codex。提供 **Codex 原生 Subagent** 
 - `.codex/skills/` — 4 個 Orchestrator Skill + `dotnet-test`
 - `.agents/skills/unit-test-scenarios/` — consumer setup 從公開 repo `kevintsengtw/unit-test-scenarios` 抓取的可選前置 Skill；本 repo 不內含
 - `.codex/config.toml` — Codex workspace 設定（啟用 `multi_agent`、設定 agent thread 上限與 runtime 上限）
-- `.codex/scripts/` — `run-state`、Estimated Token Usage 與四工作流程 runtime validators（零相依、自含；需 Node.js）
+- `.codex/scripts/` — `run-state`、Unit deterministic runtime、Estimated Token Usage 與四工作流程 runtime validators（零相依、自含；需 Node.js）
 
 ## Agent 預設模型
 
-`.codex/agents/` 內全部 16 個 agent TOML 都明確指定 `model = "gpt-5.6-sol"` 與 `reasoning_effort = "medium"`。因此四種工作流程的 Analyzer、Writer、Executor、Reviewer 預設均使用 GPT-5.6 Sol、medium 推理強度。模型計費比較（GPT-5.4、GPT-5.5、GPT-5.6 Sol／Terra／Luna）見 [docs/guides/model-pricing.md](docs/guides/model-pricing.md)。
+`.codex/agents/` 內全部 16 個 agent TOML 都明確指定 `model = "gpt-5.6-sol"` 與 `model_reasoning_effort = "medium"`。因此四種工作流程的 Analyzer、Writer、Executor、Reviewer 預設均使用 GPT-5.6 Sol、medium 推理強度。模型計費比較（GPT-5.4、GPT-5.5、GPT-5.6 Sol／Terra／Luna）見 [docs/guides/model-pricing.md](docs/guides/model-pricing.md)。
 
-> Shared Agent Skills 分別由外部 `dotnet-testing-agent-skills` 與公開 repo `kevintsengtw/unit-test-scenarios` 提供，由 VS Code Extension 的 consumer deployment 抓取後安裝到 `.agents/skills/`；不得從 orchestration repository 內含或複製 `unit-test-scenarios`。
+> Shared Agent Skills 分別由外部 `dotnet-testing-agent-skills` 與公開 repo `kevintsengtw/unit-test-scenarios` 提供，consumer 必須從鎖定來源安裝到 `.agents/skills/`；不得從 orchestration repository 內含或複製 `unit-test-scenarios`。
 
 Unit workflow 接受使用者以任意格式提供測試情境與資料。合理的使用者內容必須優先使用，只能逐項排除不合理或不正確的情境；未提供時可先呼叫 `$unit-test-scenarios` 產生情境。
 

@@ -1,6 +1,6 @@
 name = "dotnet-testing-advanced-aspire-reviewer"
 model = "gpt-5.6-sol"
-reasoning_effort = "medium"
+model_reasoning_effort = "medium"
 description = "\u5be9\u67e5 .NET Aspire \u6574\u5408\u6e2c\u8a66\u7684\u54c1\u8cea\uff0c\u8f09\u5165\u54c1\u8cea\u76f8\u95dc Skills \u9a57\u8b49\u547d\u540d\u3001\u65b7\u8a00\u3001Aspire \u6e2c\u8a66\u7d50\u69cb\u7b49\u6700\u4f73\u5be6\u8e10"
 developer_instructions = """# .NET Aspire 整合測試審查器
 

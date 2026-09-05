@@ -4,6 +4,28 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.3.0] - 2026-09-05
+
+本版保留 Unit、TUnit、Integration、Aspire 四套各自獨立的 1 Orchestrator Skill + 4 Agent TOML 架構，重點調整 Unit 工作流程的模型與 deterministic runtime 責任邊界，並將 shared technical Skills 相容基準更新到 `dotnet-testing-agent-skills v2.4.2`。
+
+### 主要變更
+
+- **Unit model responsibility reset**：Analyzer、Writer、Executor、Reviewer 回到行為分析、測試實作、失敗診斷與語意品質判斷；移除由提示內容模擬 machine truth 的重複規則
+- **Unit deterministic runtime**：新增 phase state、multi-target barrier、natural artifact normalization、build-first execution evidence、project integrity 與 JSON／Markdown final projection
+- **上游 v2.4.2 相容**：鎖定 commit `715400f6d64e321d2faa4d8164643b412118f9c8`，同步 TUnit Writer 的 AwesomeAssertions API 名稱，並補上 API regression
+- **跨平台 setup 修正**：shared Skill checksum 以 LF canonical text 計算，避免 Windows CRLF checkout 造成鎖定檔誤判
+- **Agent TOML loader schema**：16份Agent TOML統一使用Codex正式欄位`model_reasoning_effort = "medium"`，並以loader regression防止舊欄位回退
+- **公開資產單一白名單**：`public-release-manifest.json` 成為兩條公開同步 workflow 與 strict snapshot validator 的共同來源；公開 runtime inventory 由 13 支更新為 21 支
+- **公開文件語意檢查**：strict public validator 對 v1.3.0 版本日期、runtime 計數、Unit module 計數、必要 validator 與 Agent TOML 正式欄位執行 deterministic validation
+- **Release 覆寫防護**：一般 PR merge 不會刪除既有同版 Release；只有手動執行並明確設定 `replace_existing=true` 才能重建
+
+### 驗證狀態
+
+- Packet 36 frozen candidate `38479f09caa7c00a45b2c0af60e7b76fa33eeb5a` 已完成 structured Reviewer live validation並接受
+- Packet 38 驗證紀錄：Windows 完整 Node regression 為 315/315 通過；Linux Node 22 同套件為 312 通過、0 失敗、3 個平台相依 skip，exit 0
+- v2.4.2 locked setup、四工作流程靜態相容、fresh strict public snapshot、16份Agent TOML parse與71支tracked `.mjs` syntax均通過
+- Protected Skills與samples tracked diff為0，sample byproducts已清除；Packet 37 PR-range whitespace hygiene通過
+
 ## [v1.2.1] - 2026-08-14
 
 本版修正 attempt-isolation validator 在接收名稱含點號的測試專案目錄時，誤判 canonical artifact 位於另一個 `.orchestrator` root，導致工作流程在 Analyzer 完成後錯誤中止的問題。

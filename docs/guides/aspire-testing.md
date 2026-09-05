@@ -13,7 +13,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills@v2.4.1 已安裝到 `.agents/skills/`**（Writer / Reviewer 載入 `aspire-testing` 所需；Analyzer `requiredSkills` 固定 `["aspire-testing"]`）
+- **dotnet-testing-agent-skills@v2.4.2 已安裝到 `.agents/skills/`**（Writer / Reviewer 載入 `aspire-testing` 所需；Analyzer `requiredSkills` 固定 `["aspire-testing"]`）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**
 - **Docker 必須可用（硬前置）** — Aspire 容器由 AppHost 宣告式啟動，**沒有 InMemory 退路**；Executor Step 0 一律先跑 `docker info`，Docker 不可用即中止
 - **Aspire workload 非必要** — `Aspire.AppHost.Sdk` 自 9.0.0 起以 NuGet 套件形式提供，使用 `Aspire.AppHost.Sdk` / Project SDK 的 AppHost 免安裝 workload 即可建置與測試；Executor 在 `dotnet workload list` 無 `aspire` 時會先讀 AppHost `.csproj` 確認，若為 NuGet SDK 則可跳過 workload 要求

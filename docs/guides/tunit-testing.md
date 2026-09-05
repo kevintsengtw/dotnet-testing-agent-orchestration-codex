@@ -13,7 +13,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills@v2.4.1 已安裝到 `.agents/skills/`**（Writer 載入 `tunit-fundamentals` / `tunit-advanced` 等技術型 Skill 所需）
+- **dotnet-testing-agent-skills@v2.4.2 已安裝到 `.agents/skills/`**（Writer 載入 `tunit-fundamentals` / `tunit-advanced` 等技術型 Skill 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**（`dotnet --version` 可確認）
 - **不需要 Docker**（基本 TUnit 測試不使用容器；僅 Testcontainers / WebApplicationFactory 進階場景需要）
 

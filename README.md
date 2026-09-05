@@ -7,7 +7,7 @@
 
 - [dotnet-testing Agent Orchestration for Codex](#dotnet-testing-agent-orchestration-for-codex)
   - [目前涵蓋範圍](#目前涵蓋範圍)
-  - [v1.2.0 重要變更](#v120-重要變更)
+  - [v1.3.0 重要變更](#v130-重要變更)
   - [架構概覽](#架構概覽)
   - [系統需求](#系統需求)
   - [安裝與環境設定](#安裝與環境設定)
@@ -44,6 +44,19 @@
 > **Aspire 工作流程**:執行模型為 **AppHost / `DistributedApplicationTestingBuilder`**(Aspire.Hosting.Testing,**非** `WebApplicationFactory`)+ xUnit **`dotnet test --blame-hang-timeout`**(8.x/9.x=`10m`、13.x=`15m`,非 `dotnet run`);以 **HTTP endpoint 為粒度**,`app.CreateHttpClient("name")` 名稱對齊 AppHost `AddProject("name")`,容器由 **Aspire AppHost 宣告式管理**(非程式化 Testcontainers)+ Respawn 資料隔離。Analyzer 分析 **AppHost Resource graph**;Writer 只載入單一 `aspire-testing` 技能。**需 Docker 環境**(容器由 AppHost 啟動,無 InMemory 退路;`Aspire.AppHost.Sdk` 9.0+ 為 NuGet,免安裝 workload)。呼叫 `$dotnet-testing-orchestrator-aspire`;練習素材見 `samples/aspire/practice_aspire/`,細節見 `docs/guides/aspire-testing.md`。
 
 ---
+
+## v1.3.0 重要變更
+
+v1.3.0 保留四套各自獨立的 **1 Orchestrator Skill + 4 Agent TOML** 架構，主要重整 Unit 工作流程的責任邊界與 deterministic runtime：
+
+- **模型回到測試判斷**：Analyzer、Writer、Executor、Reviewer 分別負責行為分析、測試實作、失敗診斷與語意審查，不再用累加提示規則承擔 machine truth
+- **Unit deterministic runtime**：新增 phase state、artifact normalization、coverage decision、build/test evidence、project integrity 與 final projection，共 8 個零相依 JavaScript 模組
+- **自然 artifact shape**：接受精簡或豐富的合理產出，optional prose 不作 gate；客觀矛盾、缺少必要 identity 或 evidence 才 fail closed
+- **上游相容更新**：shared technical Skills 相容基準更新為 `dotnet-testing-agent-skills v2.4.2`（commit `715400f6d64e321d2faa4d8164643b412118f9c8`）
+- **單一公開白名單**：兩條公開同步 workflow 共用 `public-release-manifest.json`，公開 snapshot 包含 16 agents、5 Codex-specific Skills 與 21 支 runtime scripts
+- **Release 覆寫防護**：一般 PR merge 不得刪除既有同版 Release；只有手動執行且明確設定 `replace_existing=true` 才能重建
+
+TUnit、Integration、Aspire 保留各自既有 runner 與工作流程架構；本版只同步 v2.4.2 必要的 AwesomeAssertions API 修正，不把 Unit runtime 結構直接套用到其他三套流程。
 
 ## v1.2.0 重要變更
 
@@ -108,7 +121,7 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 | Codex | 支援原生 SpawnAgent / multi-agent | 執行 1+4 工作流程 |
 | .NET SDK | 8.0 / 9.0 / 10.0 | 被測試專案的目標框架 |
 | Docker | 任一近期版本 | **integration / aspire 工作流程必需**（啟動真實容器；unit / tunit 不需要）。aspire 另以 `Aspire.AppHost.Sdk` NuGet 提供,免安裝 Aspire workload |
-| Node.js | 任一近期 LTS | 執行 `.codex/scripts/run-state.mjs`、`.codex/scripts/validators/` 與 optional Estimated Token Usage。全部為零相依 scripts，無需 `npm install` |
+| Node.js | 任一近期 LTS | 執行 `.codex/scripts/run-state.mjs`、Unit `.codex/scripts/unit-runtime/`、共同 validators 與 optional Estimated Token Usage。全部為零相依 scripts，無需 `npm install` |
 
 ---
 
@@ -134,6 +147,7 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 ├── scripts/
 │   ├── run-state.mjs
 │   ├── estimate-token-usage.mjs
+│   ├── unit-runtime/                                  （Unit machine truth）
 │   └── validators/                                  （四工作流程 runtime gates）
 └── skills/
     ├── dotnet-test/
@@ -147,7 +161,7 @@ Orchestrator Skill（dotnet-testing-orchestrator-{unit,tunit,integration,aspire}
 
 Writer 需要的各技術 Skill 由獨立 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 的固定 Release 提供。可選的前置情境 Skill 不內含於本 repo，consumer deployment 必須從公開 repo [`kevintsengtw/unit-test-scenarios`](https://github.com/kevintsengtw/unit-test-scenarios) 抓取。兩者取得後放入 workspace 的 **`.agents/skills/`**。
 
-Release version、managed files 與 rollback 由 `dotnet-testing-vscode-extensions` 管理；本 repository 不發布 standalone shared Skills installer。
+本 repository 不發布 standalone shared Skills installer。consumer 必須另行從 `dotnet-testing-agent-skills` 的鎖定 Release 安裝 shared Skills；目前相容基準為 `v2.4.2`（commit `715400f6d64e321d2faa4d8164643b412118f9c8`）。
 
 `unit-test-scenarios` 的抓取來源固定為公開 repo 的 `skills/unit-test-scenarios/`，目的地為 consumer workspace 的 `.agents/skills/unit-test-scenarios/`。目前驗證基準 commit 為 `d00501984383dfd0b111c33a091c48af20abec55`；orchestration release 不得攜帶該 Skill 的副本。
 
@@ -197,7 +211,7 @@ dotnet-testing-xunit-project-setup/
 │   ├── dotnet-testing-advanced-integration-{analyzer,writer,executor,reviewer}.toml
 │   └── dotnet-testing-advanced-aspire-{analyzer,writer,executor,reviewer}.toml
 ├── config.toml                   ← 本 repo 內建
-├── scripts/                      ← 本 repo 內建（run-state、estimator、runtime validators）
+├── scripts/                      ← 本 repo 內建（run-state、Unit runtime、estimator、validators）
 └── skills/
     ├── dotnet-test/                              ← 本 repo 內建
     ├── dotnet-testing-orchestrator-unit/         ← 本 repo 內建
@@ -217,7 +231,7 @@ dotnet-testing-xunit-project-setup/
 - `.codex/agents/` 有 16 個 `.toml`（unit 的 4 個 `dotnet-testing-*` + tunit / integration / aspire 各 4 個 `dotnet-testing-advanced-*-*`）
 - `.codex/skills/` 含 4 個 orchestrator skill（`dotnet-testing-orchestrator-{unit,tunit,integration,aspire}`）的 `SKILL.md`
 - `.codex/skills/` 只含五個 Codex-specific Skills；setup 會從兩個外部來源抓取 `unit-test-scenarios` 與 29 個技術型 skill 到 `.agents/skills/`
-- `.codex/scripts/` 含 `run-state.mjs`、`estimate-token-usage.mjs` 與 `validators/`
+- `.codex/scripts/` 含 `run-state.mjs`、`unit-runtime/`、`estimate-token-usage.mjs` 與 `validators/`
 - 四個 Orchestrator 中的 `node .codex/scripts/...` 路徑全部存在
 - 在 Codex 呼叫任一 `$dotnet-testing-orchestrator-{unit,tunit,integration,aspire}` 時能正確 SpawnAgent 四階段
 

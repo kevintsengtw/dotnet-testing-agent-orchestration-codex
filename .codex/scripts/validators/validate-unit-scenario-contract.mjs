@@ -152,7 +152,7 @@ function validateMarkdownScenarioIntegrity(analysis) {
 }
 
 function parseArgs(argv) {
-  const result = { workflow: "unit", analysis: "", writers: [], reviewer: "", requireReviewPass: false };
+  const result = { workflow: "unit", analysis: "", writers: [], reviewer: "", requireReviewPass: false, requireReviewBlocked: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--workflow") {
@@ -165,12 +165,17 @@ function parseArgs(argv) {
       result.reviewer = argv[++index];
     } else if (arg === "--require-review-pass") {
       result.requireReviewPass = true;
+    } else if (arg === "--require-review-blocked") {
+      result.requireReviewBlocked = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
   if (!new Set(["unit", "tunit"]).has(result.workflow)) {
     throw new Error(`--workflow must be unit or tunit, got: ${result.workflow}`);
+  }
+  if (result.requireReviewPass && result.requireReviewBlocked) {
+    throw new Error("--require-review-pass and --require-review-blocked are mutually exclusive");
   }
   return result;
 }
@@ -409,7 +414,7 @@ function validateWriters(writerPaths, effective) {
   return coverageById;
 }
 
-function validateReviewer(reviewerPath, effective, analysis, writerCoverageById, requireReviewPass) {
+function validateReviewer(reviewerPath, effective, analysis, writerCoverageById, requireReviewPass, requireReviewBlocked) {
   const reviewer = readJson(reviewerPath);
   const coverage = reviewer.userScenarioCoverage;
   if (!coverage || typeof coverage !== "object") {
@@ -429,6 +434,7 @@ function validateReviewer(reviewerPath, effective, analysis, writerCoverageById,
     fail(`${reviewerPath}: coverageComplete must be boolean`);
   }
   const acceptedUserIds = effective.filter((item) => item.source === "user").map((item) => item.scenarioId).sort();
+  const effectiveIds = effective.map((item) => item.scenarioId).sort();
   const reportedAccepted = [...(coverage.acceptedScenarioIds ?? [])].sort();
   if (JSON.stringify(acceptedUserIds) !== JSON.stringify(reportedAccepted)) {
     fail(`${reviewerPath}: acceptedScenarioIds does not match effective user scenarios`);
@@ -442,6 +448,9 @@ function validateReviewer(reviewerPath, effective, analysis, writerCoverageById,
     : acceptedUserIds;
   const writerNonImplementedIds = writerCoverageAvailable
     ? acceptedUserIds.filter((id) => !writerImplementedIds.includes(id))
+    : [];
+  const writerNonImplementedEffectiveIds = writerCoverageAvailable
+    ? effectiveIds.filter((id) => writerCoverageById.get(id)?.[0]?.status !== "implemented")
     : [];
   for (const id of writerNonImplementedIds) {
     if (!missing.includes(id)) {
@@ -495,6 +504,15 @@ function validateReviewer(reviewerPath, effective, analysis, writerCoverageById,
       fail(`${reviewerPath}: review acceptance rejected gateDecision ${reviewer.gateDecision}`);
     }
   }
+  if (requireReviewBlocked) {
+    const gateDecision = String(reviewer.gateDecision ?? "").trim().toLowerCase();
+    if (gateDecision !== "blocked") {
+      fail(`${reviewerPath}: blocked review acceptance requires gateDecision blocked`);
+    }
+    if (writerNonImplementedEffectiveIds.length === 0) {
+      fail(`${reviewerPath}: blocked review acceptance requires non-implemented effective scenario coverage`);
+    }
+  }
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -507,7 +525,7 @@ if (args.analysis) {
     ? validateWriters(args.writers, effective)
     : new Map();
   if (args.reviewer) {
-    validateReviewer(args.reviewer, effective, analysis, writerCoverageById, args.requireReviewPass);
+    validateReviewer(args.reviewer, effective, analysis, writerCoverageById, args.requireReviewPass, args.requireReviewBlocked);
   }
 } else if (args.writers.length > 0 || args.reviewer) {
   fail("--writer and --reviewer require --analysis");
@@ -515,6 +533,9 @@ if (args.analysis) {
 
 if (args.requireReviewPass && !args.reviewer) {
   fail("--require-review-pass requires --reviewer");
+}
+if (args.requireReviewBlocked && !args.reviewer) {
+  fail("--require-review-blocked requires --reviewer");
 }
 
 if (process.exitCode !== 1) {

@@ -55,7 +55,9 @@ function isAllowedCanonicalSelfRead(resolvedArtifact, resolvedRead, currentOrche
     { directory: "writer-result", suffix: ".writer-result.json" },
     { directory: "writer-repair-result", suffix: ".writer-repair-result.json" },
     { directory: "executor-result", suffix: ".executor-result.json" },
+    { directory: "executor-repair-result", suffix: ".executor-repair-result.json" },
     { directory: "reviewer-result", suffix: ".reviewer-result.json" },
+    { directory: "reviewer-repair-result", suffix: ".reviewer-repair-result.json" },
   ];
   return allowedArtifactTypes.some(({ directory, suffix }) => (
     isSameCanonicalPath(path.dirname(resolvedArtifact), path.join(currentOrchestratorRoot, directory))
@@ -63,10 +65,140 @@ function isAllowedCanonicalSelfRead(resolvedArtifact, resolvedRead, currentOrche
   ));
 }
 
+function canonicalKey(value) {
+  return process.platform === "win32" ? value.toLowerCase() : value;
+}
+
+function isCanonicalExecutorResult(resolvedPath, currentOrchestratorRoot) {
+  return (
+    isSameCanonicalPath(path.dirname(resolvedPath), path.join(currentOrchestratorRoot, "executor-result"))
+      && path.basename(resolvedPath).toLowerCase().endsWith(".executor-result.json")
+  ) || (
+    isSameCanonicalPath(path.dirname(resolvedPath), path.join(currentOrchestratorRoot, "executor-repair-result"))
+      && path.basename(resolvedPath).toLowerCase().endsWith(".executor-repair-result.json")
+  );
+}
+
+function executorTargetName(executorArtifactPath) {
+  const basename = path.basename(executorArtifactPath);
+  for (const suffix of [".executor-result.json", ".executor-repair-result.json"]) {
+    if (basename.toLowerCase().endsWith(suffix)) return basename.slice(0, -suffix.length);
+  }
+  return null;
+}
+
+function resolveExecutionEvidencePath(declaredPath, workspaceRoot, currentOrchestratorRoot, expectedTarget = null) {
+  if (typeof declaredPath !== "string" || declaredPath.trim() === "") return null;
+
+  const resolvedPath = canonical(workspaceRoot, declaredPath);
+  if (!isWithin(currentOrchestratorRoot, resolvedPath)) return null;
+
+  const relativePath = path.relative(currentOrchestratorRoot, resolvedPath);
+  const segments = relativePath.split(path.sep);
+  const evidenceDirectory = segments[0]?.toLowerCase();
+  if (evidenceDirectory !== "execution-evidence") return null;
+  if (segments.length !== 3) return null;
+  if (expectedTarget && canonicalKey(segments[1]) !== canonicalKey(expectedTarget)) return null;
+  if (!/^attempt-\d+\.execution\.json$/i.test(path.basename(resolvedPath))) return null;
+
+  return resolvedPath;
+}
+
+function resolveDeclaredExecutionEvidence(document, workspaceRoot, currentOrchestratorRoot, executorArtifactPath = null) {
+  return resolveExecutionEvidencePath(
+    document?.finalExecutionEvidencePath,
+    workspaceRoot,
+    currentOrchestratorRoot,
+    executorArtifactPath ? executorTargetName(executorArtifactPath) : null,
+  );
+}
+
+function resolveDeclaredExecutionHistory(document, executorArtifactPath, workspaceRoot, currentOrchestratorRoot) {
+  const finalEvidence = resolveDeclaredExecutionEvidence(
+    document,
+    workspaceRoot,
+    currentOrchestratorRoot,
+    executorArtifactPath,
+  );
+  if (!Array.isArray(document?.executionEvidencePaths)) {
+    return finalEvidence ? [finalEvidence] : [];
+  }
+  if (document.executionEvidencePaths.length === 0) {
+    throw new Error("executionEvidencePaths must not be empty when provided");
+  }
+
+  const target = executorTargetName(executorArtifactPath);
+  const resolved = document.executionEvidencePaths.map((declaredPath, index) => {
+    const evidencePath = resolveExecutionEvidencePath(
+      declaredPath,
+      workspaceRoot,
+      currentOrchestratorRoot,
+      target,
+    );
+    if (!evidencePath) throw new Error(`executionEvidencePaths[${index}] is not canonical for the current target`);
+    return evidencePath;
+  });
+  if (new Set(resolved.map(canonicalKey)).size !== resolved.length) {
+    throw new Error("executionEvidencePaths must contain unique paths");
+  }
+  if (!finalEvidence || !isSameCanonicalPath(resolved.at(-1), finalEvidence)) {
+    throw new Error("executionEvidencePaths must end with finalExecutionEvidencePath");
+  }
+
+  let previousAttempt = -1;
+  for (const [index, evidencePath] of resolved.entries()) {
+    const filenameAttempt = Number.parseInt(path.basename(evidencePath).match(/^attempt-(\d+)\.execution\.json$/i)[1], 10);
+    let evidence;
+    try {
+      evidence = JSON.parse(fs.readFileSync(evidencePath, "utf8"));
+    } catch (error) {
+      throw new Error(`executionEvidencePaths[${index}] is unreadable or invalid JSON (${error.message})`);
+    }
+    if (evidence?.attempt?.executionAttempt !== filenameAttempt) {
+      throw new Error(`executionEvidencePaths[${index}] attempt does not match its filename`);
+    }
+    if (filenameAttempt <= previousAttempt) {
+      throw new Error("executionEvidencePaths attempts must be strictly increasing");
+    }
+    previousAttempt = filenameAttempt;
+  }
+  return resolved;
+}
+
+function collectDeclaredCurrentExecutionEvidence({
+  artifact,
+  resolvedArtifact,
+  allowedReadPaths,
+  workspaceRoot,
+  currentOrchestratorRoot,
+}) {
+  const declaredEvidence = new Set();
+  const addExecutorPointer = (document, executorArtifactPath) => {
+    if (!isCanonicalExecutorResult(executorArtifactPath, currentOrchestratorRoot)) return;
+    const resolvedEvidence = isSameCanonicalPath(executorArtifactPath, resolvedArtifact)
+      ? resolveDeclaredExecutionHistory(document, executorArtifactPath, workspaceRoot, currentOrchestratorRoot)
+      : [resolveDeclaredExecutionEvidence(document, workspaceRoot, currentOrchestratorRoot, executorArtifactPath)].filter(Boolean);
+    for (const evidencePath of resolvedEvidence) declaredEvidence.add(canonicalKey(evidencePath));
+  };
+
+  addExecutorPointer(artifact, resolvedArtifact);
+  for (const allowedReadPath of allowedReadPaths) {
+    if (!isCanonicalExecutorResult(allowedReadPath, currentOrchestratorRoot)) continue;
+    try {
+      addExecutorPointer(JSON.parse(fs.readFileSync(allowedReadPath, "utf8")), allowedReadPath);
+    } catch {
+      // Invalid allowed-read artifacts cannot authorize execution evidence.
+    }
+  }
+  return declaredEvidence;
+}
+
 function hasForbiddenSegment(relativeValue) {
-  return relativeValue
-    .split(/[\\/]+/)
-    .some((segment) => /(?:attempt|archive|retained)/i.test(segment));
+  const segments = relativeValue.split(/[\\/]+/).filter(Boolean);
+  const basename = segments.at(-1) ?? "";
+  const marker = /(?:^|[-_.])(?:attempt|archive|retained)(?:$|[-_.])/i;
+  return segments.slice(0, -1).some((segment) => marker.test(segment))
+    || /^attempt-\d+(?:[-_.].*)?$/i.test(basename);
 }
 
 function main() {
@@ -85,7 +217,8 @@ function main() {
   const testProject = canonical(workspaceRoot, args.testProject);
   const testProjectDir = resolveTestProjectDir(testProject);
   const currentOrchestratorRoot = path.join(testProjectDir, ".orchestrator");
-  const allowedReads = new Set(args.allowedReads.map((value) => canonical(workspaceRoot, value).toLowerCase()));
+  const allowedReadPaths = args.allowedReads.map((value) => canonical(workspaceRoot, value));
+  const allowedReads = new Set(allowedReadPaths.map(canonicalKey));
   const errors = [];
   let readCount = 0;
   let writeCount = 0;
@@ -109,6 +242,25 @@ function main() {
       errors.push(`${artifactPath}: tokenEstimateInputs.writtenFiles must be an array`);
       continue;
     }
+    const declaredCurrentExecutionEvidence = collectDeclaredCurrentExecutionEvidence({
+      artifact,
+      resolvedArtifact,
+      allowedReadPaths,
+      workspaceRoot,
+      currentOrchestratorRoot,
+    });
+    const declaredCurrentExecutionWrites = new Set();
+    if (isCanonicalExecutorResult(resolvedArtifact, currentOrchestratorRoot)) {
+      const resolvedEvidence = resolveDeclaredExecutionHistory(
+        artifact,
+        resolvedArtifact,
+        workspaceRoot,
+        currentOrchestratorRoot,
+      );
+      for (const evidencePath of resolvedEvidence) {
+        declaredCurrentExecutionWrites.add(canonicalKey(evidencePath));
+      }
+    }
     for (const [index, item] of reads.entries()) {
       readCount += 1;
       const label = `${artifactPath}: readFiles[${index}]`;
@@ -122,7 +274,11 @@ function main() {
         continue;
       }
       const workspaceRelativeRead = path.relative(workspaceRoot, resolvedRead);
-      if (hasForbiddenSegment(workspaceRelativeRead)) {
+      const isDeclaredCurrentExecutionEvidence = declaredCurrentExecutionEvidence.has(canonicalKey(resolvedRead));
+      if (
+        hasForbiddenSegment(workspaceRelativeRead)
+        && !isDeclaredCurrentExecutionEvidence
+      ) {
         errors.push(`${label} contains prior-attempt/archive marker: ${item.path}`);
         continue;
       }
@@ -136,7 +292,11 @@ function main() {
         );
         if (!isWithin(currentOrchestratorRoot, resolvedRead)) {
           errors.push(`${label} references another orchestrator root: ${item.path}`);
-        } else if (!allowedCanonicalSelfRead && !allowedReads.has(resolvedRead.toLowerCase())) {
+        } else if (
+          !allowedCanonicalSelfRead
+          && !isDeclaredCurrentExecutionEvidence
+          && !allowedReads.has(canonicalKey(resolvedRead))
+        ) {
           errors.push(`${label} is not an allowed current-run artifact: ${item.path}`);
         }
       }
@@ -154,7 +314,8 @@ function main() {
         continue;
       }
       const workspaceRelativeWrite = path.relative(workspaceRoot, resolvedWrite);
-      if (hasForbiddenSegment(workspaceRelativeWrite)) {
+      const isDeclaredCurrentExecutionWrite = declaredCurrentExecutionWrites.has(canonicalKey(resolvedWrite));
+      if (hasForbiddenSegment(workspaceRelativeWrite) && !isDeclaredCurrentExecutionWrite) {
         errors.push(`${label} contains prior-attempt/archive marker: ${item.path}`);
         continue;
       }
@@ -163,7 +324,10 @@ function main() {
       if (hasOrchestratorSegment) {
         if (!isWithin(currentOrchestratorRoot, resolvedWrite)) {
           errors.push(`${label} references another orchestrator root: ${item.path}`);
-        } else if (!isSameCanonicalPath(resolvedArtifact, resolvedWrite)) {
+        } else if (
+          !isSameCanonicalPath(resolvedArtifact, resolvedWrite)
+          && !isDeclaredCurrentExecutionWrite
+        ) {
           errors.push(`${label} is not the current assignment artifact: ${item.path}`);
         }
       }

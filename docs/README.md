@@ -7,7 +7,7 @@
 | 文件         | 說明                             | 連結                                                 |
 | ------------ | -------------------------------- | ---------------------------------------------------- |
 | 安裝與環境設定 | 完整安裝步驟、系統需求、常見問題 | [SETUP.md](SETUP.md)                                 |
-| 架構總覽     | 整體架構、Mermaid 圖、設計決策   | [architecture/overview.md](architecture/overview.md) |
+| 架構總覽     | 四套 1 + 4 架構、truth 分層與發布邊界 | [architecture/overview.md](architecture/overview.md) |
 | 單元測試指南 | 指令範例、練習專案、工作流程細節 | [guides/unit-testing.md](guides/unit-testing.md)     |
 | 工作流程驗證 | Single Writer、artifact、isolation 與 runtime gates | [guides/workflow-validation.md](guides/workflow-validation.md) |
 
@@ -17,8 +17,8 @@
 
 | 文件                                                                    | 說明                                                         |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
-| [overview.md](architecture/overview.md)                                 | 整體架構圖（系統架構、SpawnAgent 流水線、工作流程、循序圖）   |
-| [unit-orchestrator.md](architecture/unit-orchestrator.md)               | 單元測試 Orchestrator：Agent Skills、Single Writer、scenario 與驗證契約 |
+| [overview.md](architecture/overview.md)                                 | 四套工作流程、角色責任、deterministic truth 與公開發布邊界 |
+| [unit-orchestrator.md](architecture/unit-orchestrator.md)               | 單元測試 Orchestrator：模型責任、Unit runtime 與驗收契約 |
 | [tunit-orchestrator.md](architecture/tunit-orchestrator.md)             | TUnit Orchestrator：`dotnet run` 執行模型、Source Generator、xUnit→TUnit 遷移 |
 | [integration-orchestrator.md](architecture/integration-orchestrator.md) | 整合測試 Orchestrator：`WebApplicationFactory`、Docker / Testcontainers、端點粒度 |
 | [aspire-orchestrator.md](architecture/aspire-orchestrator.md)           | Aspire Orchestrator：`DistributedApplicationTestingBuilder`、AppHost Resource graph |
@@ -39,7 +39,7 @@
 ## 從哪裡開始？
 
 - **第一次使用** → 先看 [SETUP.md](SETUP.md) 完成安裝，再看 [guides/unit-testing.md](guides/unit-testing.md) 試跑第一個工作流程
-- **想了解架構** → 看 [architecture/overview.md](architecture/overview.md) 的 Mermaid 圖
+- **想了解架構** → 看 [architecture/overview.md](architecture/overview.md) 的責任與 truth 分層
 - **想了解單元 Orchestrator 細節** → 看 [architecture/unit-orchestrator.md](architecture/unit-orchestrator.md)
 
 ## 歷史文件的路徑
