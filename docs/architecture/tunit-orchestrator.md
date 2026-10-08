@@ -64,7 +64,7 @@ Analyzer 從 `.csproj` 取得 `<TargetFramework>`，再向上查找方案檔，*
 
 ### 3.2 Minimal read scope 與 token-efficiency gate
 
-Analyzer 的搜尋根固定在 assigned source project 與 test project，不得從 workspace root 搜尋 `coverageInputs`、artifact schema 或下游 contract。除了 run-state 已計入的 assigned Analyzer definition，其他 `.codex/agents/**`、任何 `dotnet-testing-orchestrator-*` Skill 與 workflow definitions 都不是被測目標分析輸入；即使位於同一 fresh workspace，也由 `validate-tunit-role-read-scope.mjs --role analyzer` 拒絕並停止 Writer dispatch。
+Analyzer 的搜尋根固定在 assigned source project 與 test project，不得從 workspace root 搜尋 `coverageInputs`、artifact schema 或下游 contract。除了 run-state 已計入的 assigned Analyzer definition，其他 `.codex/agents/**`、任何 `dotnet-testing-orchestrator-*` Skill 與 workflow definitions 都不是被測目標分析輸入；即使位於同一 fresh workspace，也由 `tunit-runtime/validate-role-read-scope.mjs --role analyzer` 拒絕並停止 Writer dispatch。
 
 被測 source/project/test files、solution／集中式 project configuration、明確 migration input 與實際需要的技術型 Skills 仍可讀取。技術型 Skill 載入會隨 target 實作與模型判斷變動，因此不以「一律禁止 Skill」換取較低 token 數；gate 只排除可明確判定與 Analyzer 任務無關的 orchestration reads。
 
@@ -130,7 +130,7 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 
 ## 6. Phase 4 Reviewer
 
-讀測試碼 + 三個交接檔（analysis/writer-result/executor-result），品質審查。Reviewer 一律執行，不因 Executor 全綠而跳過；有完整審查 / re-review 兩模式。Reviewer **無 `Edit` 工具**，只記錄不修改。寫入 reviewer-result 前完成 schema 自我驗證，Write／apply_patch／shell write 沒有 error 即視為成功；不得因工具沒有額外成功訊息而讀回自己的 artifact。`validate-tunit-role-read-scope.mjs --role reviewer` 會拒絕這項非必要 self-read，但不改寫 artifact-backed correctness 結論。
+讀測試碼 + 三個交接檔（analysis/writer-result/executor-result），品質審查。Reviewer 一律執行，不因 Executor 全綠而跳過；有完整審查 / re-review 兩模式。Reviewer **無 `Edit` 工具**，只記錄不修改。寫入 reviewer-result 前完成 schema 自我驗證，Write／apply_patch／shell write 沒有 error 即視為成功；不得因工具沒有額外成功訊息而讀回自己的 artifact。`tunit-runtime/validate-role-read-scope.mjs --role reviewer` 會拒絕這項非必要 self-read，但不改寫 artifact-backed correctness 結論。
 
 **reviewer.toml 明文 7 大審查面向**：
 
@@ -169,17 +169,21 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | `*.executor-result.json` | Executor | `.orchestrator/executor-result/` |
 | `{ClassName}.reviewer-result.json` | Reviewer | `.orchestrator/reviewer-result/` |
 | `run-state.json` | Orchestrator | `.orchestrator/` |
+| `tunit-workflow-result.json`／`.md` | TUnit runtime renderer | `.orchestrator/workflow-result/` |
 
 **`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），且含 Codex 強化的階段內 instrumentation：
 
 - `phases.{analyzer,writer,executor,reviewer}.assignments[]`：逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `dispatchAcceptLatencyMs` / `produceSpanMs`（每筆獨立量測；平行 assignment 不得批次補 stamp）
 - `phaseDurations.{phase}.durationMs`（+ `source: "run-state"`）
+- `terminalDecision` 與 `terminalCloseout.lifecycle`：完整四階段從 canonical reviewer-result `gateDecision` 推導，early terminal 從 phase failure truth 推導
 - `redispatchEvents[]`（撞 agent thread-limit / capacity / stream retry / nested spawn fail / phase timeout / artifact missing 等已知 runtime 不穩定家族的補派事件）、`boundedRedispatchCount`、`restartCount`、`executorFixRounds`
 - 量不到的細項一律填 `null` + `notes`，不得省略欄位或改用短名
 
 正式 phase timing proof 必須讀實體 `run-state.json` 的 `dispatchIssuedAt → artifactReadyAt → completedAt` 計算；不得從對話敘述、subagent 回傳文字、人工推估或 token report 推導。
 
-> **Token 用量口徑**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source（實證確認），本 workflow 不回報正式 token usage。流程完成後可輸出 `Estimated Token Usage` optional telemetry，僅作 visible-context 相對成本比較，不可用於 billing 或 correctness gate。
+TUnit 的 `phaseDurations`、overall terminal boundary、terminal decision 與 profiling 由 `run-state.mjs finalize` 確定性產生，模型不得自行寫入。strict validate 通過後，由 `tunit-runtime/workflow-result.mjs` 讀取 run-state 記錄的四角色 canonical artifacts，輸出 machine JSON 與固定七區塊 Markdown；TUnit 結果只呈現 `dotnet run`、`SourceGenerated` 與 case accounting，不套用 Unit 的 TRX、Cobertura 或程式碼 coverage 欄位。
+
+> **Token 用量口徑**：TUnit 在 init 成功後、Analyzer dispatch transaction 前啟動自有 observer，依明確 root turn、SQLite 唯讀代理關係與 agentId 收集 runtime 用量。完整 Lite HTML 與 Standard credit 互動沿用 Unit／Integration 格式，canonical renderer 在七區塊之後的回覆尾端提供連結、file URL、狀態及 note；不改 presentation receipt、測試裁決或官方耗時。缺漏不補零，歷史 recovery 沒有 binding 時明列 unavailable；本次人工驗收待使用者執行。
 
 ---
 
@@ -220,3 +224,7 @@ FluentValidation 11.x（含 TestHelper API，不需另裝 FluentValidation.TestH
 > **命名空間陷阱**：FakeTimeProvider 套件名為 `Microsoft.Extensions.TimeProvider.Testing`，命名空間卻是 `Microsoft.Extensions.Time.Testing`（少了 `Provider`）。
 >
 > 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需由 standalone installer 以精確 Release tag 安裝到 `.agents/skills/`。
+
+## Runtime 隔離
+
+TUnit Skill 的命令與 runtime 相依檔全部位於 `.codex/scripts/dotnet-testing-codex-full/tunit-runtime/`。本地 14 支模組含 `run-state.mjs`、validators、三個自有 usage modules，並由 `asset-manifest.json` 宣告 隨 bundle 安裝；指紋只涵蓋該目錄列出的模組。搬移保留既有 phase、terminal decision、artifact schema、固定七區塊及 presentation receipt 契約。

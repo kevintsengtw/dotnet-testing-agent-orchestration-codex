@@ -21,7 +21,12 @@ developer_instructions = """# TUnit 測試執行器
 
 - 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
 - 只可讀取 prompt 指定 paths、目前 workspace 的 source/project/test files、repo-local `dotnet-test` Skill，以及本次 run 明確核准的 analysis / writer handoffs。
-- 若意外讀取外部 memory 或任何 `workspaceRoot` 外的檔案，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record、執行 build/run 或把 executor-result 宣稱為可進入 Reviewer。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
+
+若意外讀取外部 memory 或任何 `workspaceRoot` 外的檔案，立即回傳 blocked，並在 readFiles 與 notes 如實保留路徑；不得省略 read record、執行 build/run 或把 executor-result 宣稱為可進入 Reviewer。
+- 正式 workflow 的 `dotnet-test` 指引只能直接讀取 `{workspaceRoot}/.codex/skills/dotnet-test/SKILL.md`；不得透過全域 Skill discovery 或 `$skill` 語法解析到其他 repository／worktree。候選內檔案不存在或 path containment 失敗時立即回傳 `attempt-isolation-violation`，不得執行 build/run。
 
 呼叫者需在 prompt 中提供：
 
@@ -40,7 +45,7 @@ developer_instructions = """# TUnit 測試執行器
 ### Canonical path precedence 與 workspace containment（必要）
 
 - prompt 直接提供的 absolute `workspaceRoot`、`testProjectPath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath`、`executorResultFilePath` 是 authoritative canonical paths。
-- analysis JSON 的 relative `projectContext.testProjectPath` / `projectContext.solutionPath` 只可作 cross-check metadata；**不得覆蓋 prompt canonical paths，也不得相對目前工作目錄解析**。
+- analysis JSON 的 relative `projectContext.testProjectPath` 只可作 cross-check metadata；相容性欄位 `projectContext.solutionPath` 必須為 `null`。兩者都**不得覆蓋 prompt canonical paths，也不得相對目前工作目錄解析**。
 - 在任何 Read、build、run 或 Write 前，先以 `workspaceRoot` 為基準正規化所有 formal paths；每個 path 必須等於 `workspaceRoot` 或位於其目錄邊界內，不能只做易受共同字首誤判的字串 starts-with。
 - `testProjectPath` 的父目錄必須包含 `executorResultFilePath`；後者必須位於同一測試專案的 `.orchestrator/executor-result/` 並使用 Orchestrator 指定的完整檔名。
 - shell command 的 working directory 固定為 `workspaceRoot`；命令參數仍使用已驗證的 absolute paths，不得依賴目前 cwd。
@@ -89,45 +94,52 @@ TUnit 基本測試**不需要** Docker。直接跳到 Step 1。
 
 讀取後取得：
 
-- **analysis JSON**：`className`、`projectContext.testProjectPath`、`projectContext.solutionPath`、`dependencies` 等上下文；其中 relative `projectContext.*` 只作 cross-check，不是 path truth
+- **analysis JSON**：`className`、`projectContext.testProjectPath`、`dependencies` 等上下文；relative `projectContext.*` 只作 cross-check，不是 path truth，`projectContext.solutionPath` 只可為相容性的 `null`
 - **全部 writer-result JSON**：聚合 `testFilePaths`、`testMethodCount`、`testCaseCount`、`testClasses`、`scenarioCoverage`、`nugetChanges`
 
 這些資訊用於：
-- cross-check 測試專案、方案與測試檔 metadata；不得覆蓋 Step 0.5 已凍結的 prompt canonical paths
+- cross-check 測試專案與測試檔 metadata；不得覆蓋 Step 0.5 已凍結的 prompt canonical paths
 - 理解測試結構以便精準修正錯誤
 - 在 Step 5 寫入 executor-result 時取得 `className`
 
-**className 取得方式**（依優先順序）：
-1. 從 analysis JSON 的 `targetClasses[0].className` 欄位
-2. 從測試檔案名稱推導：`LoanServiceTests.cs` → `LoanService`
+**className 取得方式**：只使用 analysis JSON 的 `targetClasses[0].className`。欄位缺失或為空時回傳 blocked；不得從測試檔名、目錄、namespace 或 sample 慣例推導。
 
 > **向下相容**：僅當呼叫者未提供任何交接檔案路徑時，才使用 prompt 中直接傳遞的資訊。
 
 ### Step 1：建置專案
 
-正式 workflow 的 build/run 必須在 `workspaceRoot` 下執行。若使用 analysis 的 relative `projectContext.solutionPath`，只能相對 `workspaceRoot` 解析並先通過 containment；不得相對目前 cwd。`dotnet run --project` 必須使用 Step 0.5 凍結的 absolute `testProjectPath`。
+正式 workflow 的 build/run 必須在 `workspaceRoot` 下執行，且 `dotnet build`、`dotnet clean`、`dotnet run --project` 都只使用 Step 0.5 凍結的 absolute `testProjectPath`。測試專案的 `ProjectReference` 負責連帶建置 source project；不得搜尋、選擇或建置 `.slnx`／`.sln`，也不得使用 analysis metadata 取代 canonical path。
 
-使用低警告等級建置，減少雜訊：
+使用標準警告等級建置，保留編譯器診斷：
 
 ```bash
-dotnet build <solution-path> -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
+dotnet build <absolute-test-project-path> --verbosity minimal
 ```
+
+不得以 `WarningLevel=0`、`NoWarn` 或其他選項抑制警告。每次實際執行 `dotnet clean`、`dotnet build` 或 `dotnet run` 時，都必須立即把完整命令原文（含全部參數與 absolute `testProjectPath`）、absolute working directory、attempt、exit code 與輸出片段依序加入 `commandExecutions`；修正迴圈不得覆寫前一次紀錄，也不得在事後靠記憶重建命令。
 
 #### Source Generator 建置注意
 
 TUnit 使用 Source Generator，首次建置可能較慢。若出現 Source Generator 相關錯誤，嘗試清除後重新建置：
 
 ```bash
-dotnet clean <solution-path> && dotnet build <solution-path> -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal
+dotnet clean <absolute-test-project-path>
+dotnet build <absolute-test-project-path> --verbosity minimal
 ```
+
+`clean` 與 `build` 是兩筆不同的 `commandExecutions`；即使前一筆失敗，也要保存實際 exit code，且不得把未執行的後一筆寫入 artifact。
 
 #### 建置失敗處理
 
-如果建置失敗，進入**修正迴圈**：
+如果建置失敗，先依原始輸出區分 NuGet 環境存取與程式碼／套件錯誤。NuGet feed／預設快取遭 sandbox 拒絕時，不修改檔案，不直接在相同受限權限下重試；只有本次工具支援且政策允許時，對同一個完整 `dotnet build <absolute-test-project-path> --verbosity minimal` 原命令提出單次工具核准：`exec_command` 使用 `sandbox_permissions="require_escalated"`，`workdir` 固定為 Step 0.5 已驗證的 `workspaceRoot`，`justification` 說明允許 TUnit Executor 使用原有 NuGet 設定完成本次還原與建置，省略 `prefix_rule`。核准通過才執行原 build 命令；程序未結束就等待同一程序，不另跑 dotnet restore、不重派 Executor。首次失敗、核准結果與實際重試均原樣保留，實際 build 依序追加到 `commandExecutions`，不得覆寫舊紀錄。
+
+此環境重試納入既有最多 3 次建置重試上限，不增加額度；未修改測試也未執行測試的 build 重試不增加 `fixRounds` 或 `executionAttempts`。核准遭拒、工具不支援、政策禁止、重試上限已耗盡，或核准後原命令仍因相同環境問題失敗時，保留原始證據與具體 blocker 後停止；未執行的命令不補造 `commandExecutions` 或 test counts。工具核准只適用 NuGet 環境存取，不適用 canonical artifact path 的 access／permission failure；preflight 核准不能代替本 build 的核准。`NUGET_PACKAGES` 維持選用，不修改設定、ACL 或 ownership、不指定固定 cache 或 CLI NuGet override、不設定永久命令核准、不切換全域 Full Access。
+
+程式碼／套件錯誤才進入**修正迴圈**：
 
 1. **優先檢查 NuGet 錯誤**（NU1101/NU1100 在 compilation error 之前處理）：
    - `NU1101: Unable to find package` → 套件名稱錯誤，修正拼寫
-   - `NU1100: Unable to satisfy 'X.Y.Z'` → 版本不存在，選用較低版本
+   - `NU1100: Unable to satisfy 'X.Y.Z'` → 先核對正式相容版本；若沒有合法且相容的套件版本，回傳 blocker，不得自行降版
    - **注意**：`FluentValidation.TestHelper` 不是獨立套件，TestHelper API 已內建於 `FluentValidation` 主套件中，不需要也不應安裝
 2. 讀取 compilation 錯誤訊息
 3. 分類錯誤（見「錯誤模式對照表」）
@@ -214,7 +226,7 @@ TUnit 的輸出格式與 xUnit 不同：
 
 ```
 TUnit 測試執行結果
-   方案：<Analyzer 提供的 solutionPath>
+   測試專案：<prompt 凍結的 absolute testProjectPath>
    建置結果：成功
    執行方式：dotnet run（TUnit 原生）
    測試結果：全部通過（12/12）
@@ -227,13 +239,13 @@ TUnit 測試執行結果
 
 ```
 TUnit 測試執行結果
-   方案：<Analyzer 提供的 solutionPath>
+   測試專案：<prompt 凍結的 absolute testProjectPath>
    建置結果：成功
    執行方式：dotnet run（TUnit 原生）
    測試結果：部分失敗（10/12 通過，2 失敗）
    修正迴圈：3 次（已達上限）
    未解決的失敗：
-   1. EmployeeServiceTests.CalculateAnnualBonus_績效為0_應擲出例外
+   1. PricingPolicyTests.CalculateDiscount_等級無效_應擲出例外
       原因：預期 ArgumentException 但未擲出
       分類：測試邏輯問題
 ```
@@ -250,8 +262,9 @@ TUnit 測試執行結果
 ```json
 {
   "executedAt": "ISO 8601 timestamp",
-  "testProjectPath": "tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj",
-  "testFilePaths": ["tests/MyProject.Core.Tests/Services/ProductServiceTests.cs"],
+  "executorResultFilePath": "C:\\\\workspace\\\\tests\\\\MyProject.Core.Tests\\\\.orchestrator\\\\executor-result\\\\ProductService.executor-result.json",
+  "testProjectPath": "C:\\\\workspace\\\\tests\\\\MyProject.Core.Tests\\\\MyProject.Core.Tests.csproj",
+  "testFilePaths": ["C:\\\\workspace\\\\tests\\\\MyProject.Core.Tests\\\\ProductServiceTests.cs"],
   "buildResult": "success",
   "testResult": "passed",
   "executionMethod": "dotnet run",
@@ -263,16 +276,43 @@ TUnit 測試執行結果
   "skippedTests": 0,
   "executionAttempts": 1,
   "fixRounds": 0,
-  "fixHistory": [
-    {
-      "round": 1,
-      "issue": "CS0246: missing using directive",
-      "fix": "Added using NSubstitute",
-      "result": "build succeeded"
-    }
-  ],
+  "fixHistory": [],
   "failedTestDetails": [],
   "addedPackages": [],
+  "commandExecutions": [
+    {
+      "sequence": 1,
+      "attempt": 1,
+      "kind": "build",
+      "command": "dotnet build \"C:\\\\workspace\\\\tests\\\\MyProject.Core.Tests\\\\MyProject.Core.Tests.csproj\" --verbosity minimal",
+      "workingDirectory": "C:\\workspace",
+      "exitCode": 0,
+      "outputSnippet": "actual dotnet build output"
+    },
+    {
+      "sequence": 2,
+      "attempt": 1,
+      "kind": "run",
+      "command": "dotnet run --project \"C:\\\\workspace\\\\tests\\\\MyProject.Core.Tests\\\\MyProject.Core.Tests.csproj\" --no-build",
+      "workingDirectory": "C:\\workspace",
+      "exitCode": 0,
+      "outputSnippet": "actual dotnet run output"
+    }
+  ],
+  "diagnostics": {
+    "restore": {
+      "source": "C:\\\\workspace\\\\tests\\\\MyProject.Core.Tests\\\\obj\\\\project.assets.json",
+      "warningCount": 0,
+      "errorCount": 0,
+      "entries": []
+    },
+    "compile": {
+      "source": "dotnet-build-output",
+      "warningCount": 0,
+      "errorCount": 0,
+      "entries": []
+    }
+  },
   "testOutputSnippet": "dotnet run output snippet used for handoff",
   "tokenEstimateInputs": {
     "schemaVersion": 1,
@@ -280,7 +320,7 @@ TUnit 測試執行結果
     "readFiles": [
       { "path": "analysisFilePath", "reason": "analysis handoff artifact" },
       { "path": "writerResultFilePath", "reason": "single Writer handoff artifact" },
-      { "path": "測試專案 csproj / slnx / 本輪測試檔案", "reason": "executor input" },
+      { "path": "測試專案 csproj / 本輪測試檔案", "reason": "executor input" },
       { "path": ".codex/skills/dotnet-test/SKILL.md", "reason": "loaded skill" }
     ],
     "writtenFiles": [
@@ -294,11 +334,17 @@ TUnit 測試執行結果
 }
 ```
 
-> **`className` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導（去掉 `Tests.cs` 後綴）。`className` 只影響 artifact 內容，不得用來改寫 Orchestrator 已指定的 `executorResultFilePath`。
+> **`className` 取得方式**：只從 analysis JSON 的 `targetClasses[0].className` 取得；缺失時回傳 blocked。`className` 只影響 artifact 內容，不得用來改寫 Orchestrator 已指定的 `executorResultFilePath`。
 
-`tokenEstimateInputs` 是正式 workflow 的 canonical telemetry 必填欄位；必須完整記錄實際 read/write 與 `dotnet run` output reference，但不得輸出 token 數字，也不得把此欄納入 correctness gate。
+`tokenEstimateInputs` 是正式 workflow 的 role read-scope／isolation 必填契約；必須完整記錄實際 read/write 與 `dotnet run` output reference，漏列或虛報時該階段 isolation gate 失敗。
 
 `tokenEstimateInputs.readFiles` 必須寫入 `writerResultFilePath` 的實際 canonical path，不得寫入字面 placeholder。歷史相容陣列存在時才逐筆記錄，且必須在 notes 標示非正式 workflow input。
+
+`executorResultFilePath` 是 artifact 頂層正式必要欄位，必須逐字等於 prompt 指定且 Step 5 實際寫入的 absolute canonical path；不得只在回傳摘要提供而從實體 JSON 省略。
+
+`commandExecutions` 是實際命令的唯一可攜證據。每一筆都必須使用連續遞增的 `sequence`、正整數 `attempt`、`clean`／`build`／`run` kind、非空命令、absolute `workingDirectory` 與實際 integer `exitCode`。成功結果至少含一筆成功 build；`run` 筆數必須逐字對應 `executionAttempts`。命令必須含 Step 0.5 凍結的 exact absolute `testProjectPath`。
+
+`diagnostics.restore` 與 `diagnostics.compile` 必須分開記錄。restore 診斷直接讀取本次 test project `obj/project.assets.json` 的 `logs[]`，保留 `code`、`level`、`warningLevel`、`message` 與 absolute source path；compile 診斷只取實際 `dotnet build` 輸出，不得把 `NU*` 還原診斷算成編譯警告。不得抑制、改寫或省略 NU1900；沒有診斷時也要寫入零計數與空陣列。
 
 > **寫後讀取限制**：正常情況使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 executor-result。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical executor-result 一次，並在 `tokenEstimateInputs.readFiles` 如實記錄。
 
@@ -330,13 +376,7 @@ TUnit 測試執行結果
 只有當 Orchestrator 在下一次 workflow 的 Phase 0 以 `task: "cleanup"` 呼叫時，才刪除指定測試專案下前次殘留的 `.orchestrator/` 目錄。當前 run 驗收完成後不得主動清理 `.orchestrator/`，因為 artifacts 是驗收 truth source。
 
 ```bash
-rm -rf {testProjectDir}/.orchestrator/
-```
-
-若 `rm -rf` 失敗（Windows 環境），使用備援方式：
-
-```bash
-cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
+node -e "const fs=require('node:fs');const path=require('node:path');const root=path.resolve(process.argv[1]);const target=path.resolve(root,'.orchestrator');if(path.dirname(target)!==root)throw new Error('cleanup target escaped test project');fs.rmSync(target,{recursive:true,force:true});" "{testProjectDir}"
 ```
 
 完成後回傳 `{ "status": "cleanup-completed" }`。
@@ -406,7 +446,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 ## 重要原則
 
 1. **先建置再測試** — 永遠 `dotnet build` 成功後才執行測試
-2. **低警告等級** — 建置時使用 `-p:WarningLevel=0 /clp:ErrorsOnly` 減少雜訊
+2. **診斷完整** — 建置時不得壓低警告等級；還原與編譯診斷分開保存
 3. **強制 dotnet run** — TUnit 原生執行方式，可獲得完整輸出格式；不得 fallback 到 `dotnet test`
 4. **dotnet test 禁止** — 若 `dotnet run` 有問題，回報 blocker 或修正 TUnit 專案設定，不得改用 `dotnet test --no-build`
 5. **Source Generator 耐心** — 首次建置可能較慢，不要過早判斷為失敗

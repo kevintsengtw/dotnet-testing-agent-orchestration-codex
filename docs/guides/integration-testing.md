@@ -13,7 +13,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills@v2.4.2 已安裝到 `.agents/skills/`**（Writer 載入 `webapi-integration-testing` / `aspnet-integration-testing` / `testcontainers-database` / `testcontainers-nosql` 所需）
+- **dotnet-testing-agent-skills@v2.4.5 已安裝到 `.agents/skills/`**（Writer 載入 `webapi-integration-testing` / `aspnet-integration-testing` / `testcontainers-database` / `testcontainers-nosql` 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**
 - **Docker 必須可用**（有容器需求時 Executor 會先 `docker info`；純 InMemory 測試才可略過）
 
@@ -29,9 +29,10 @@ $dotnet-testing-orchestrator-integration
 
 觸發後，提供下列資訊給 Orchestrator：
 
+- 目前 repository／workspace 的絕對根目錄；下列範例路徑都以此根目錄為基準
 - 被測 WebAPI 專案路徑
 - 目標 Controller 名稱（或端點範圍）
-- 測試專案路徑（`.csproj`）
+- 既有測試專案的 exact `.csproj` 路徑；沒有測試專案時才明確要求建立
 - 簡短說明（可選，如「使用 PostgreSQL 容器」）
 
 Orchestrator 會透過 SpawnAgent 依序自動啟動 Analyzer → Writer → Executor → Reviewer，全程維護 `run-state.json`。
@@ -220,9 +221,11 @@ Executor 與 Reviewer 都只用 `dotnet test`（這是與 TUnit 工作流程的�
 ### Phase 2：Writer 撰寫
 
 - 讀 analysis.json，按 `requiredSkills` 載入 Skills
+- 正式 isolated run 只從該次 `workspaceRoot/.agents/skills/**` 讀取 canonical Skills；不回退全域安裝、來源 repository或 legacy `.codex/skills`
 - 建立基礎設施（`CustomWebApplicationFactory` + Collection Fixture + `IntegrationTestBase`）與測試類別；依 `dbRegistrationAnalysis` 決定 DbContext 置換策略
 - 中文三段式命名；HTTP 斷言用 AwesomeAssertions.Web；ProblemDetails 用 `.And.Satisfy<T>()`
 - 每個 Controller 固定一個 `single`／`full` Writer，同時完成基礎設施與全部測試案例；不依 `scenarioCount` split
+- 正式 validators 使用 `--require-single-writer`，並核對四角色 artifact 的 canonical path identity；Analyzer `endpointCount` 必須與 endpoint catalog 一致
 - 寫 `writer-result.json`；Orchestrator 讀實體檔做 artifact gate（缺欄 / 範圍不符可 bounded re-dispatch 最多 2 次）
 
 ### Phase 3：Executor 建置與執行
@@ -231,6 +234,7 @@ Executor 與 Reviewer 都只用 `dotnet test`（這是與 TUnit 工作流程的�
 - 解讀 xUnit 通過/失敗/略過數（來自實際輸出，禁編造）
 - bounded 修正（補 using、add-only 補套件、DI/ConnectionString/EnsureCreated）最多 3 輪；**禁升降套件版本**、**禁改 production code**（DB Provider 衝突 Program.cs 環境條件為唯一窄例外）
 - 寫 `executor-result.json`（`executionMethod` / `dockerStatus` / `buildResult` / `testResult` / 通過數 / `fixRounds` / `productionBugFixes`）；Orchestrator 驗收 Gate 確認用 `dotnet test`
+- 多 target 共用測試專案時，最後一個 Executor 額外執行完整未過濾 project regression；artifact 的 all-target Writer/test file union 與總案例數由 `--project-regression`、`--project-writer` gate 驗證
 
 ### Phase 4：Reviewer 審查
 
@@ -239,4 +243,4 @@ Executor 與 Reviewer 都只用 `dotnet test`（這是與 TUnit 工作流程的�
 - 寫 `reviewer-result.json`（`overallRating` / `issues` / `missingTestCases` / `endpointCoverage` / `qualityGates`）
 - Orchestrator 呈現完整結果後**等待使用者決定**是否啟動修改流程（禁自動觸發、禁預先授權）
 
-> 各階段耗時取自 `run-state.json` 的 wall-clock 時間戳。**Token 用量**：正式 billing token 無可靠 truth source 故不回報；四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {測試專案}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 optional 的 `Estimated Token Usage`（僅供 visible-context 相對成本比較，不可用於計費或 correctness gate）。細節見 [token-usage-estimation.md](token-usage-estimation.md)。
+> 各階段耗時取自 `run-state.json` 的 wall-clock 時間戳。正式 billing token 無可靠 truth source，因此不回報 token usage，也不提供估算欄位。

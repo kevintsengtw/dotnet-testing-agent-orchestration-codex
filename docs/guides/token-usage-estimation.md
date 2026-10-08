@@ -1,4 +1,43 @@
-# Estimated Token Usage 估算使用指南
+# Token 實際用量與 credit 換算（含歷史估算說明）
+
+v1.3.1 已移除 codex-full 估算器。Unit、TUnit、Integration、Aspire 皆完成各自獨立的完整實際用量 HTML、Standard credit 換算及絕對路徑交付的人工功能驗收。Unit 讀寫宣告使用 `declaredAccess`，不作 token 估算，也不證明讀取完整性。版本更新細節見 [v1.3.1 更新說明](v1.3.1-release-notes.md)。
+
+## 目前版本：四套 workflow HTML 實際用量
+
+四套 workflow 各自擁有 `usage-session.mjs`、`usage-report.mjs`、`usage-observer.mjs`，沒有跨 workflow import。TUnit／Integration／Aspire 在 run-state 初始化後由 Skill 啟動用量 observer；Unit 在 workflow start 成功後、Analyzer 前啟動，避免等待頁被初始化視為殘留。入口立刻建立 HTML 等待頁；Unit／TUnit／Aspire canonical renderer 在各自既有區塊及 Profiling Summary 後，以尾端獨立的 `HTML token-usage report` 提供可點擊的 HTML 絕對路徑、文字區塊中的原生絕對路徑、可複製的 file URL、收集狀態及說明，位置與 Integration 一致，維持原區塊順序與 presentation receipt；Integration 沿用自己的 link 入口，亦交付絕對路徑。主代理回合結束且三次快照一致後，背景程序更新同一份 HTML。
+
+資料來源是逐請求 `token_usage_record.usage`；依明確 root thread／root turn、SQLite 唯讀代理關係及 run-state agentId 核對，response ID 去重，保留必要修正回合。不同 root turn 不混算；同一 root turn 混入其他工作則無法分離。需要可讀的 session 與受支援的 Codex state schema。優先使用同一 Node 程序的內建 SQLite 唯讀查詢，不需要額外啟動 Python；內建讀取方式不可用時，才依序嘗試現有的 python、python3。每次失敗的讀取方式、錯誤碼、exit code 與 stderr 都保留在 diagnosticDetails，runtime 不會自行安裝依賴。
+
+報告列出未快取輸入、快取輸入、輸出、總量與請求數。推理已包含在輸出，不重複加總；資料缺漏不補零。`observed-complete` 表示已觀察完成與穩定，不代表帳務結算。中止、不支援、逾時或背景程序失敗均保留狀態與診斷，不改寫測試結果或 run-state 計時。unsupported 表示未啟動背景程序，重新整理不會恢復收集；只有 pending／observing 會繼續等待資料。
+
+四套 workflow 使用與 codex-lite-lab 相同的完整 HTML 模板、用量表、說明文字及選用 Standard credit 換算互動。模板各自獨立保存在所屬 renderer，不跨 repo 或 workflow 載入。各請求的模型、推理強度與服務模式取自同回合、該請求之前最近的 `turn_context`，依代理與設定分組換算；未知模型、非 Standard 模式、缺漏用量不提供合計，服務模式缺漏時明確標示 Standard 前提試算。前端使用模板中註明日期的費率，不呼叫模型，也不代表實際扣抵。四套人工功能驗收已完成；Aspire 保留八項回報、原始環境例外與已接受的 Reviewer 警告，HTML 位於回覆最尾端。
+
+產物位於本次測試專案的 `.orchestrator/usage/{runIdentifier}/`：`binding.json`、`captures.json`（僅允許欄位）、`report.json`、`report.html`、`status.json` 與 observer 程序記錄。HTML 可離線開啟，不載入外部資源；等待頁開啟後可重新整理。每個 observer 最多執行兩小時，不自動重啟或覆寫另一個 run；run-state 建立前中止時沒有用量報告。
+
+## Standard credit 試算與模型支援
+
+在 HTML 展開選用的 credit 區塊並使用換算按鈕。費率適用 ChatGPT token-based credits，不適用 API key 或舊制企業方案；頁面使用本版的 2026-10-07 費率快照，不會自動查詢最新費率或企業帳戶餘額。新版新增 `gpt-6.1-sol`；下表其餘三個模型原已支援，本版保留。
+
+| 模型 | 每百萬未快取輸入 | 每百萬快取輸入 | 每百萬輸出 |
+|---|---:|---:|---:|
+| `gpt-6.1-sol` | 50 credits | 2.5 credits | 250 credits |
+| `gpt-6-sol` | 50 credits | 5 credits | 250 credits |
+| `gpt-6-luna` | 2.5 credits | 0.25 credits | 12.5 credits |
+| `gpt-6-astra` | 250 credits | 25 credits | 1,250 credits |
+
+```text
+credits = (未快取輸入 × 輸入費率 + 快取輸入 × 快取費率 + 輸出 × 輸出費率) ÷ 1,000,000
+```
+
+推理強度不另乘倍率；推理 tokens 已含在輸出。GPT-6.1 Sol 三欄各一百萬 tokens 的試算為 `50 + 2.5 + 250 = 302.5 credits`。四份人工流程產生的 HTML 皆已核對此換算；正式流程模型仍是 `gpt-5.6-sol／medium`，沒有以 GPT-6.1 Sol 重跑四角色或量測企業帳戶實際扣抵。
+
+CLI 結束摘要的 total 只包含主代理未快取 input 加 output，cached 另列；HTML 的整個 workflow 總量包含主代理、全部子代理與快取。兩種範圍不同，不應直接比對總量。
+
+## 歷史估算器（命令不適用目前版本）
+
+以下保留舊版設計供歷史參考。
+
+## 舊版設計（歷史參考）
 
 本文件說明四個測試工作流程(unit / tunit / integration / aspire)共用的 **Estimated Token Usage(估算式 token 用量)** 功能:它**估算**什麼、怎麼跑、輸出長怎樣、以及**明確的限制與已知偏差**。
 
@@ -8,7 +47,7 @@
 
 ## A. 估算原理
 
-估算器 `.codex/scripts/estimate-token-usage.mjs` 在四階段完成後執行,流程:
+估算器 `.codex/scripts/dotnet-testing-codex-full/estimate-token-usage.mjs` 在四階段完成後執行,流程:
 
 1. 讀 `{testProjectDir}/.orchestrator/run-state.json`,取每個 phase(analyzer / writer / executor / reviewer)的 assignment(phase key 大小寫不敏感)。
 2. 對每個 assignment,以**內建 chars 啟發式**對其**可觀測材料**估 token:
@@ -24,19 +63,19 @@
 
 ## B. 執行方式
 
-估算器隨 `.codex/` 一起部署（`.codex/scripts/estimate-token-usage.mjs`），**零相依、無需 `npm install`**,有 Node.js 即可從消費者專案根目錄執行:
+估算器隨 `.codex/` 一起部署（`.codex/scripts/dotnet-testing-codex-full/estimate-token-usage.mjs`），**零相依、無需 `npm install`**,有 Node.js 即可從消費者專案根目錄執行:
 
 ```bash
 # 對某測試專案產生估算（不需要安裝任何套件）
-node .codex/scripts/estimate-token-usage.mjs --test-project <測試專案路徑>
+node .codex/scripts/dotnet-testing-codex-full/estimate-token-usage.mjs --test-project <測試專案路徑>
 
 # 範例（aspire net9 sample）
-node .codex/scripts/estimate-token-usage.mjs \
+node .codex/scripts/dotnet-testing-codex-full/estimate-token-usage.mjs \
   --test-project samples/aspire/practice_aspire/tests/Practice.Aspire.AppHost.Tests
 
 # EXP-00 之後可額外量測 main-thread Orchestrator contract。
 # 此數值獨立呈現，不會改變既有 summary.totalTokensEstimated 語意。
-node .codex/scripts/estimate-token-usage.mjs \
+node .codex/scripts/dotnet-testing-codex-full/estimate-token-usage.mjs \
   --test-project samples/unit/practice/tests/Practice.Core.Net10.Tests \
   --orchestrator-contract .codex/skills/dotnet-testing-orchestrator-unit/SKILL.md
 ```

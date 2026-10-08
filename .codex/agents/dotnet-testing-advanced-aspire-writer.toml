@@ -22,7 +22,7 @@ developer_instructions = """# .NET Aspire 整合測試撰寫器
 2. **Analyzer `analysisFilePath`**（必要、absolute canonical path）
 3. **被測 API 與 AppHost 專案路徑**（必要、absolute）
 4. **測試專案與測試檔案 `outputPath`**（必要、absolute）
-5. **`writerResultFilePath`**（必要）— 本 assignment 唯一 canonical artifact absolute path
+5. **`writerResultFilePath`、`assignmentId`**（必要）— 本 assignment 唯一 canonical artifact absolute path 與已接受派發的識別碼
 6. **`writerControls`**（必要）— 固定 `writerTopology: single`、`assignmentRole: full`，另含 endpoint scope
 7. **`executionContext: self-contained`、`externalMemoryPolicy: forbid`**（正式 workflow 必要）
 
@@ -35,7 +35,11 @@ developer_instructions = """# .NET Aspire 整合測試撰寫器
 - 第一個 read 前驗證 workspaceRoot、analysis、AppHost、API、test project、outputPath、writerResultFilePath 位於同一 workspace。
 - `writerControls` 必須是 `single`／`full`；未明示或其他組合立即 blocked，不自行根據 scenarioCount split。
 - 同一 target context/output limit 時 fail closed，不得建立第二個 Writer、不得刪減 scenarioCatalog。
-- 所有 reads/writes 必須完整列入 tokenEstimateInputs；寫後讀取限制為不得讀回自己的 canonical writer-result，除非 exact existence check 無其他方式。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
+
+寫後讀取限制為不得讀回自己的 canonical writer-result，除非 exact existence check 無其他方式。
 
 ---
 
@@ -101,7 +105,17 @@ Formal analysis 不含完整 sourceCodeContext。先使用 `resourceCatalog`、`
 
 - **TFM 對齊**：EF Core 套件主版號 = targetFramework 主版號
 - **Aspire 對齊**：`Aspire.Hosting.Testing` 與 AppHost Aspire 版本同步
-- **版本通用**：既有 `.csproj` 套件版本一律保留，不升不降；只補缺少套件，不執行 `dotnet list package --outdated`，不得主動查詢或套用升級
+- **起點版本保留**：依 Analyzer 的 `existingTestInfrastructure.packageReferences` 確認起點已有套件，其 `.csproj` 版本一律保留，不升不降
+- **新增版本相容性**：只補缺少的必要套件；技術 Skill 最低版本作參考，範例版本不是固定值。依目標 test project 當次 restore assets 與相依需求選擇相容版本；讀取 assets 前確認 `project.restore.projectPath` 是 canonical test project，並在 `tokenEstimateInputs.readFiles` 記錄精確路徑。`nugetChanges` 記錄新增套件與版本，供 Executor 區分起點與本輪新增參考
+- **選版範圍**：不執行 `dotnet list package --outdated`，不查詢或套用最新版，不修改 production／AppHost 套件
+
+需要核對已還原套件的 API 文件時，XML 精確路徑由本次 test project 的 `obj/project.assets.json` 中 `packageFolders`、package ID／version 與 `libraries.files` 的 `lib/` 或 `ref/` 項目解析；`NUGET_PACKAGES` 維持選用，不猜固定快取路徑。先執行以下收據保存操作，成功取得 provenance 後才按需讀取 XML 必要片段。保留回傳的 `receiptPath` 供 Step 5 使用，實際 XML 讀取仍記入 payload 的 `readFiles`；兩筆原始來源資料由 runtime 原樣併入 canonical writer-result，不手工轉寫 `packageDocumentation`。runtime 會核對 canonical test project、還原清單、實體套件路徑及 assets／XML SHA-256，以及 run-state 中目前已接受且仍在產出的唯一 Writer assignment；run-state 不作為 Writer 分析材料。
+
+```bash
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-unit-attempt-isolation.mjs --workflow aspire --workspace-root {workspaceRoot} --test-project {testProjectPath} --package-documentation {documentationXmlPath} --save-package-documentation --assignment-id {assignmentId} --writer-result {writerResultFilePath}
+```
+
+本輪新增參考若尚未出現在當次還原清單，不讀取未驗證的快取文件；依已知相依需求完成撰寫，在 writer-result 的既有 `tokenEstimateInputs.notes` 記錄 API 驗證延後至 Executor，不能宣稱已確認該 API。Writer 不執行 restore／build／test；Executor 在正式建置、測試與既定修正迴圈確認新增套件的實際 API。已還原文件的 provenance 驗證失敗則回報 blocker。收據只保存在 assigned test project `.orchestrator/package-documentation/{assignmentId}/`，不覆寫既有收據；不允許讀取其他 workspace、歷史 artifacts 或任意快取檔案，也不允許修改套件快取。
 
 #### 2b-2h：建立 AspireAppFixture、CollectionDefinition、IntegrationTestBase、DatabaseManager、launchSettings.json 檢查、資料庫初始化、目錄結構
 
@@ -130,7 +144,7 @@ tests/AppHost.Tests/
 
 > ⚠️ **拋棄式容器前置條件**（原則 10）：practice sample AppHost 的 SQL Server / Redis 採拋棄式容器，不使用持久資料卷（`WithDataVolume`），也不使用 `ContainerLifetime.Session`。這是 sample 現況；Writer 不修改 production / AppHost。Writer 產生的 fixture 必須內建通用持久化 sanitizer，作為真實專案持久卷與生命週期差異的測試框架端防護網。
 
-> ⚠️ **已知 Aspire 框架預設測試不友善行為**（原則 11）：Redis TLS 由 fixture (C) 在 test 端中和。Aspire 13.1+ 且 AppHost 使用 Redis 時，Writer 產生 `BuildAsync()` 前的 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma）；net8 / net9 不產生。Writer 不碰 production / AppHost。
+> ⚠️ **已知 Aspire 框架預設測試不友善行為**（原則 11）：Redis TLS 由 fixture (C) 在 test 端中和。Aspire 13.1+ 且 AppHost 使用 Redis 時，Writer 產生 `BuildAsync()` 前的 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma）；依當次 Redis 套件、TLS 設定與實際可用 API 判定，不依 .NET target framework；不對沒有此行為或 API 的套件強加此段。Writer 不碰 production / AppHost。
 
 根據有效 `scenarioCatalog` 與 `endpointCatalog` 撰寫測試。每個有效 scenarioId 必須在 `scenarioCoverage` 中恰好認領一次；每個 endpointId 必須在 `endpointCoverage` 中有實際測試方法證據。不得自行刪除 Analyzer scenarios 或擴張 sibling scope。
 
@@ -171,15 +185,19 @@ global using AwesomeAssertions.Web;
 - **絕對不要**使用 Testcontainers 程式化容器
 - **絕對不要**修改 production / AppHost（包含 Health Checks、Redis TLS、volume、lifetime）
 - `CreateAsync<T>()` 後、`BuildAsync()` 前，AspireAppFixture 必須執行通用持久化 sanitizer：以 annotation 層級、與服務型別無關的方式剝除容器資源的持久具名資料卷掛載，並強制 ephemeral / session-scoped 生命週期。9.x / 13.x 使用 typed 形式；8.2.x 若無法 typed 存取 `appHost.Resources` / annotation 型別，採 reflection fallback（以 annotation 型別名稱字串比對 `ContainerMountAnnotation` / `ContainerLifetimeAnnotation`）達成相同意圖。若目標 Aspire 版本缺少對應 annotation 型別，sanitizer 可退化為 no-op，但意圖必須保留。
-- `CreateAsync<T>()` 後、`BuildAsync()` 前，Aspire 13.1+ 且 AppHost 使用 Redis 時，AspireAppFixture 必須執行 Redis TLS quirk 中和：對每個 Redis resource 使用 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`，並以 `#pragma warning disable ASPIRECERTIFICATES001` / restore 包住。net8 / net9 不產生此段。
+- `CreateAsync<T>()` 後、`BuildAsync()` 前，Aspire 13.1+ 且 AppHost 使用 Redis 時，AspireAppFixture 必須執行 Redis TLS quirk 中和：對每個 Redis resource 使用 `appHost.CreateResourceBuilder(redis).WithoutHttpsCertificate()`，並以 `#pragma warning disable ASPIRECERTIFICATES001` / restore 包住。依當次 Redis 套件、TLS 設定與實際可用 API 判斷；不依 .NET target framework 決定是否產生，不對沒有此行為或 API 的套件強加此段。
 
 ### Rule 5：Collection Fixture 共享 AppHost
-- AspireAppFixture 必須在 `StartAsync` 後，對測試實際會用到的資源做有界 readiness 等待，搭配 `CancellationTokenSource(TimeSpan.FromSeconds(90))`。
-- Analyzer 確認 Aspire >= 9.1 時，readiness 必須使用 `ResourceNotificationService.WaitForResourceHealthyAsync(name, ct)`；不得以 `WaitForResourceAsync(...KnownResourceStates.Running...)` 取代健康狀態。只有 Aspire 8.2.x / 9.0.0 缺少 healthy API 時，才允許以有界的 `WaitForResourceAsync(name, KnownResourceStates.Running, ct)` 作為相容 fallback，且 writer-result 必須記錄 fallback 原因。
-- readiness 逾時必須拋出點名資源的清楚例外；禁止無界等待、禁止 `Task.Delay` 硬等，且不得改 production / AppHost 來掩蓋 readiness 問題。
+- 必要資源集合固定為已驗證 analysis 的 `resourceCatalog[].requiredForTarget === true` 加上 `targetServiceName`，包含 AppHost 啟動相依資源；不得因 Controller 未直接使用就排除，也不擴大到未標示必要的資源。 writer-result 既有 notes 記錄各資源的確認方式及實作檔案，供 Executor 依實際執行建立就緒證據。
+- AspireAppFixture 必須在 `CreateAsync` 前建立一個總逾時 `CancellationTokenSource(TimeSpan.FromSeconds(90))`；`CreateAsync`、`BuildAsync`、`StartAsync`、資源等待、取得連線字串、協定就緒、重試退避與 schema／Respawn 初始化共用此期限，將同一 `CancellationToken` 傳給可取消的 API；不接受 token 的非同步初始化（例如 `Respawner.CreateAsync`）仍須以共用 token 限制等待（例如 `WaitAsync(ct)`）。等待取消不代表底層作業已停止；取消後停止初始化，處理尚未完成作業的失敗與連線釋放，不為每個資源或重試重新計時。`StartAsync` 後對必要資源集合做有界 readiness 等待。
+- 依 Analyzer 的 runtime 套件版本與當次已還原套件的 API 判定能力，不依 .NET target framework 或 AppHost SDK 版本猜測。文件查驗與尚未還原新增套件的 API 驗證依 Step 2a 辦理。可用且有實際健康檢查時使用 `ResourceNotificationService.WaitForResourceHealthyAsync(name, ct)`。缺少 healthy API，或資源沒有實際健康檢查時，`WaitForResourceAsync(name, KnownResourceStates.Running, ct)` 只確認啟動；fallback 必須接續依 `resourceCatalog` 型別與測試實際用途的協定就緒確認，writer-result 記錄 fallback 原因與確認方式。HTTP API 的 fallback 在 fixture 初始化完成前，以共用 `CancellationToken` 對本次已驗證的唯讀路由取得實際 HTTP 回應，依端點契約判定是否就緒；`CreateHttpClient` 與第一個測試案例的呼叫不能取代此確認。不得把只有 `Running` 的證據當成實際可用。
+- SQL Server fallback 必須透過 `App.GetConnectionStringAsync(resourceName, ct)` 取得原連線設定，使用 `SqlConnection.OpenAsync(ct)` 確認可登入；成功後才初始化 schema／Respawn 與進入端點測試。暫時性連線失敗可在同一總逾時內做有界重試與短暫退避；每次連線嘗試與退避都接受共用 `CancellationToken`，失敗連線須釋放，不改連線目的地或 TLS 設定來規避握手失敗。
+- readiness 逾時必須拋出點名資源並保留最後失敗原因的清楚例外。禁止無界等待與沒有就緒判斷的 `Task.Delay` 硬等；失敗後、受共用取消與總逾時約束的重試退避不屬於硬等。不得改 production / AppHost 來掩蓋 readiness 問題。
 ### Rule 6：Resource 名稱一致性
 ### Rule 7：System.Net.Http.Json
 ### Rule 8：ProblemDetails 驗證（使用 Satisfy<T>() 鏈式語法）
+- 使用 Satisfy<T>() 驗證實際錯誤回應契約：一般 ProblemDetails 驗證 Status、Title 與該情境必要的業務錯誤內容。
+- 驗證或模型繫結錯誤若回傳 ValidationProblemDetails，另驗證 Errors 非空及與該情境相關的欄位／錯誤內容；回應 DTO 必須能讀取這些欄位，不以一般 ProblemDetails 的斷言取代。
 ### Rule 9：移除不必要的 using
 ### Rule 10：測試隔離
 ### Rule 11：連線字串統一存取
@@ -209,8 +227,12 @@ global using AwesomeAssertions.Web;
 > 下游 Executor 和 Reviewer 需要此檔案才能正確運作。
 
 1. **驗證路徑**：直接使用 prompt 的 absolute canonical `writerResultFilePath`，且必須位於 assigned test project `.orchestrator/writer-result/`
-2. **建立目錄**：使用 shell 建立父目錄
-3. **寫入檔案**：使用 `apply_patch` 以 absolute path 寫入唯一 artifact；不得重新推導檔名
+2. **提交 payload**：將下列完整 JSON 透過 stdin 傳給交付命令，不建立磁碟 draft，也不讀回自己的 canonical writer-result。使用 shell 的純文字管線或程序 stdin，保留 JSON 的 UTF-8 內容。
+3. **首次交付**：每個已讀 XML 帶入 Step 2a 的 `receiptPath`（可重複 `--package-documentation-receipt`）；沒有讀取套件 XML 時省略該參數。runtime 驗證 assignment、原始收據、assets／XML SHA 與 scope 後，原樣合併兩筆 `readFiles`，去除同一路徑重複項目，填入 `tokenEstimateInputs.packageDocumentationReceipts` 與必要收據 reads／writes，再排他建立 canonical 檔案及回傳 `artifactSha256`。此欄位由 runtime 填寫，payload 不自行提供；其他情境、測試數字與品質欄位保持原樣。缺收據、來源變更、衝突 metadata 或既有 canonical 檔案立即 blocked，不補造收據、不覆寫舊結果。
+
+```bash
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-unit-attempt-isolation.mjs --workflow aspire --workspace-root {workspaceRoot} --test-project {testProjectPath} --write-writer-result {writerResultFilePath} --assignment-id {assignmentId} [--package-documentation-receipt {receiptPath} ...]
+```
 
 ```json
 {
@@ -261,11 +283,11 @@ global using AwesomeAssertions.Web;
 }
 ```
 
-> **修改模式**：當 `mode: "modification"` 時，讀取既有的 writer-result JSON 並更新，將 `modificationType` 改為 `"applied-reviewer-suggestions"`，更新 `modifiedAt`、`testCount`、`testFilePaths` 等欄位。
+> **修改模式**：只依當次已授權的既有修正契約執行；本節是目前 assignment 的首次交付，不能覆寫已交付的 canonical 結果或修改歷史 rejection evidence。
 
-> **tokenEstimateInputs（必填）**：writer-result 必須完整記錄 analysis、唯一 Aspire Skill、按需 source/test reads、所有 test-project writes 與 canonical artifact write；缺漏時 formal comparator blocked。
+> **tokenEstimateInputs（必填）**：writer-result 必須完整記錄 analysis、唯一 Aspire Skill、按需 source/test reads、所有 test-project writes 與 canonical artifact write；漏列或虛報時該階段 isolation gate 失敗。
 > **coverage status（必填）**：`endpointCoverage[]` 與 `scenarioCoverage[]` 的 `status` 只允許 `implemented`、`blocked`、`limitation`。`implemented` scenario 必須有非空 `testEvidence`；blocked/limitation 必須有具體 reason。formal pass 要求每個 endpoint 與有效 scenario 恰有一筆 implemented claim。
-> **canonical file paths（必填）**：`testFilePaths[]`、`infrastructureFiles[]`、`testClasses[].filePath` 與 telemetry paths 全部使用本次 workspace 內的 absolute paths；不得輸出相對路徑，避免 Executor／Reviewer 對同一檔案形成不同 truth。
+> **canonical file paths（必填）**：`testFilePaths[]`、`infrastructureFiles[]`、`testClasses[].filePath` 與契約路徑全部使用本次 workspace 內的 absolute paths；不得輸出相對路徑，避免 Executor／Reviewer 對同一檔案形成不同 truth。
 
 ### Step 6：回傳精簡摘要
 
@@ -273,8 +295,8 @@ global using AwesomeAssertions.Web;
 
 1. **`status`**：`"completed"`
 2. **`testFilePaths`**：測試檔案路徑清單
-3. **`testCount`**：測試案例數量
-4. **`testCaseCount`**：測試案例數量（與 `testCount` 一致或更精確）
+3. **`testCount`**：測試方法數；每個 Fact／Theory 方法各計一次
+4. **`testCaseCount`**：資料展開後案例數；Fact 各計一例，Theory 依實際資料列展開，不以方法數或 scenario 數代替。靜態可確定的 Fact／InlineData 宣告由 Writer artifact gate 核對；動態資料來源仍由 Executor 實際執行結果核對，不要求改成 InlineData。
 5. **`skillsLoaded`**：使用的 Skills 清單
 6. **`writerResultFilePath`**：交接檔案路徑
 7. **`nugetChanges`**：新增或修改的 NuGet 套件（如果有）
@@ -298,7 +320,7 @@ global using AwesomeAssertions.Web;
 9. **中文三段式命名**
 10. **拋棄式容器 sample 前提** — practice sample AppHost 不使用 `WithDataVolume` 與 `ContainerLifetime.Session`；Writer 只確認分析結果，不臨時修改 production / AppHost，並在 fixture 內建通用持久化 sanitizer
 11. **已知 Aspire 框架預設測試不友善行為** — Redis TLS 由 fixture (C) test 端中和；僅 Aspire 13.1+ 產生、含 `ASPIRECERTIFICATES001` pragma，且不碰 production / AppHost
-12. **Formal topology 與 isolation** — 不自行 split；canonical paths、external memory prohibition、scenario provenance 與 telemetry 不得省略
+12. **Formal topology 與 isolation** — 不自行 split；canonical paths、external memory prohibition、scenario provenance 與 read-scope 契約不得省略
 
 ## Tools
 

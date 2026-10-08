@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "owner": "dotnet-testing-orchestrator-tunit",
+  "runtimeRoot": ".codex/scripts/dotnet-testing-codex-full/tunit-runtime",
+  "runtimeScripts": [
+    "nuget-sandbox-preflight.mjs",
+    "run-state.mjs",
+    "usage-observer.mjs",
+    "usage-report.mjs",
+    "usage-session.mjs",
+    "validate-attempt-isolation.mjs",
+    "validate-execution-contract.mjs",
+    "validate-optional-parameter-contract.mjs",
+    "validate-optional-parameter-gate.mjs",
+    "validate-role-read-scope.mjs",
+    "validate-scenario-contract.mjs",
+    "validate-skill-read-scope.mjs",
+    "workflow-entry.mjs",
+    "workflow-result.mjs"
+  ]
+}

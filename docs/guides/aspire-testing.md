@@ -13,9 +13,9 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills@v2.4.2 已安裝到 `.agents/skills/`**（Writer / Reviewer 載入 `aspire-testing` 所需；Analyzer `requiredSkills` 固定 `["aspire-testing"]`）
+- **dotnet-testing-agent-skills@v2.4.5 已安裝到 `.agents/skills/`**（Writer / Reviewer 載入 `aspire-testing` 所需；Analyzer `requiredSkills` 固定 `["aspire-testing"]`）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**
-- **Docker 必須可用（硬前置）** — Aspire 容器由 AppHost 宣告式啟動，**沒有 InMemory 退路**；Executor Step 0 一律先跑 `docker info`，Docker 不可用即中止
+- **Docker 必須可用（硬前置）** — Aspire 容器由 AppHost 宣告式啟動，**沒有 InMemory 退路**；Orchestrator 在 NuGet 前先做 Phase -2 Docker preflight；不可用即中止，尚未派發任何角色。Executor Step 0 在建置前再跑 `docker info` 複查
 - **Aspire workload 非必要** — `Aspire.AppHost.Sdk` 自 9.0.0 起以 NuGet 套件形式提供，使用 `Aspire.AppHost.Sdk` / Project SDK 的 AppHost 免安裝 workload 即可建置與測試；Executor 在 `dotnet workload list` 無 `aspire` 時會先讀 AppHost `.csproj` 確認，若為 NuGet SDK 則可跳過 workload 要求
 
 ---
@@ -30,11 +30,12 @@ $dotnet-testing-orchestrator-aspire
 
 觸發後，提供下列資訊給 Orchestrator：
 
+- 目前 repository／workspace 的絕對根目錄；下列範例路徑都以此根目錄為基準
 - 被測 WebAPI 專案路徑
 - AppHost 專案路徑
 - AppHost 服務名稱（`AddProject("name")` 的 `name`，須與 `CreateHttpClient("name")` 對齊）
 - 目標 Controller 名稱（或端點範圍）
-- 測試專案路徑（`.csproj`）
+- 既有測試專案的 exact `.csproj` 路徑；沒有測試專案時才明確要求建立
 - 簡短說明（可選，如「涵蓋全部端點」）
 
 Orchestrator 會透過 SpawnAgent 依序自動啟動 Analyzer → Writer → Executor → Reviewer，全程維護 `run-state.json`。
@@ -49,7 +50,7 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動 Analyzer → Writer → Exe
 呼叫 $dotnet-testing-orchestrator-aspire，為 samples/aspire/practice_aspire 的 BookingsController 撰寫 Aspire 整合測試，涵蓋全部端點。
 AppHost: src/Practice.Aspire.AppHost
 WebApi: src/Practice.Aspire.WebApi
-測試專案: tests/Practice.Aspire.AppHost.Tests
+測試專案: tests/Practice.Aspire.AppHost.Tests/Practice.Aspire.AppHost.Tests.csproj
 AppHost 服務名: bookingapi
 ```
 
@@ -68,7 +69,7 @@ AppHost 服務名: bookingapi
 呼叫 $dotnet-testing-orchestrator-aspire，僅為 BookingsController 的 POST 建立預約與 GET 查詢端點撰寫 Aspire 整合測試。
 AppHost: src/Practice.Aspire.AppHost
 WebApi: src/Practice.Aspire.WebApi
-測試專案: tests/Practice.Aspire.AppHost.Tests
+測試專案: tests/Practice.Aspire.AppHost.Tests/Practice.Aspire.AppHost.Tests.csproj
 AppHost 服務名: bookingapi
 ```
 
@@ -86,7 +87,7 @@ AppHost 服務名: bookingapi
 呼叫 $dotnet-testing-orchestrator-aspire，為 BookingsController 撰寫 Aspire 整合測試，重點驗證 GET /health 與 FluentValidation 錯誤回應格式。
 AppHost: src/Practice.Aspire.AppHost
 WebApi: src/Practice.Aspire.WebApi
-測試專案: tests/Practice.Aspire.AppHost.Tests
+測試專案: tests/Practice.Aspire.AppHost.Tests/Practice.Aspire.AppHost.Tests.csproj
 AppHost 服務名: bookingapi
 ```
 
@@ -106,7 +107,7 @@ AppHost 服務名: bookingapi
 呼叫 $dotnet-testing-orchestrator-aspire，為 BookingsController 撰寫 Aspire 整合測試（net10 變體）。
 AppHost: src/Practice.Aspire.Net10.AppHost
 WebApi: src/Practice.Aspire.Net10.WebApi
-測試專案: tests/Practice.Aspire.Net10.AppHost.Tests
+測試專案: tests/Practice.Aspire.Net10.AppHost.Tests/Practice.Aspire.Net10.AppHost.Tests.csproj
 AppHost 服務名: bookingapi
 ```
 
@@ -170,9 +171,9 @@ git clean -fd samples/aspire/practice_aspire/tests/
 
 ### 1. Docker 未啟動
 
-**症狀**：Executor Step 0 回報 `Cannot connect to the Docker daemon` 或 `error during connect`。
+**症狀**：入口 Docker preflight 回報 `docker-daemon-unavailable` 並顯示原始連線錯誤；NuGet、四角色與測試尚未執行，未建立 run-state 或用量 HTML。若入口通過後 Docker 停止，Executor Step 0 複查仍會中止。`docker-access-denied` 表示設定／socket／named pipe 存取遭拒，不能單憑這項錯誤判定 Docker 未啟動。
 
-**解法**：啟動 Docker Desktop 後重試。Aspire 容器由 AppHost 管理，**Docker 為硬性必要前提，沒有 InMemory 退路**（這是與 integration 工作流程的關鍵差異）。建議先預拉容器映像（如 SQL Server、Redis 映像）以縮短首次啟動時間。`docker: command not found` 表示 Docker 未安裝。
+**解法**：確認 Docker Desktop／daemon 已啟動且連線可用後重新下達任務；存取故障由 Orchestrator 依工具政策處理一次原命令核准，拒絕或不支援就停止，不修改設定。Aspire 容器由 AppHost 管理，**Docker 為硬性必要前提，沒有 InMemory 退路**（這是與 integration 工作流程的關鍵差異）。建議先預拉容器映像（如 SQL Server、Redis 映像）以縮短首次啟動時間。`docker: command not found` 表示 Docker 未安裝。
 
 ---
 
@@ -250,6 +251,10 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 
 ## E. 工作流程細節
 
+### 入口環境檢查
+
+Phase -2 Docker-only preflight → Phase -1 NuGet preflight；兩者 ready 後才建立 run-state／observer 並派發角色。Docker 檢查最多等待 15 秒，保留原始命令、exit code 與輸出；`NUGET_PACKAGES` 仍為選用。
+
 ### Phase 1：Analyzer 分析
 
 - 從 AppHost `Program.cs` 與 `.csproj` 解析 Resource graph，**不讀** Controller 細節以外的無關原始碼
@@ -272,7 +277,7 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 
 ### Phase 3：Executor 建置與執行
 
-- Step 0 `docker info`（Docker 必要，無退路）→ Step 0.5 `dotnet workload list`（NuGet `Aspire.AppHost.Sdk` 可免 workload）→ `dotnet build -p:WarningLevel=0 /clp:ErrorsOnly` → **`dotnet test --no-build --blame-hang-timeout <10m|15m>`**
+- Step 0 `docker info`（複查入口之後的 Docker 狀態，Docker 必要，無退路）→ Step 0.5 `dotnet workload list`（NuGet `Aspire.AppHost.Sdk` 可免 workload）→ `dotnet build -p:WarningLevel=0 /clp:ErrorsOnly` → **`dotnet test --no-build --blame-hang-timeout <10m|15m>`**
 - 多目標時 Executor **循序執行**（AppHost 啟動與 Docker 容器不可並行互搶）
 - 解讀 xUnit 通過 / 失敗 / 略過數（來自實際輸出，禁編造）
 - 修正迴圈最多 **5 輪**且只改測試專案；任何 production / AppHost 修改都回報 blocker / `requiresUserApproval`
@@ -295,4 +300,4 @@ dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout 
 3. 修改後更新 `writer-result` / `executor-result`。
 4. Reviewer 以 re-review 模式確認前次 issues 是否解決，不展開無限新增審查。
 
-> 各階段耗時取自 `run-state.json` 的 wall-clock 時間戳，輸出「各階段耗時」與「Timing Evidence」兩張表。**Token 用量**：正式 billing token 無可靠 truth source 故不回報；四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {測試專案}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 optional 的 `Estimated Token Usage`（僅供 visible-context 相對成本比較，不可用於計費或 correctness gate）。細節見 [token-usage-estimation.md](token-usage-estimation.md)。
+> 各階段耗時取自 `run-state.json` 的 wall-clock 時間戳，輸出「各階段耗時」與「Timing Evidence」兩張表。用量另由 Aspire 自有 observer 收集逐請求 runtime 紀錄，主代理回合結束且三次快照穩定後更新完整 Lite HTML；不作 billing truth 或 token 估算。最終 renderer 保留八項回報，接續 Profiling Summary，HTML 連結、file URL、狀態與 note 固定在回覆最尾端；選用 Standard credit 換算不是實際扣抵。

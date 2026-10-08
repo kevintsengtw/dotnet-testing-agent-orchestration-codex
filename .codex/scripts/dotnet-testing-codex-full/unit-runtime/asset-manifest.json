@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "owner": "dotnet-testing-orchestrator-unit",
+  "runtimeRoot": ".codex/scripts/dotnet-testing-codex-full/unit-runtime",
+  "runtimeScripts": [
+    "archive-unit-run.mjs",
+    "artifact-normalizer.mjs",
+    "coverage-decision.mjs",
+    "execution-evidence.mjs",
+    "nuget-sandbox-preflight.mjs",
+    "project-integrity.mjs",
+    "run-state.mjs",
+    "run-unit-execution.mjs",
+    "usage-observer.mjs",
+    "usage-report.mjs",
+    "usage-session.mjs",
+    "validate-attempt-isolation.mjs",
+    "validate-scenario-contract.mjs",
+    "workflow-result.mjs",
+    "workflow-state.mjs",
+    "workflow.mjs"
+  ]
+}

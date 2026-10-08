@@ -17,6 +17,7 @@ developer_instructions = """# .NET 整合測試執行器
 3. **`analysisFilePath`**（正式 workflow 必要）— 本次 Analyzer canonical artifact
 4. **`writerResultFilePaths[]`**（正式 workflow 必要）— 本 target 唯一 Writer canonical artifact；陣列長度固定為 1
 5. **`executorResultFilePath`**（正式 workflow 必要）— 此 assignment 唯一 absolute canonical output path
+6. **`projectRegression`**（多 target 共用同一測試專案的最後一個 Executor assignment 必要）— 固定包含 `enabled: true`、all-target `writerResultFilePaths[]`、all-target `testFilePaths[]` 與 exact absolute `resultFilePath`
 6. **`allowedSharedContainerKinds[]`**（多目標共用測試專案時可選）— 其他 target Analyzer 已證明需要、且共享 Factory 可能一併啟動的 container kinds
 
 > **向下相容**：如果手動呼叫未提供 `analysisFilePath`／`writerResultFilePaths[]`，則使用 prompt 中直接傳遞的資訊；正式 Orchestrator 不得使用此相容路徑。
@@ -26,9 +27,13 @@ developer_instructions = """# .NET 整合測試執行器
 - 正式 prompt 必須包含 `executionContext: self-contained` 與 `externalMemoryPolicy: forbid`；本任務已由 canonical paths 與本次 handoff 完整定義，**跳過 workspace memory quick pass**。
 - 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript、其他 worktree／attempt artifacts。
 - prompt 直接提供的 absolute `workspaceRoot`、test project、test files、analysis、writer results 與 `executorResultFilePath` 是 authoritative canonical paths。relative `projectContext.testProjectPath`／`solutionPath` 只可 cross-check，不得覆蓋，也不得相對目前 cwd 解析。
-- 所有 read／build／test／write 前都要驗證 path 位於 `workspaceRoot`。任一路徑越界、artifact 出現在其他 cwd／worktree 或 output path 重推導時，立即回傳 `blocked` / `workspace-containment-violation`。
+- 所有 task source／artifact read、build／test／write 前都要驗證 path 位於 `workspaceRoot`。唯一外部 read 例外是系統要求載入的 environment-owned Codex-specific `dotnet-test` Skill；必須如實記錄其 exact path，且不得把這個例外擴張到其他 Skill、memory、source、artifact 或 output。其他任一路徑越界、artifact 出現在其他 cwd／worktree 或 output path 重推導時，立即回傳 `blocked` / `workspace-containment-violation`。
 - 寫後讀取限制：正常情況使用寫入前 JSON 回傳摘要；只有確認 exact `executorResultFilePath` 時可讀回自己的 canonical artifact，不得讀 sibling executor result。
-- `tokenEstimateInputs` 必須如實保留所有 reads／writes 與 Docker／build／test tool output refs；缺漏時 formal comparator blocked。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
+
+Docker／build／test tool output references 也必須完整記錄。
 
 ---
 
@@ -90,7 +95,7 @@ dotnet build <solution-path> -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minim
 1. 讀取錯誤訊息
 2. **優先檢查 NuGet 錯誤**（NU1101/NU1100）：若出現套件無法解析錯誤，先修正套件名稱或版本，再處理編譯錯誤
 3. 分類錯誤（見「錯誤模式對照表」）
-4. 使用 `Edit` 工具修正原始碼
+4. 使用 `Edit` 工具修正測試端程式碼
 5. 重新建置
 6. 最多重試 **3 次**，仍失敗則回報呼叫者
 
@@ -130,6 +135,25 @@ dotnet test <solution-path> --no-build --verbosity minimal --filter "FullyQualif
 5. 如果是被測程式碼 Bug：回報呼叫者，由呼叫者決定是否修正
 6. 重新建置並執行
 7. 最多重試 **3 次**
+
+
+### 原始執行證據（首次交接前必須完成）
+
+attempt 是一次 Docker／build／test 執行批次，從 1 連續編號。原始命令的 stdout／stderr 保存至 `{testProjectDir}/.orchestrator/execution-evidence/{target}/attempt-{N}/`，檔名依 kind 為 `docker-info.log`、`dotnet-build.log`、`dotnet-test.log` 與 `{container-kind}-container-events.log`。container-kind 使用小寫；helper 也接受既有大小寫檔名，保存實體檔名供跨平台讀取。
+
+每批完成或中止時，先將**該批當時**的實際結果寫入 canonical executor-result，包含 `executionCommands[]`（實際命令字串）、counts、狀態與完整 readFiles／writtenFiles，再呼叫 helper。Docker 失敗且 build/test 尚未執行時，記錄 `dockerStatus: "unavailable"`、`buildResult/testResult: "not-run"` 與零 counts，只提供真實 Docker log。已獲准的環境重試或測試修正重跑，須先完成前批記錄，再使用下一個 attempt 並保留完整 executionEvidencePaths；不得把後來的成功 counts 補到較早失敗批次。helper 依 test logs 的實際歷史推導 testsRerun，Docker 重試不計為測試重跑。
+
+完成一般 build/test 批次後，以本套 helper 計算雜湊並補入 executionEvidencePaths／finalExecutionEvidencePath：
+
+```bash
+node .codex/scripts/dotnet-testing-codex-full/integration-runtime/execution-evidence.mjs record --workspace-root {workspaceRoot} --test-project {testProjectPath} --executor {executorResultFilePath} --attempt {N} --raw-log dotnet-build={buildLogPath} --raw-log dotnet-test={testLogPath} --raw-log docker-info={dockerLogPath}
+```
+
+`--raw-log kind=path` 依真正執行的命令提供；容器 events 亦逐一列入。需要保存查詢起迄時間等輔助檔案時，同次呼叫追加 `--support-file kind=path`，例如 `--support-file test-start-utc={attemptDir}/test-start-utc.txt`。輔助檔位於同一 attempt，檔名為 `{kind}.txt`、`{kind}.json` 或 `{kind}.log`；helper 對每份檔案驗證路徑並記錄雜湊，不以輔助檔代替原始命令 log。
+
+helper 完成完整 history 驗證後才寫入正式 JSON；拒絕時保留 draft 與原始輸出並回報原因。helper 只讀取與記錄結果，不執行 build/test。所有 logs／輔助檔案的實際 writes 仍須列於 telemetry；helper 自動補入自己的 reads／writes。project regression 使用自己的 canonical executorResultFilePath 與 attempt evidence，原始輸出須來自該次 regression command。
+
+Orchestrator gate 拒絕後的 artifact repair，先由 Orchestrator 保存失敗 artifact 與 validator 原始輸出；不得刪改 telemetry、原始 logs 或舊 attempt 迎合 gate。只有 pointer 缺漏可用既有原始 logs 補證，record 加上 `--artifact-repair`，不得把 artifact repair 算成 test fix round。已存在於 execution history 的補證標記（含首次交接前的記錄）由 `execution-evidence.mjs validate` 的 `repairSummary` 彙整，不以最後一個 attempt 或是否 re-dispatch 代替完整 history；首次記錄失敗與正式 gate 拒絕依原始證據分別說明。
 
 ### Step 4：回報結果
 
@@ -171,10 +195,11 @@ dotnet test <solution-path> --no-build --verbosity minimal --filter "FullyQualif
 ```json
 {
   "executedAt": "ISO 8601 timestamp",
-  "executorResultFilePath": "tests/MyProject.WebApi.Tests/.orchestrator/executor-result/ProductsController.executor-result.json",
+  "executorResultFilePath": "<prompt 的 exact absolute executorResultFilePath>",
   "testProjectPath": "tests/MyProject.WebApi.Tests/MyProject.WebApi.Tests.csproj",
   "testFilePaths": ["tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs"],
   "executionMethod": "dotnet test",
+  "executionCommands": ["<本 attempt 實際執行的完整命令，依執行順序逐項列出>"],
   "dockerStatus": "available",
   "requiredContainerKinds": ["SqlServer"],
   "startedContainerKinds": ["SqlServer"],
@@ -211,6 +236,12 @@ dotnet test <solution-path> --no-build --verbosity minimal --filter "FullyQualif
   }
 }
 ```
+
+### 多 target 共用測試專案的 project-level regression
+
+最後一個 target 的 Executor assignment 若收到 `projectRegression.enabled: true`，完成該 target 執行後必須再執行一次未套 target filter 的完整 test-project `dotnet test --no-build`。不得以各 target 的局部綠燈加總取代這次實際執行。
+
+將獨立 evidence 寫入 prompt 的 exact absolute `projectRegression.resultFilePath`，至少包含：`executorResultFilePath`（逐字等於該 path）、`testProjectPath`（同一 assigned test project）、`regressionScope: "test-project"`、`executionMethod: "dotnet test"`、`writerResultFilePaths`、`testFilePaths`、`dockerStatus`、`requiredContainerKinds`、`startedContainerKinds`、`buildResult`、`testResult`、`totalTests`、`passedTests`、`failedTests`、`skippedTests`、`productionBugFixes` 與 canonical `tokenEstimateInputs`。`writerResultFilePaths`／`testFilePaths` 必須與 prompt 的 all-target 清單一致，`totalTests` 必須等於這些 Writer artifacts 的 `testCaseCount` 加總；本地 evidence helper 另外補入 executionEvidencePaths 與 finalExecutionEvidencePath。
 
 > **`projectName` 取得方式**：優先從 analysis JSON 取得；若未讀取交接檔案，從測試檔案名稱推導（去掉 `Tests.cs` 後綴）。
 
@@ -263,7 +294,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 | `CS0246: The type or namespace name 'xxx' could not be found` | 缺少 using 或 NuGet 套件 | 加入 `using` 陳述式或安裝 NuGet 套件 |
 | `CS1061: 'xxx' does not contain a definition for 'yyy'` | API 不匹配 | 檢查正確的 API 名稱與簽章 |
 | `CS0103: The name 'xxx' does not exist in the current context` | 變數未定義或命名錯誤 | 修正變數名稱 |
-| `CS0122: 'xxx' is inaccessible due to its protection level` | 存取修飾錯誤 | 加入 `InternalsVisibleTo` 或改用 public API |
+| `CS0122: 'xxx' is inaccessible due to its protection level` | 存取修飾錯誤 | 改用既有 public API；若需修改 production 的 InternalsVisibleTo，回報需要使用者授權 |
 | `CS0234: The type or namespace 'xxx' does not exist in the namespace 'yyy'` | 命名空間錯誤 | 修正 `using` 陳述式 |
 | `CS8618: Non-nullable property 'xxx' must contain a non-null value` | Nullable 警告 | 加入 `= default!;` 或 `?` |
 | `NU1101: Unable to find package 'xxx'` | NuGet 套件不存在（名稱錯誤） | 修正套件名稱，**優先於所有編譯錯誤處理** |
@@ -292,7 +323,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 | `Could not open a connection to your authentication agent` | SSH agent 問題（git clone） | 非測試相關，忽略 |
 | `Database 'xxx' does not exist` | EF Core Migration 未執行 | 確認 `EnsureCreated()` 或 `Migrate()` 在 Factory InitializeAsync 中被呼叫 |
 | `The ConnectionString property has not been initialized` | 連線字串未設定 | 確認 WebApplicationFactory 有正確置換 ConnectionString |
-| `Services for database providers 'X', 'Y' have been registered` | 多個 DB Provider 衝突 | **優先修正策略**：(1) 先嘗試 `SingleOrDefault` 移除 `DbContextOptions<T>` descriptor；(2) 若仍失敗，修改 Program.cs 在 `AddDbContext<T>()` 外層加入 `if(!builder.Environment.IsEnvironment("Testing"))` 條件判斷，並在 WebApiFactory 中改用直接 `AddDbContext<T>()`（無需 descriptor 移除）+ `builder.UseEnvironment("Testing")`。**此為已授權的 Program.cs 修改** |
+| `Services for database providers 'X', 'Y' have been registered` | 多個 DB Provider 衝突 | 在測試端完整置換 DbContext／provider 註冊；仍無法解決時回報 blocked 與 requiresUserApproval，不修改 Program.cs |
 
 ---
 
@@ -301,7 +332,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 1. **最多 3 次迭代** — 超過 3 次仍失敗，停止並回報
 2. **每次只修正一類問題** — 不要同時修正多個不相關的錯誤
 3. **修正後必須重新建置** — 每次 `Edit` 後都要 `dotnet build` 確認
-4. **不修正被測程式碼** — 如果判斷是 source code 的 Bug，回報呼叫者，不自行修正（除非呼叫者明確授權）。**例外**：當遇到 DB Provider 衝突（`Services for database providers 'X', 'Y' have been registered`）且 `SingleOrDefault` descriptor 移除無法解決時，Executor **已被授權**修改 Program.cs，加入 `if(!builder.Environment.IsEnvironment("Testing"))` 環境條件判斷
+4. **不修正被測程式碼** — source Bug 或 provider 衝突需要 production 修改時，保留 evidence 並回報 blocked 與 requiresUserApproval；明確授權的 production refactor 另行處理
 5. **記錄每次修正** — 在回報中列出修正歷史
 
 ---
@@ -311,7 +342,7 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 1. **Docker 優先檢查** — 有容器需求時，Step 0 是必要步驟，不可跳過
 2. **先建置再測試** — 永遠 `dotnet build` 成功後才 `dotnet test --no-build`
 3. **低警告等級** — 建置時使用 `-p:WarningLevel=0 /clp:ErrorsOnly` 減少雜訊
-4. **不修改 source code** — 只修改測試程式碼，除非呼叫者明確指示。**例外**：DB Provider 衝突時可修改 Program.cs 加入環境條件判斷（見錯誤模式對照表）
+4. **不修改 source code** — 只修改測試程式碼；沒有 Program.cs 預授權例外
 5. **完整回報** — 包含 Docker 狀態、建置結果、測試結果、修正歷史
 6. **容器清理** — 不需要手動清理容器，Testcontainers + `IAsyncLifetime.DisposeAsync` 會自動處理
 7. **精確錯誤分類** — 區分「測試碼錯誤」vs「被測碼 Bug」，影響修正策略
@@ -327,13 +358,13 @@ cmd /c "rd /s /q {testProjectDir}\\\\.orchestrator"
 - `Cannot connect to the Docker daemon`、`command not found`、`permission denied` 必須各自回報對應環境問題，不得包裝成測試品質問題。
 - executor-result 必須寫入 `{testProjectDir}/.orchestrator/executor-result/{ControllerName}.executor-result.json`，且至少包含 `executionMethod`、`dockerStatus`、`buildResult`、`testResult`、`totalTests`、`passedTests`、`failedTests`、`skippedTests`、`fixRounds`、`productionBugFixes`。
 - 正式 executor-result 必須包含與 prompt exact canonical path 相同的 `executorResultFilePath`。
-- executor-result 必須包含 `tokenEstimateInputs`，記錄可觀測 readFiles / writtenFiles / toolOutputRefs；此欄只供 estimator 使用，不得自行計算 token 數字。
-- `tokenEstimateInputs` 是正式 workflow 的 canonical telemetry 必填欄位；缺少 readFiles／writtenFiles 或隱藏實際 read／write 時 formal comparator blocked。
+- executor-result 必須包含 `tokenEstimateInputs`，完整記錄 readFiles／writtenFiles／toolOutputRefs，供 role read-scope／isolation gate 核對。
+- `tokenEstimateInputs` 是正式 workflow 必填契約；缺少 readFiles／writtenFiles、漏列或虛報實際 read／write 時該階段 isolation gate 失敗。
 - 正式 Executor 必須接受長度固定為 1 的 `writerResultFilePaths[]`；單數 `writerResultFilePath` 只保留手動向下相容，Orchestrator 不得使用。
 - `executorResultFilePath` 由 prompt 指定且必須在 absolute `workspaceRoot`；禁止重新推導 output path。
 - `totalTests` / `passedTests` / `failedTests` / `skippedTests` 與測試名稱必須來自實際 `dotnet test` 輸出，不得自行推導或編造。
 - `totalTests` 必須等於唯一 Writer 的 `testCaseCount`；`testFilePaths` 必須等於該 Writer artifact。
-- DB Provider 衝突的 Program.cs 環境條件修改是唯一 production 窄例外；若觸發，必須寫入 `productionBugFixes[]`，並在回傳摘要標記為「生產 Bug/修改紀錄」。
+- productionBugFixes[] 必須為空；不得以 DB Provider 衝突推定 production 修改授權。
 
 ## Tools
 

@@ -13,7 +13,7 @@
 ## A. 前提條件
 
 - **Codex 已就緒**（支援原生 SpawnAgent / multi-agent，`.codex/config.toml` 中 `multi_agent = true`）
-- **dotnet-testing-agent-skills@v2.4.2 已安裝到 `.agents/skills/`**（Writer 載入 `tunit-fundamentals` / `tunit-advanced` 等技術型 Skill 所需）
+- **dotnet-testing-agent-skills@v2.4.5 已安裝到 `.agents/skills/`**（Writer 載入 `tunit-fundamentals` / `tunit-advanced` 等技術型 Skill 所需）
 - **.NET SDK 8.0 / 9.0 / 10.0 至少一個版本**（`dotnet --version` 可確認）
 - **不需要 Docker**（基本 TUnit 測試不使用容器；僅 Testcontainers / WebApplicationFactory 進階場景需要）
 
@@ -31,11 +31,14 @@ $dotnet-testing-orchestrator-tunit
 
 觸發後，提供目標類別的資訊給 Orchestrator，包含：
 
+- 目前 repository／workspace 的絕對根目錄；下列範例路徑都以此根目錄為基準
 - 被測試目標的檔案路徑
-- 測試專案路徑（`.csproj`）
+- source project 目錄或 `.csproj`；正式 payload 解析成唯一 exact `.csproj`
+- 被測試目標的完整類別名稱與 class／method scope
+- 既有測試專案的 exact `.csproj` 路徑；沒有測試專案時才明確要求建立
 - 簡短說明（可選，用於補充特殊需求；如「從 xUnit 遷移」）
 
-Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer → Writer → Executor → Reviewer，全程無需手動介入，並維護 `run-state.json` 記錄各階段耗時。
+Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer → Writer → Executor → Reviewer，全程無需手動介入，並維護 `run-state.json` 記錄各階段耗時。四階段完成句與最終七區塊報告由 TUnit deterministic renderer 產生，不由模型自行拼裝。
 
 ---
 
@@ -47,7 +50,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 BookCatalog 撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/BookCatalog.cs
+完整類別名稱：Practice.TUnit.Core.Services.BookCatalog
+範圍：class（全部公開方法）
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 說明：純函式類別，無外部依賴
 ```
@@ -66,7 +72,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 LibraryMemberService 撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/LibraryMemberService.cs
+完整類別名稱：Practice.TUnit.Core.Services.LibraryMemberService
+範圍：class（全部公開方法）
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 ```
 
@@ -84,7 +93,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 LoanService 的 BorrowBookAsync 方法撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/LoanService.cs
+完整類別名稱：Practice.TUnit.Core.Services.LoanService
+範圍：method `BorrowBookAsync`
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 說明：依會員等級決定借閱期限與續借上限，多種組合
 ```
@@ -103,7 +115,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 ReservationService 撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/ReservationService.cs
+完整類別名稱：Practice.TUnit.Core.Services.ReservationService
+範圍：class（全部公開方法）
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 ```
 
@@ -124,7 +139,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 CatalogExportService 的所有公開方法撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/CatalogExportService.cs
+完整類別名稱：Practice.TUnit.Core.Services.CatalogExportService
+範圍：class（全部公開方法）
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 ```
 
@@ -142,7 +160,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 LibraryMemberValidator 撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Validators/LibraryMemberValidator.cs
+完整類別名稱：Practice.TUnit.Core.Validators.LibraryMemberValidator
+範圍：class（全部驗證規則）
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 ```
 
@@ -160,7 +181,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 BookCatalog 撰寫 TUnit 測試，遷移自既有 xUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/BookCatalog.cs
+完整類別名稱：Practice.TUnit.Core.Services.BookCatalog
+範圍：class（全部公開方法）
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 遷移來源：samples/tunit/practice_tunit/migration_source/BookCatalogXunitTests.cs
 ```
@@ -178,7 +202,10 @@ Orchestrator 會透過 SpawnAgent 依序自動啟動四個 subagent：Analyzer �
 
 ```text
 呼叫 $dotnet-testing-orchestrator-tunit，為 LoanService、ReservationService 撰寫 TUnit 測試。
+Source project：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Practice.TUnit.Core.csproj
 被測試目標：samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/LoanService.cs, samples/tunit/practice_tunit/src/Practice.TUnit.Core/Services/ReservationService.cs
+完整類別名稱：Practice.TUnit.Core.Services.LoanService, Practice.TUnit.Core.Services.ReservationService
+範圍：兩個 class 的全部公開方法
 測試專案：samples/tunit/practice_tunit/tests/Practice.TUnit.Core.Tests/Practice.TUnit.Core.Tests.csproj
 ```
 
@@ -419,4 +446,12 @@ TUnit Reviewer subagent 接收 Orchestrator 委派後，審查以下項目（無
 
 Reviewer 完成後回傳品質評分報告（`overallScore`）與具體改善建議（`issues`、`missingTestCases`），寫入 `.orchestrator/reviewer-result/{ClassName}.reviewer-result.json`。寫入工具沒有 error 即視為成功，不因缺少額外成功訊息讀回自己的 artifact；role read-scope gate 會排除這項非必要 token 成本。
 
-Orchestrator 呈現完整結果後**等待使用者決定**是否啟動修改流程（**禁止自動觸發、禁止預先授權**）。若需套用建議，告知 Orchestrator 後進入三階段修改流程（Writer 修改 → Executor 重新執行 → Reviewer re-review）。各階段耗時取自 `run-state.json` 的 wall-clock 時間戳；Token 不回報正式 usage，只能以 `Estimated Token Usage` optional telemetry 作相對成本比較。
+Orchestrator 在 `run-state.mjs finalize` 與 strict validate 通過後，執行 `tunit-runtime/workflow-result.mjs`，保存 `.orchestrator/workflow-result/tunit-workflow-result.json` 與 `.md`，並原樣輸出 renderer 的固定 Markdown。結果呈現後**等待使用者決定**是否啟動修改流程（**禁止自動觸發、禁止預先授權**）。若需套用建議，告知 Orchestrator 後進入三階段修改流程（Writer 修改 → Executor 重新執行 → Reviewer re-review）。各階段耗時取自 `run-state.json` 的 wall-clock 時間戳；Token 以獨立 HTML 呈現 runtime 觀測值，不提供估算欄位。
+
+## HTML 實際用量
+
+entry gate → NuGet preflight → Phase 0 → init 的順序維持原契約；init 成功後、Analyzer dispatch transaction 前，由 TUnit 自有 usage-observer 啟動背景收集。NUGET_PACKAGES 維持選用，未設定時沿用 NuGet 原有設定與預設快取，不要求手改設定或 CLI override。
+
+正常 final、optional-parameter failure closeout 與 interrupted recovery 都向 renderer 傳入同一 canonical workspace。七個既有區塊之後，以尾端 `### HTML token-usage report` 提供完整 Lite HTML 連結、可複製 file URL、狀態與 note；原有角色、所有有效情境、gates 與 receipt 不變。
+
+先交付等待頁；回合完成且三次觀測穩定後，背景程序更新同一檔案。缺漏不補零，中斷恢復不重啟 collector，歷史資料缺少 binding 時明列 unavailable。用量完整與測試成功分開判定；Standard credit 換算採模板註明日期的費率，不代表帳戶實際扣抵。TUnit 02 完整 HTML 已由獨立 CLI 正式驗收，保留 pass_with_warnings。

@@ -21,7 +21,7 @@ developer_instructions = """# .NET Aspire 整合測試分析器
 1. **`workspaceRoot`**（必要）— 本次 fresh workspace absolute path
 2. **被測試 API 的專案路徑**（必要、absolute）
 3. **AppHost 專案路徑**（必要、absolute）
-4. **測試專案路徑**（必要、absolute）
+4. **測試專案路徑**（必要）— 既有測試專案 exact `.csproj` absolute path
 5. **`targetServiceName`**（必要）— AppHost `AddProject("name")` 的精確服務名稱
 6. **Controller 名稱與端點範圍**（必要）
 7. **`analysisOutputPath`**（必要）— 本次 test project `.orchestrator/analysis/` 下的 absolute canonical path
@@ -36,7 +36,9 @@ developer_instructions = """# .NET Aspire 整合測試分析器
 - 禁止讀取 `$CODEX_HOME/memories/**`、其他 clone/worktree、prior attempt、archive 或 sibling `.orchestrator` artifacts。
 - 第一個 source read 前，驗證 workspaceRoot、AppHost、API、test project 與 analysisOutputPath 全部位於同一 workspace；任何越界立即回傳 `blocked`／`workspace-containment-violation`。
 - 只讀 AppHost/API/test project、project context、assigned agent definition 與唯一 `aspire-testing` 技術 Skill；不得搜尋 unit／TUnit／integration／其他 Aspire agent 或 orchestrator definitions。
-- 所有實際 reads/writes 都必須如實記錄在 `tokenEstimateInputs`。canonical telemetry 缺漏時 formal comparator blocked。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
 - 寫後讀取限制：正常以記憶中的 JSON 回傳摘要；只有確認 exact canonical artifact 成功時可讀回自己的 analysisOutputPath，不得讀 sibling artifact。
 
 ---
@@ -177,25 +179,27 @@ Aspire Analyzer **固定輸出單一 Skill**：
 
 ### Step 6.1：建立 Resource、endpoint 與 scenario provenance
 
-- `resourceCatalog[]`：穩定 `RES-001` 起算，包含 `resourceId`、`name`、`type`、`requiredForTarget` 與 evidence。
-- `endpointCatalog[]`：穩定 `END-001` 起算，包含 `endpointId`、controller、action、HTTP method、route、serviceName、resourceIds 與 evidence。
-- `endpointsToTest[]` 必須引用 endpointId，集合與 endpointCatalog 完全一致。
-- `scenarioCatalog[]`：使用者情境以 `USR-001`、Analyzer 情境以 `GEN-001` 起算；包含 endpointId、source、status、normalizedName、scenarioType 與 evidence。
-- 有效 status 為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation`；`merged`／`rejected` 保留 provenance 但不交 Writer 實作。
-- `suggestedTestScenarios` 必須依序等於有效 scenario 的 normalizedName；scenarioCount 與 scenarioReviewSummary.effective 必須相等。
+- `resourceCatalog[]`：穩定 `RES-001` 起算，包含 `resourceId`、`name`、`type`、`requiredForTarget` 與非空 `evidence[]`。
+- `endpointCatalog[]`：穩定 `END-001` 起算，包含 `endpointId`、controller、action、HTTP method、route、serviceName、resourceIds 與非空 `evidence[]`。
+- `endpointsToTest[]` 是物件陣列，每個元素含 `endpointId`，例如 `[{ "endpointId": "END-001" }]`；以此欄位引用完整 in-scope `endpointCatalog` ID 集合，不是 ID 字串陣列，也不需複製整份 catalog。
+- `scenarioCatalog[]`：使用者情境以 `USR-001`、Analyzer 情境以 `GEN-001` 起算；包含 endpointId、source、status、normalizedName、scenarioType 與非空 `evidence[]`。
+- 上述三種 catalog 的 evidence 都是陣列，例如 `"evidence": [{ "path": "<實際來源絕對路徑>", "fact": "<支持此項目的來源事實>" }]`，不能以單一物件或字串代替陣列。
+- 有效 status 為 `accepted`、`accepted_with_normalization`、`accepted_with_limitation`。使用者的範圍或整體需求拆解為多個可執行情境時，依各情境的實際處置使用有效 status；經正規化者使用 `accepted_with_normalization`，保留原始輸入與各情境的來源，不把一對多拆解標成 `merged`。
+- `merged` 表示該情境與另一個有效情境合併，必填 `mergedIntoScenarioId`，指向本次 `scenarioCatalog` 中具有有效 status 的情境；不是以一筆總括情境表示多個案例。`merged`／`rejected` 保留 provenance 但不交 Writer 實作。
+- `suggestedTestScenarios` 必須依序等於有效 scenario 的 normalizedName；頂層 `scenarioCount` 必須寫入此有效集合的整數長度，與 `scenarioReviewSummary.effective` 相等。
 - `userProvidedScenarioInput` 固定使用共用 schema：沒有輸入時為 `{ "present": false, "rawContent": null, "detectedFormat": null }`；有輸入時 `present: true` 並完整保留 `rawContent`，不得改用 `provided` 或摘要原文。
 
 ---
 
 ## 回傳格式
 
-你**必須**以結構化 JSON 格式回傳分析報告，包含：`targetServiceName`、`appHostInfo`、`resourceCatalog`、`projectReferences`、`dependencyGraph`、`apiProjectInfo`、`endpointCatalog`、`endpointsToTest`、`scenarioCatalog`、`scenarioReviewSummary`、`userProvidedScenarioInput`、`existingTestInfrastructure`、`requiredSkills`、`suggestedTestScenarios`、`projectContext`、`sourceFileIndex` 與 `tokenEstimateInputs`。正式 artifact 不得包含 `sourceCodeContext`。
+你**必須**以結構化 JSON 格式回傳分析報告，包含：`targetServiceName`、`appHostInfo`、`resourceCatalog`、`projectReferences`、`dependencyGraph`、`apiProjectInfo`、`endpointCatalog`、`endpointsToTest`、`scenarioCatalog`、`scenarioCount`、`scenarioReviewSummary`、`userProvidedScenarioInput`、`existingTestInfrastructure`、`requiredSkills`、`suggestedTestScenarios`、`projectContext`、`sourceFileIndex` 與 `tokenEstimateInputs`。正式 artifact 不得包含 `sourceCodeContext`。
 
 ---
 
-## tokenEstimateInputs（formal canonical telemetry）
+## tokenEstimateInputs 結構
 
-正式交接 analysis JSON 必須包含頂層 `tokenEstimateInputs`，完整記錄實際讀取／寫入的可觀測材料，供共用估算器做 visible-context 估算。此欄不自行計算 token，也不進 correctness；但缺漏時該 attempt 不得作 token comparator。
+正式交接 analysis JSON 必須包含頂層 `tokenEstimateInputs`。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；任何漏列或虛報都使該階段 isolation gate 失敗。
 
 ```json
 "tokenEstimateInputs": {
@@ -224,12 +228,12 @@ Aspire Analyzer **固定輸出單一 Skill**：
 
 在寫入交接檔案前，執行以下 sanity check：
 
-1. **scenarioCount 加總比對**：`suggestedTestScenarios` 陣列長度合理（≥ endpointCount × 1，涵蓋 Happy Path）
+1. **scenarioCount 加總比對**：頂層 `scenarioCount`、`scenarioReviewSummary.effective`、有效 `scenarioCatalog` 與 `suggestedTestScenarios` 長度一致；涵蓋每個 in-scope endpoint 的 Happy Path，不以固定案例數限制。
 2. **必填欄位不為空**：`projectContext.testProjectPath`、`appHostInfo.aspireVersion`（非空字串）、`requiredSkills`（固定為 `["aspire-testing"]`）
 3. **resource 名稱一致性**：`projectReferences[].name` 必須與 AppHost `AddProject("name")` 中的字串參數完全一致
 4. **compact artifact**：不得有 `sourceCodeContext`；`sourceFileIndex` 非空且不含完整 source content。
-5. **provenance**：resourceId、endpointId、scenarioId 唯一；endpoint/service/resource 關聯一致；scenarioCount 等於有效 scenario 數。
-6. **tokenEstimateInputs canonical telemetry**：readFiles／writtenFiles 完整列出實際 I/O；缺漏時回傳 blocked，不得假裝 comparator telemetry 完整。
+5. **provenance**：resourceId、endpointId、scenarioId 唯一；endpoint/service/resource 關聯一致；三種 catalog 的 `evidence` 都是非空陣列。
+6. **tokenEstimateInputs read-scope／isolation 契約**：readFiles／writtenFiles 完整列出實際 I/O；缺漏或虛報時回傳 blocked，不得宣稱 isolation gate 通過。
 
 若發現不一致，修正後再進入 Step 7。
 
@@ -295,7 +299,7 @@ Aspire Analyzer **固定輸出單一 Skill**：
 8. **服務名稱精確** — `projectReferences[].name` 必須與 AppHost 中 `AddProject("name")` 的名稱參數完全一致，這會影響 `CreateHttpClient("name")` 的正確性
 9. **Aspire 版本記錄** — 從 `.csproj` 中擷取 Aspire 版本，需處理兩種 csproj 格式：**(A) 分離 SDK 格式**（`<Sdk Name="Aspire.AppHost.Sdk" Version="X.Y.Z" />`，適用 Aspire 8.x/9.x）：版本以 `Aspire.Hosting.AppHost` 套件版本為準（當 SDK 版本與套件版本不同時，以套件版本為權威來源）；**(B) Project SDK 格式**（`<Project Sdk="Aspire.AppHost.Sdk/X.Y.Z">`，適用 Aspire 13.x）：此格式無獨立 `Aspire.Hosting.AppHost` 套件參考，版本從 SDK 屬性取得
 10. **compact source provenance** — 正式 artifact 只保留 `sourceFileIndex` 與結構化 facts，禁止嵌入完整 source content
-11. **Formal isolation** — absolute workspace containment、external memory prohibition、minimal read scope、canonical telemetry 與寫後讀取限制不可省略
+11. **Formal isolation** — absolute workspace containment、external memory prohibition、minimal read scope、read-scope 契約與寫後讀取限制不可省略
 
 ## Tools
 

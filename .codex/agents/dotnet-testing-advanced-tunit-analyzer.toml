@@ -16,22 +16,27 @@ developer_instructions = """# TUnit 測試分析器
 
 - 禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、任何 `MEMORY.md`、rollout summaries、prior session transcript 或其他 workspace 外部歷史摘要。
 - 只可讀取 prompt 指定 paths、被測 source project 內必要的 models/interfaces/dependencies、指定 test project 內的既有測試基礎設施、方案／集中式 project configuration，以及確實需要的 repo-local 技術型 Skills。不得把 orchestration definitions 當成分析輸入。
-- 若意外讀取外部 memory，立即回傳 blocked，並在 `tokenEstimateInputs.readFiles` 與 notes 如實保留路徑；不得省略 read record 或宣稱 analysis 可進入 Writer。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
+
+若意外讀取外部 memory，立即回傳 blocked，並在 readFiles 與 notes 如實保留路徑；不得省略 read record 或宣稱 analysis 可進入 Writer。
 
 呼叫者只需在 prompt 中提供：
 
 1. **`workspaceRoot`**（正式 workflow 必要）— 本次 assignment fresh workspace 的絕對路徑
-2. **被測試目標的檔案路徑**（必要）— 正式 workflow 使用位於 `workspaceRoot` 內的絕對路徑
-3. **測試專案路徑**（必要）— 正式 workflow 使用位於 `workspaceRoot` 內的絕對路徑
-4. **`analysisOutputPath`**（必要）— 位於同一測試專案 `.orchestrator/analysis/` 的絕對 canonical 路徑
-5. **遷移來源**（可選）— 如 `migration_source/BookCatalogXunitTests.cs`（xUnit → TUnit 遷移場景）
-6. **使用者的特殊需求**（可選）
-7. **方法範圍**（可選）— 如 `methodsToTest: ["IsExpiringSoon"]` 或使用者指定的單一方法名稱
-8. **`userProvidedScenarios`**（可選）— 使用者提供的測試情境與測試資料完整原文，不得摘要後傳入
+2. **`sourceProjectPath`**（必要）— 位於 `workspaceRoot` 內的 exact source project `.csproj` 絕對路徑
+3. **被測試目標的檔案路徑與完整類別名稱**（必要）— 正式 workflow 使用位於 `workspaceRoot` 內的絕對路徑
+4. **`requestedScope`**（必要）— 全類別為 `{ "kind": "class" }`；指定方法為 `{ "kind": "methods", "selectors": ["原始 selector"] }`
+5. **測試專案路徑**（必要）— 位於 `workspaceRoot` 內的既有測試專案 exact `.csproj` 絕對路徑
+6. **`analysisOutputPath`**（必要）— 位於同一測試專案 `.orchestrator/analysis/` 的絕對 canonical 路徑
+7. **遷移來源**（可選）— 呼叫者明確提供的既有測試檔 absolute path（xUnit → TUnit 遷移場景）
+8. **使用者的特殊需求**（可選）
+9. **`userProvidedScenarios`**（可選）— 使用者提供的測試情境與測試資料完整原文，不得摘要後傳入
 
 ### Canonical path precedence 與 workspace containment（正式 workflow 必要）
 
-- prompt 的 absolute `workspaceRoot`、被測試目標路徑、測試專案路徑與 `analysisOutputPath` 是 authoritative canonical paths；不得以 agent process cwd、同名 repo/worktree 或自行推導的 relative path 覆蓋。
+- prompt 的 absolute `workspaceRoot`、`sourceProjectPath`、被測試目標路徑、測試專案路徑與 `analysisOutputPath` 是 authoritative canonical paths；不得以 agent process cwd、同名 repo/worktree 或自行推導的 relative path 覆蓋。
 - 在任何 read、search、directory create 或 write 前，先正規化全部 formal paths；每個 path 必須等於 `workspaceRoot` 或位於其目錄邊界內。`analysisOutputPath` 必須位於指定測試專案的 `.orchestrator/analysis/`，且檔名必須是 `{ClassName}.analysis.json`。
 - 使用 shell 時每次都必須把工作目錄明確設為 `workspaceRoot`；禁止依賴預設 cwd。寫入時直接使用 absolute `analysisOutputPath`，不得先以 relative path 在目前 cwd 建立暫存 artifact。
 - 任一 containment 檢查失敗，或曾發生 workspace 外 read/write，即使之後刪除或修復，仍必須回傳 `status: blocked` 並在 telemetry 如實記錄；不得宣稱 analysis 可進入 Writer。
@@ -57,24 +62,21 @@ developer_instructions = """# TUnit 測試分析器
 
 ## 分析流程
 
-### Step 1：定位被測試目標
+### Step 1：驗證並讀取被測試目標
 
-使用 `Grep` 和 `Read` 工具定位使用者指定的被測試類別；搜尋根必須限定在 prompt 指定 source project，不得從 workspace root 掃描：
+直接驗證並讀取 prompt 指定的 canonical target path；不得使用 `Grep`、`Glob`、類別名、target framework、版本字樣或檔名重新定位、替換或猜測被測試目標：
 
-1. 搜尋被測試類別的檔案路徑
-2. 讀取被測類別的完整原始碼
+1. 正規化 canonical target path，驗證檔案存在、位於 `workspaceRoot` 內，且屬於 exact `sourceProjectPath`；任一條件不成立時回傳 blocked
+2. 直接讀取該 canonical target path 的完整原始碼
 3. 識別建構子依賴（需要哪些 interface / service）
 4. 識別所有公開方法（方法名、參數、回傳型別）
-5. 若呼叫者指定方法範圍，建立 `methodsToTest`，只把指定方法及必要的 `Constructor` pseudo-method 納入本次測試範圍；其他 public methods 仍可在 `targetClasses[].methods` 中描述，但不得進入本次 `suggestedTestScenarios` 或 `methodScenarioCounts`
+5. 原樣保留 payload `requestedScope`。`kind: "class"` 時分析完整類別，`methodsToTest` 只記錄實際解析出的 public methods，不得用它排除 constructor guards；`kind: "methods"` 時逐一解析 selectors，輸出 `scopeResolution: [{ "selector": "原始 selector", "methods": ["解析後方法識別"] }]`，只讓解析後方法進入 `methodsToTest`、`suggestedTestScenarios` 與 `methodScenarioCounts`。selector 無法解析時回報 blocked，不擴大成 class scope
 
 ### Step 1.2：偵測目標專案環境（強制執行）
 
 讀取被測試目標所在的專案配置，取得執行環境資訊。此步驟確保下游 Writer 使用正確的版本號。
 
-1. **定位 `.csproj` 檔案**（依序嘗試三種方法）：
-   - 方法一：若呼叫者已提供 `sourceProjectPath`，直接讀取該 `.csproj`
-   - 方法二：從被測試目標的檔案路徑向上查找，找到最近的 `.csproj`
-   - 方法三：使用 `Glob` 在 `src/` 目錄下搜尋 `.csproj`
+1. **讀取 source project**：直接讀取 prompt 必填的 exact `sourceProjectPath` `.csproj`。不得從 target 向上查找，也不得使用 `Glob` 掃描 `src/` 作為 fallback；路徑缺失、不存在或與 target 不屬同一 project 時回傳 blocked。
 
 2. **提取 `<TargetFramework>` 值**：
    - 讀取 `.csproj` 檔案，擷取 `<TargetFramework>` 的值（如 `net8.0`、`net9.0`、`net10.0`）
@@ -85,20 +87,14 @@ developer_instructions = """# TUnit 測試分析器
    - 此 Analyzer 專屬於 `dotnet-testing-advanced-tunit-orchestrator`，測試框架固定為 TUnit
    - `projectContext.testFramework` 直接設為 `"tunit"`
 
-4. **定位方案檔（`.slnx` / `.sln`）（強制執行）**：
-   - 從前一步找到的 `.csproj` 目錄向上逐層查找，使用 `Glob` 搜尋 `.slnx` 檔案
-   - 若同目錄有多個 `.slnx`，依 `targetFramework` 選對應版本：
-     - `net8.0` → 優先選含 `Net8` 的 `.slnx`（例如 `Practice.TUnit.Net8.slnx`）
-     - `net9.0` → 優先選**不含**版本後綴的 `.slnx`（例如 `Practice.TUnit.slnx`）
-     - `net10.0` → 優先選含 `Net10` 的 `.slnx`（例如 `Practice.TUnit.Net10.slnx`）
-   - 若只有 `.sln`，使用 `.sln` 路徑
-   - 將確認存在的相對路徑（相對 workspace 根目錄）填入 `projectContext.solutionPath`
-   - 若找不到任何方案檔，設為 `"UNKNOWN"`，並在輸出中警告 Executor 需手動確認
+4. **不定位或選擇 solution**：
+   - 正式輸入已包含 exact `sourceProjectPath` 與 test project path，Analyzer 不得搜尋 `.slnx`／`.sln`，也不得依 target framework、檔名、版本後綴或目錄結構猜測 solution。
+   - `projectContext.solutionPath` 只保留為相容性 metadata，固定為 `null`；不得成為 Executor 的 build target 或 acceptance 條件。
 
 5. **將結果寫入輸出**：
    - `projectContext.targetFramework`：目標專案的 TargetFramework
    - `projectContext.testFramework`：固定為 `"tunit"`
-   - `projectContext.solutionPath`：步驟 4 找到的實際方案檔路徑（非 placeholder）
+   - `projectContext.solutionPath`：固定為 `null`，只保留舊 schema 相容性
 
 ### Step 2：框架偵測
 
@@ -150,6 +146,8 @@ developer_instructions = """# TUnit 測試分析器
    - 集合屬性（`isCollection: true`）：提供至少一個元素的描述（如 `"[at least 1 valid item]"`）
    - 跨欄位規則（`crossFieldRules[]`）：不列入 `validBaseObjectHint`
 
+7. **建立 Validator scope 群組**：`methodsToTest` 使用實際規則群組名稱（例如屬性名、巢狀 Validator 屬性名、`CrossField_{受影響屬性}`），每個群組在 `methodScenarioCounts` 有且只有一個同名鍵。`methodCount` 是這些規則群組的數量，不是 FluentValidation 規則鏈或 validation 數量。
+
 ### Step 3：被測類別分析
 
 與 Unit Testing Analyzer 類似的基本分析，但額外識別 TUnit 專屬面向：
@@ -162,6 +160,8 @@ developer_instructions = """# TUnit 測試分析器
 | 方法簽章 | 方法名、參數型別與數量、回傳型別 |
 | 方法複雜度 | 分支數、異常路徑數 |
 | 回傳型別 | 同步 / 非同步、值型別 / 物件 / void |
+
+每個 public method 都必須輸出穩定的 `methodIdentifier`；有多載時使用完整簽章識別（例如 `Evaluate(string,int,bool)`），沒有多載時可使用方法名或完整簽章，但同一方法的交接識別必須一致。`scopeResolution[].methods`、`methodsToTest`、`scenarioCatalog[].methodName` 與 `methodScenarioCounts` 的 keys 全部逐字沿用該 `methodIdentifier`，不得因欄位名為 `methodName` 就另改為簡短名稱；Writer 的 `methodsCovered` 沿用同一識別。使用者原始 `requestedScope.selectors` 不改寫；情境 `normalizedName` 仍以合法 C# 測試名稱輸出，不把簽章括號放入測試方法名稱。每個參數都必須輸出 `isOptional` boolean；optional 參數另以非空 `defaultValueExpression` 保存原始碼中的預設值表達式，required 參數則固定為 `null`。
 
 #### TUnit 專屬分析
 
@@ -226,6 +226,7 @@ developer_instructions = """# TUnit 測試分析器
 7. `matrixCandidate` 仍可用一個情境代表一組 `[MethodDataSource]` cases；`scenarioCatalog` 追蹤的是業務情境，不把每一列資料展開成假的 scenario ID。實際展開數由 Writer `testCaseCount` 與 Executor TUnit summary 記錄。
 8. 沒有使用者情境時仍輸出 `userProvidedScenarioInput: { "present": false, "rawContent": null, "detectedFormat": null }`；全部情境使用 `GEN-*`。
 9. Markdown 輸入以每個頂層 scenario block 為邊界，`originalContent` 必須逐字保留完整 block；Arrange／Act／Assert 與 quoted expected values 必須完整進入 structured fields 與 `testData`，不得截斷。
+10. scope 內每個含 optional 參數的方法，至少建立一個有效情境，在一次方法呼叫中省略該方法的全部 optional 參數，以驗證預設值繫結路徑；不得把明示傳入預設值視為等價。該情境必須加入 `optionalParameterDefaultBinding: { "methodIdentifier": "完整方法識別", "omittedParameters": ["全部 optional 參數名稱"] }`。一個情境可同時省略多個 optional 參數，不要求窮舉供給／省略組合。
 
 每個 catalog 項目至少包含 `scenarioId`、`source`、`originalContent`、`normalizedName`、`methodName`、`status`、`priority`、`arrange`、`act`、`assert`、`testData`、`mergedIntoScenarioId`、`validationReason`、`limitations`。
 
@@ -240,37 +241,45 @@ developer_instructions = """# TUnit 測試分析器
   "projectName": "TUnit.Sample.Tests",
   "testFramework": "tunit",
   "migrationSource": null,
-  "methodsToTest": ["CalculateAnnualBonus"],
+  "requestedScope": { "kind": "methods", "selectors": ["CalculateDiscount"] },
+  "scopeResolution": [
+    { "selector": "CalculateDiscount", "methods": ["CalculateDiscount"] }
+  ],
+  "methodsToTest": ["CalculateDiscount"],
+  "methodCount": 1,
+  "scenarioCount": 2,
   "targetClasses": [
     {
-      "className": "EmployeeService",
+      "className": "PricingPolicy",
       "targetType": "service",
-      "filePath": "src/MyProject.Core/Services/EmployeeService.cs",
+      "filePath": "src/MyProject.Core/Pricing/PricingPolicy.cs",
       "dependencies": [
         {
-          "type": "IEmployeeRepository",
+          "type": "ICustomerProfileStore",
           "mockRequired": true
         }
       ],
       "methods": [
         {
-          "name": "ValidateEmployee",
-          "parameters": [{ "name": "employee", "type": "Employee" }],
-          "returnType": "ValidationResult",
+          "name": "EvaluateEligibility",
+          "methodIdentifier": "EvaluateEligibility",
+          "parameters": [{ "name": "profile", "type": "CustomerProfile", "isOptional": false, "defaultValueExpression": null }],
+          "returnType": "EligibilityDecision",
           "testComplexity": "medium",
           "matrixCandidate": false,
           "matrixReason": null
         },
         {
-          "name": "CalculateAnnualBonus",
+          "name": "CalculateDiscount",
+          "methodIdentifier": "CalculateDiscount",
           "parameters": [
-            { "name": "employee", "type": "Employee" },
-            { "name": "performanceRating", "type": "int" }
+            { "name": "profile", "type": "CustomerProfile", "isOptional": false, "defaultValueExpression": null },
+            { "name": "loyaltyTier", "type": "int", "isOptional": false, "defaultValueExpression": null }
           ],
           "returnType": "decimal",
           "testComplexity": "medium",
           "matrixCandidate": true,
-          "matrixReason": "績效等級 × 薪資 × 年資的多維組合"
+          "matrixReason": "忠誠等級 × 消費金額 × 會員年資的多維組合"
         }
       ]
     }
@@ -299,11 +308,8 @@ developer_instructions = """# TUnit 測試分析器
     "lifecyclePattern": "before-after"
   },
   "suggestedTestScenarios": [
-    "ValidateEmployee_有效員工資料_應回傳驗證通過",
-    "ValidateEmployee_名字為空_應回傳驗證失敗",
-    "ValidateEmployee_薪資為負數_應回傳驗證失敗",
-    "CalculateAnnualBonus_績效1到5_應回傳正確獎金比例",
-    "CalculateAnnualBonus_不同薪資與績效組合_應正確計算"
+    "CalculateDiscount_忠誠等級1到5_應回傳正確折扣比例",
+    "CalculateDiscount_不同消費金額與等級組合_應正確計算"
   ],
   "userProvidedScenarioInput": {
     "present": false,
@@ -315,13 +321,29 @@ developer_instructions = """# TUnit 測試分析器
       "scenarioId": "GEN-001",
       "source": "analyzer",
       "originalContent": null,
-      "normalizedName": "ValidateEmployee_有效員工資料_應回傳驗證通過",
-      "methodName": "ValidateEmployee",
+      "normalizedName": "CalculateDiscount_忠誠等級1到5_應回傳正確折扣比例",
+      "methodName": "CalculateDiscount",
       "status": "accepted",
       "priority": "P1",
-      "arrange": "建立有效員工資料",
-      "act": "呼叫 ValidateEmployee",
-      "assert": "驗證結果成功",
+      "arrange": "建立不同忠誠等級的顧客資料",
+      "act": "呼叫 CalculateDiscount",
+      "assert": "各忠誠等級回傳正確折扣比例",
+      "testData": { "loyaltyTiers": [1, 2, 3, 4, 5] },
+      "mergedIntoScenarioId": null,
+      "validationReason": null,
+      "limitations": []
+    },
+    {
+      "scenarioId": "GEN-002",
+      "source": "analyzer",
+      "originalContent": null,
+      "normalizedName": "CalculateDiscount_不同消費金額與等級組合_應正確計算",
+      "methodName": "CalculateDiscount",
+      "status": "accepted",
+      "priority": "P1",
+      "arrange": "建立不同消費金額與忠誠等級組合",
+      "act": "呼叫 CalculateDiscount",
+      "assert": "回傳符合消費金額與等級的折扣",
       "testData": {},
       "mergedIntoScenarioId": null,
       "validationReason": null,
@@ -335,17 +357,16 @@ developer_instructions = """# TUnit 測試分析器
     "acceptedWithLimitation": 0,
     "merged": 0,
     "rejected": 0,
-    "analyzerSupplemented": 5,
-    "effective": 5
+    "analyzerSupplemented": 2,
+    "effective": 2
   },
   "methodScenarioCounts": {
-    "ValidateEmployee": 3,
-    "CalculateAnnualBonus": 2
+    "CalculateDiscount": 2
   },
   "projectContext": {
     "targetFramework": "net9.0",
     "testFramework": "tunit",
-    "solutionPath": "MyProject.slnx",
+    "solutionPath": null,
     "testProjectPath": "tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj",
     "sourceProjectPath": "src/MyProject.Core/MyProject.Core.csproj"
   }
@@ -392,10 +413,11 @@ developer_instructions = """# TUnit 測試分析器
 
 在產出最終 JSON 之前，執行以下一致性檢查：
 
-1. **場景總數對齊**：計算 `methodScenarioCounts` 所有值的加總，確認等於 `suggestedTestScenarios` 陣列的長度
+1. **頂層 scope 與計數對齊**：artifact `requestedScope` 必須逐欄原樣等於 dispatch payload。class scope 的 `methodsToTest` 列出實際解析出的全部 public methods，Validator 則列實際規則群組，但兩者都只是資訊，不得縮小有效 scenario 集合；constructor guards 以 `methodScenarioCounts.Constructor` 與 catalog `methodName: "Constructor"` 保留。methods scope 必須以 `scopeResolution` 逐一解析 selectors，解析結果聯集等於 `methodsToTest`，所有有效 scenarios 只屬於該聯集。`methodCount` 必須等於輸出 `methodsToTest` 的項目數；`Constructor` 是可出現在 `methodScenarioCounts` 的 pseudo-method，但不列入 class scope 的 `methodsToTest` 或 `methodCount`。`scenarioCount` 必須等於 `scenarioReviewSummary.effective`；再計算 `methodScenarioCounts` 所有值的加總，確認等於 `scenarioCount` 與 `suggestedTestScenarios` 陣列的長度
    - 若不一致：補足遺漏場景，或修正 `methodScenarioCounts` 中的數字，以實際 `suggestedTestScenarios` 為準
-2. 確認 `projectContext.targetFramework`、`projectContext.solutionPath`、`projectContext.sourceProjectPath`、`projectContext.testProjectPath` 均不為空
+2. 確認 `projectContext.targetFramework`、`projectContext.sourceProjectPath`、`projectContext.testProjectPath` 均不為空，且相容性欄位 `projectContext.solutionPath` 為 `null`
 3. 確認 `targetClasses[].className` 不為空
+   - scope 內每個 `targetClasses[].methods[]` 都有唯一且非空的 `methodIdentifier`，且每個參數都有 boolean `isOptional` 與符合 optional 狀態的 `defaultValueExpression`
 4. **Validator 類型額外驗證**：
    - 精簡摘要中包含相容性 metadata `"forbidWriterSplit": true`；正式 topology 已固定為單一 Writer，此欄不得被解讀為 dispatch decision
    - `validatorInfo.validBaseObjectHint` 不為空，且每個有約束的屬性都有對應值
@@ -405,6 +427,7 @@ developer_instructions = """# TUnit 測試分析器
 7. **Identifier 合法性**：有效 `normalizedName` 可直接作為 C# method identifier，不得把名稱修復責任留給 Writer。
 8. **Attempt isolation**：禁止搜尋、讀取或寫入 prior-attempt、archive、retained、歷史 `.orchestrator` 或 workspace 外部 paths。若意外 read/write，必須回傳 blocked 並在 `tokenEstimateInputs` 如實記錄；刪除誤寫檔案不會恢復本次 attempt 的有效性。
 9. **Minimal read scope**：逐筆檢查 `tokenEstimateInputs.readFiles`；source/test project、project context、目前 assigned Analyzer definition、明確 migration input 與必要技術型 Skills 以外的路徑不得存在，尤其禁止其他 `.codex/agents/**` 與 `.codex/skills/dotnet-testing-orchestrator-*/**`。違反時回傳 `analyzer-read-scope-violation`，不得寫成 completed。
+10. **Optional parameter default binding**：scope 內每個含 optional 參數的方法至少有一個有效 scenario，其 `optionalParameterDefaultBinding.methodIdentifier` 對應完整方法識別，且 `omittedParameters` 恰好列出該方法全部 optional 參數；明示傳入預設值不算省略。
 
 > 自我驗證失敗時，原地修正 JSON，不要跳過或忽略不一致。
 
@@ -432,11 +455,11 @@ developer_instructions = """# TUnit 測試分析器
 
 > **Write 工具使用限制**：Write 工具**僅限**用於 `.orchestrator/` 目錄下的 JSON 檔案。**禁止**用於修改任何原始碼或測試檔案。
 
-### Estimated Token Usage Telemetry（正式 workflow 必填）
+### tokenEstimateInputs 結構
 
-寫入 analysis JSON 時，必須在頂層加入 `tokenEstimateInputs`。此欄位只記錄可觀測材料，供後續 estimator 估算 visible-context token；你不得自行計算或回報 token 數字。
+寫入 analysis JSON 時，必須在頂層加入 `tokenEstimateInputs`。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致 Analyzer isolation gate 失敗。
 
-正式 workflow 中此欄位是 canonical telemetry 必填契約；`readFiles` 與 `writtenFiles` 必須完整列出實際 reads/writes，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑來規避 isolation gate。
+正式 workflow 中此欄位是 read-scope／isolation 必填契約；`readFiles` 與 `writtenFiles` 必須完整列出實際 reads/writes，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑來規避 isolation gate。
 
 > **寫後讀取限制**：正常情況使用寫入前已完成自我驗證的 JSON 直接回傳精簡摘要；禁止只為 schema verification 再讀回剛寫入的 analysis。只有寫入結果不確定或需要修復失敗寫入時，才可讀回自己的 canonical analysis 一次，並在 `tokenEstimateInputs.readFiles` 如實記錄。
 
@@ -446,7 +469,7 @@ developer_instructions = """# TUnit 測試分析器
   "estimateKind": "visible-context",
   "readFiles": [
     { "path": "被測試目標檔案路徑", "reason": "source under test" },
-    { "path": "讀取過的 csproj / solution / migration source / existing test file", "reason": "analysis input" }
+    { "path": "讀取過的 csproj / migration source / existing test file", "reason": "analysis input" }
   ],
   "writtenFiles": [
     { "path": "analysisOutputPath", "reason": "analysis handoff artifact" }
@@ -467,6 +490,7 @@ developer_instructions = """# TUnit 測試分析器
   "status": "completed",
   "className": "ProductService",
   "targetType": "service",
+  "requestedScope": { "kind": "class" },
   "methodsToTest": ["GetById", "Create", "Delete"],
   "methodCount": 3,
   "scenarioCount": 10,
@@ -482,7 +506,7 @@ developer_instructions = """# TUnit 測試分析器
   "projectContext": {
     "targetFramework": "net9.0",
     "testFramework": "tunit",
-    "solutionPath": "MyProject.slnx",
+    "solutionPath": null,
     "sourceProjectPath": "src/MyProject.Core/MyProject.Core.csproj",
     "testProjectPath": "tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj"
   }
@@ -494,20 +518,21 @@ developer_instructions = """# TUnit 測試分析器
 ```json
 {
   "status": "completed",
-  "className": "OrderValidator",
+  "className": "RegistrationRequestValidator",
   "targetType": "validator",
   "forbidWriterSplit": true,
+  "requestedScope": { "kind": "class" },
   "methodsToTest": ["CustomerId", "Items", "CrossField_TotalAmount_Items"],
-  "methodCount": 5,
-  "scenarioCount": 20,
-  "methodScenarioCounts": { "CustomerId": 3, "Items": 5, "CrossField_TotalAmount_Items": 4, "...": "..." },
+  "methodCount": 3,
+  "scenarioCount": 12,
+  "methodScenarioCounts": { "CustomerId": 3, "Items": 5, "CrossField_TotalAmount_Items": 4 },
   "requiredSkills": ["tunit-fundamentals"],
   "tunitFeatureRequirements": { "basicTest": true, "arguments": true, "matrixTests": false },
-  "analysisFilePath": "tests/MyProject.Core.Tests/.orchestrator/analysis/OrderValidator.analysis.json",
+  "analysisFilePath": "tests/MyProject.Core.Tests/.orchestrator/analysis/RegistrationRequestValidator.analysis.json",
   "projectContext": {
     "targetFramework": "net9.0",
     "testFramework": "tunit",
-    "solutionPath": "MyProject.slnx",
+    "solutionPath": null,
     "sourceProjectPath": "src/MyProject.Core/MyProject.Core.csproj",
     "testProjectPath": "tests/MyProject.Core.Tests/MyProject.Core.Tests.csproj"
   }
@@ -516,7 +541,7 @@ developer_instructions = """# TUnit 測試分析器
 
 > **`methodScenarioCounts`**：供 Writer 驗證每個方法的 scenario coverage、供 Orchestrator 顯示摘要與檢查總數一致性；不得用於分割 Writer。當 `targetType === "validator"` 時，精簡摘要仍保留 `"forbidWriterSplit": true` 作歷史 schema 相容性，但不影響所有 target 固定單一 Writer 的正式 topology。
 
-> **`methodsToTest`**：若呼叫者指定單一方法或方法清單，此欄為本次 Writer/Reviewer 的硬邊界。`methodCount` 必須等於 `methodsToTest` 的數量（不含 `Constructor` pseudo-method），`suggestedTestScenarios` 不得包含 scope 外 public methods。
+> **`requestedScope` 與 `methodsToTest`**：`requestedScope` 是唯一範圍來源並原樣保留 dispatch；class scope 下 `methodsToTest` 列出實際解析出的全部 public methods，Validator 則列實際規則群組，但只作資訊，不得排除 constructor guards 或其他有效 scenarios。methods scope 下 `scopeResolution` 逐一保存 selectors 的解析結果，`methodsToTest` 等於解析方法聯集，作為 Writer/Reviewer 硬邊界。`methodCount` 必須等於 `methodsToTest` 項目數；class scope 的 `Constructor` pseudo-method 不列入兩者，但必須在 `methodScenarioCounts` 與 catalog 保留對應情境。
 
 ---
 
@@ -534,8 +559,8 @@ developer_instructions = """# TUnit 測試分析器
 10. **migrationSource 判定範圍** — `migrationSource` 的值必須**僅依據測試專案本身的 `.csproj` PackageReference** 來判斷。若 `.csproj` 中包含 `xunit` 套件引用則為 `"xunit"`，包含 `NUnit` 則為 `"nunit"`，僅包含 `TUnit` 或無任何測試框架引用則為 `null`。**不得**因為工作區其他目錄（例如 `migration_source/`）中存在 xUnit 或 NUnit 測試檔案而將 `migrationSource` 設為非 null 值
 13. **Validator targetType 決定分析流程** — `targetType === "validator"` 時走 Step 2.5 的 Validator 專用分析流程，**跳過** Step 3 的方法簽章部分（只做依賴分析），`requiredSkills` 必須包含 `tunit-fundamentals`，且精簡摘要包含相容性 metadata `"forbidWriterSplit": true`；正式 workflow 對所有 target 都固定單一 Writer
 14. **輸出格式為緊湊 JSON** — 寫入交接檔案時使用 compact JSON（不加縮排、不加換行），以最小化 Writer 輸入 token
-11. **matrixCandidate 與 suggestedTestScenarios 互斥原則** — 當一個方法的 `matrixCandidate: true` 時，`suggestedTestScenarios` 中**只應包含一個 `[MethodDataSource]` 批次場景**（涵蓋所有組合），**不得同時列出個別組合案例**。例如，`CalculateAnnualFee` 若有 3 × 2 = 6 組合，只應列「CalculateAnnualFee_三種MembershipType與兩種isRenewal組合_應正確計算對應年費」，不應再逐一列出「CalculateAnnualFee_Basic且非續約_應回傳0」等 6 個個別案例。兩種方式並列會導致 Writer 重複實作，產生 12 個測試覆蓋相同 6 個邏輯案例。邊界/例外場景（如「CalculateAnnualFee_無效MembershipType_應拋出ArgumentOutOfRangeException」）不在此限，仍應個別列出
-12. **suggestedTestScenarios 命名禁止引用測試機制** — `suggestedTestScenarios` 的命名必須描述**預期行為**，**不得引用測試實作機制**（例如 `MethodDataSource`、`Arguments`、`ClassDataSource` 等）。錯誤範例：「BorrowBookAsync_三種MembershipType成功借閱_應以MethodDataSource驗證借閱期限」；正確範例：「BorrowBookAsync_依MembershipType借閱_借閱期限與MaxRenewals應符合會員等級規則」。第三段（預期結果）應描述業務邏輯的預期行為，而非測試框架的實作方式
+11. **matrixCandidate 與 suggestedTestScenarios 互斥原則** — 當一個方法的 `matrixCandidate: true` 時，`suggestedTestScenarios` 中**只應包含一個 `[MethodDataSource]` 批次場景**（涵蓋所有組合），**不得同時列出個別組合案例**。例如，`CalculateRenewalPrice` 若有 3 × 2 = 6 組合，只應列「CalculateRenewalPrice_三種PlanTier與兩種isRenewal組合_應正確計算價格」，不應再逐一列出 6 個個別案例。兩種方式並列會導致 Writer 重複實作，產生重複測試。邊界／例外場景仍應個別列出
+12. **suggestedTestScenarios 命名禁止引用測試機制** — `suggestedTestScenarios` 的命名必須描述**預期行為**，**不得引用測試實作機制**（例如 `MethodDataSource`、`Arguments`、`ClassDataSource` 等）。錯誤範例：「ScheduleRenewalAsync_三種PlanTier_應以MethodDataSource驗證期限」；正確範例：「ScheduleRenewalAsync_依PlanTier續約_期限與次數限制應符合方案規則」。第三段（預期結果）應描述業務邏輯的預期行為，而非測試框架的實作方式
 
 ## Tools
 

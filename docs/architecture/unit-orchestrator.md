@@ -1,6 +1,6 @@
 # Unit Testing Orchestrator 架構
 
-Unit 工作流程保留 Full 版的 **1 Orchestrator Skill + 4 Agent TOML** 架構。v1.3.0 的重點不是增加提示規則，而是把可由程式判定的 workflow truth 移到 `.codex/scripts/unit-runtime/`。
+Unit 工作流程保留 Full 版的 **1 Orchestrator Skill + 4 Agent TOML** 架構。v1.3.0 的重點不是增加提示規則，而是把可由程式判定的 workflow truth 移到 `.codex/scripts/dotnet-testing-codex-full/unit-runtime/`。
 
 ## 元件與責任
 
@@ -28,8 +28,8 @@ Unit Orchestrator
 - 每個角色都使用 `fork_turns: "none"`。
 - 同一 target 固定一個 Writer，不依 method、scenario 或輸出大小拆分。
 - Analyzer 可提出符合目標行為的合理 scenarios，不設人為數量上限。
-- 多 target 必須完成同一 phase 後才能進入下一 phase。
-- Executor 共用測試專案時循序執行，避免 build/test 競爭。
+- 多 target 的 Analyzer 與 Reviewer 可同批派遣；一般與 Coverage repair 的 Writer、Executor 都依 target 順序逐一派遣，避免共用測試專案的 `.csproj`、helper 與 build/test 互相競爭。
+- 多 target 必須完成同一 phase 後才能進入下一 phase；該 phase 的正式完成邊界取所有 targets 的最晚 `completedAt`。
 - Writer 超過 context 或 output limit 時，本次 attempt 停止並保留證據，不改回 split，也不刪減已接受 scenarios。
 
 ## Deterministic truth chain
@@ -42,18 +42,26 @@ analysis artifact
   → normalized workflow result
 ```
 
-`.codex/scripts/unit-runtime/` 包含 8 個零相依模組：
+`.codex/scripts/dotnet-testing-codex-full/unit-runtime/` 包含 16 個零相依模組：
 
 | Script | 用途 |
 | --- | --- |
+| `run-state.mjs` | Unit assignment、closeout、strict timing 與 presentation receipt |
+| `validate-attempt-isolation.mjs` | Unit attempt isolation |
+| `validate-scenario-contract.mjs` | Unit scenario provenance 與 acceptance |
+| `nuget-sandbox-preflight.mjs` | Analyzer 前驗證專案層 NuGet cache override、快取可讀性與指定專案 restore |
 | `workflow-state.mjs` | 固定 phase 順序、狀態轉移、terminal state 與 timing |
-| `workflow.mjs` | 多 target phase barrier、單一 Writer 與 Executor 循序規則 |
+| `workflow.mjs` | 多 target phase barrier、Analyzer／Reviewer 批次與 Writer／Executor 循序規則 |
 | `artifact-normalizer.mjs` | 接受自然的精簡或豐富 artifact shape，拒絕客觀矛盾 |
 | `coverage-decision.mjs` | 依 target-scoped coverage 與 threshold 產生 deterministic retry／terminal decision |
 | `execution-evidence.mjs` | 正規化 build、TRX、Cobertura 與 execution attempt evidence |
 | `run-unit-execution.mjs` | build-first 執行器，保存 stdout、stderr、TRX 與 coverage 原始證據 |
 | `project-integrity.mjs` | production/test project 檔案雜湊 inventory 與明確 allowlist 驗證 |
-| `workflow-result.mjs` | 從同一份 machine truth 投影 JSON 與 Markdown 最終結果；讀取 run-state 並執行 token estimator |
+| `archive-unit-run.mjs` | 完成後驗證正式 artifact、建立 portable evidence pack 並產生雜湊 manifest |
+| `workflow-result.mjs` | 從同一份 machine truth 投影 JSON 與 Markdown 最終結果；讀取 run-state  |
+| `usage-session.mjs` | 依本次 run、root turn、代理關係與 assignments 歸屬逐請求用量 |
+| `usage-report.mjs` | 完整 Lite HTML、用量表與選用 Standard credit 換算；保留收集狀態 |
+| `usage-observer.mjs` | 建立等待頁、背景收集與最終連結；封存前確認收集程序已停止 |
 
 模型可以用不同措辭或不同欄位豐富度表達結果；runtime 只要求必要識別、scenario mapping、執行數據與裁決不互相矛盾。optional prose 缺少或改寫不構成失敗。
 
@@ -65,14 +73,19 @@ analysis artifact
 2. 建立本次 attempt 的 `.orchestrator/` 範圍。
 3. 用 `project-integrity.mjs capture` 保存修改前 inventory。
 4. 初始化 workflow state。
+5. workflow start 成功後、Analyzer 前啟動本地 usage observer，避免等待頁被初始化視為殘留。
+
+用量產物保存於本次 `.orchestrator/usage/{runIdentifier}/`，不修改測試 truth 或 run-state 計時。主代理回合結束、資料完整且三次快照穩定後更新同一份 HTML；renderer 在七個既有區塊後，以尾端獨立的 `HTML token-usage report` 提供連結、file URL、狀態及說明，位置與 Integration 一致，維持原區塊順序與 presentation receipt。多 target 與 Coverage repair 依既有 assignments 歸屬，response ID 去重。封存只等待背景程序停止，unsupported／failed／incomplete 不需改成成功才能封存。
 
 ### 1. Analyzer
 
 Analyzer 讀取目標程式碼與核准的使用者情境，輸出 canonical analysis。runtime 驗證 target、scenario ID 與必要集合結構；測試價值與技術選擇仍由模型判斷。
 
+指定 method selector 確實不存在或無法解析時，Analyzer 交付空方法、空有效 scenario 與結構化 failure 的 sealed blocked artifact。runtime 仍依序完成空集合 Writer、attempt-0 not-run Executor 與 blocked Reviewer，讓四角色鏈以可稽核狀態結束。
+
 ### 2. Writer
 
-Writer 讀取目標程式碼、canonical analysis 與必要 Skills，完成所有已接受 scenarios。runtime 對帳 scenario mapping、輸出檔與 target ownership，不用固定句子驗收測試內容。
+Writer 讀取目標程式碼、canonical analysis 與必要 Skills，完成所有已接受 scenarios。runtime 對帳 scenario mapping、輸出檔與 target ownership，不用固定句子驗收測試內容。多 target 共用 test project 時，runtime 一次只派遣一個 Writer，讓專案檔與共用 helper 的每次寫入都有明確先後順序。
 
 ### 3. Executor
 
@@ -86,7 +99,7 @@ Reviewer 使用 analysis、writer artifact 與 Executor evidence 審查情境覆
 
 ### 5. 最終投影
 
-Terminal 後先由 `run-state.mjs closeout` 依 workflow-state truth驗證 assignment completion並關閉 phase 與 overall boundary，再執行 deterministic profiling finalize 與 strict timing validation；closeout不回填 assignment timestamp。Canonical artifact 的 access／permission failure一律 fail closed，不修改 ACL、ownership 或 permission繞過。`workflow-result.mjs` 接著產生 JSON 與 Markdown 兩種輸出。傳入 `--test-project` 後，runtime 自動讀取 `.orchestrator/run-state.json` 並執行 `estimate-token-usage.mjs`；模型不負責重算或拼接 final report。固定輸出包含測試結果總覽、情境覆蓋、Reviewer 結論、修正／異常與交付、各階段耗時、Timing Evidence、Profiling Summary 與 Estimated Token Usage。缺少 timing 或 token evidence 時保留對應區塊並標示 unavailable，不省略、不補零、不推測；token telemetry 不參與 correctness gate。
+Terminal 後先由 `run-state.mjs closeout` 依 workflow-state truth驗證所有 target 的 assignment completion並關閉 phase 與 overall boundary，再執行 deterministic profiling finalize 與 strict timing validation；closeout不回填 assignment timestamp。Canonical artifact 的 access／permission failure一律 fail closed，不修改 ACL、ownership 或 permission繞過。`workflow-result.mjs` 接著產生 JSON 與 Markdown 兩種輸出。單一 target 直接投影其結果；多 target 依 workflow-state 的 target 順序組成一份 schema v3 JSON 與一份固定七區塊 Markdown，並明列 completed、failed、blocked 或 cancelled。Executor 修正紀錄只取自 workflow state 已 seal 的 Executor／repair Executor artifact。傳入 `--test-project` 後，runtime 自動讀取 `.orchestrator/run-state.json`；模型不負責重算或拼接 final report。固定輸出包含測試結果總覽、情境覆蓋、Reviewer 結論、修正／異常與交付、各階段耗時、Timing Evidence、Profiling Summary。缺少 timing evidence 時保留對應區塊並標示 unavailable，不省略、不補零、不推測。
 
 ## Integrity 與變更邊界
 
@@ -101,6 +114,7 @@ Terminal 後先由 `run-state.mjs closeout` 依 workflow-state truth驗證 assig
 
 - phase 順序與 barrier；
 - single Writer topology；
+- 多 target 的 Writer／Executor 循序、共同 timing 邊界與單一 ordered final；
 - natural artifact shape；
 - build-first 與原始 evidence；
 - production integrity；

@@ -11,7 +11,7 @@
 | 觸發方式 | `$dotnet-testing-orchestrator-aspire` |
 | Dispatch 機制 | Codex 原生 SpawnAgent |
 
-Orchestrator 是**指揮中心**，調度四個 advanced-aspire Subagent，自身不撰寫測試。流程：Phase 0 前置清理 → Analyzer → Writer → Executor → Reviewer → Phase 5 保留 artifacts。全程維護 `run-state.json`。
+Orchestrator 是**指揮中心**，調度四個 advanced-aspire Subagent，自身不撰寫測試。流程：Phase -2 Docker preflight → Phase -1 NuGet preflight → Phase 0 前置清理 → Analyzer → Writer → Executor → Reviewer → Phase 5 保留 artifacts。全程維護 `run-state.json`。
 
 **與 Integration（WebApplicationFactory）Orchestrator 的核心差異**：執行模型為 **AppHost / `DistributedApplicationTestingBuilder`**（**非** `WebApplicationFactory`）；測試透過 **`app.CreateHttpClient("servicename")`** 發真實 HTTP 請求，服務名稱必須對齊 AppHost `AddProject("name")`；容器由 **Aspire AppHost 宣告式管理**（**非**程式化 Testcontainers）；DB 連線用 **`App.GetConnectionStringAsync("resourceName")`**（**非** `IConfiguration.GetConnectionString()`）；環境前置為 **Docker 硬前置 + Aspire workload 雙檢**（無 InMemory 退路）。
 
@@ -29,7 +29,7 @@ Orchestrator 是**指揮中心**，調度四個 advanced-aspire Subagent，自�
 | Executor | Subagent | `.codex/agents/dotnet-testing-advanced-aspire-executor.toml` |
 | Reviewer | Subagent | `.codex/agents/dotnet-testing-advanced-aspire-reviewer.toml` |
 
-Orchestrator 在 SpawnAgent 時**只傳 canonical 交接檔案路徑 + 必要控制欄位**，不嵌入完整 JSON、長篇敘事或 `sourceCodeContext`；各 Subagent 的 Step 0 自行讀取上游交接檔案。Orchestrator 自身**禁止讀 SKILL.md、禁止寫測試碼、禁止改 `.csproj` / `.cs`**，第一步只做殘留檢查、初始化 run-state、立即 dispatch Analyzer。
+Orchestrator 在 SpawnAgent 時**只傳 canonical 交接檔案路徑 + 必要控制欄位**，不嵌入完整 JSON、長篇敘事或 `sourceCodeContext`；各 Subagent 的 Step 0 自行讀取上游交接檔案。Orchestrator 自身**禁止讀 SKILL.md、禁止寫測試碼、禁止改 `.csproj` / `.cs`**，入口先確認 Docker daemon，再做 NuGet preflight；兩者 ready 後才檢查殘留、初始化 run-state 並 dispatch Analyzer。
 
 ---
 
@@ -95,7 +95,9 @@ Writer 在 Step 0 先讀 analysis.json，**只載入單一技術技能** `.agent
 
 ### 4.3 P4 版本政策
 
-既有 `.csproj` 套件版本一律**保留，不升不降**；僅對缺少的必要套件用 SKILL 記載的最低版本；不執行 `dotnet list package --outdated`；fix 回合 **add-only、不 bump**。`Aspire.Hosting.Testing` / `Aspire.Hosting.*` resource 套件版本必須與 AppHost 既有 Aspire 版本對齊（**8.x / 9.x / 13.x 不可混**），只補缺、不改既有版本。
+以 Analyzer `existingTestInfrastructure.packageReferences` 記錄起點已有套件，其 `.csproj` 版本**保留，不升不降**。缺少的必要套件以技術 Skill 最低版本作參考，依目標 test project 當次 restore assets 與相依需求選擇相容版本；範例版本不是固定值。不執行 `dotnet list package --outdated`，不查詢或套用最新版。`Aspire.Hosting.Testing` / `Aspire.Hosting.*` resource 套件版本必須與 AppHost 既有 Aspire 版本對齊（**8.x / 9.x / 13.x 不可混**），只補缺、不改起點已有版本。
+
+Executor 依起點基準與 Writer `nugetChanges` 區分已有／本輪新增套件；本輪新增套件造成 NU1605 等解析錯誤時，可在既定最多五輪內修正測試側參考並重新建置／測試。這是同一 assignment 的修正迴圈，不是重新啟動 workflow；遇權限拒絕或核准範圍內無法解決的 blocker，保留原始失敗與未驗證修正並停止，不繞過拒絕。
 
 ### 4.4 Writer Artifact 完整性 Gate
 
@@ -111,14 +113,14 @@ Writer 回傳後 Orchestrator **不只採信摘要**，必須讀本 target 全�
 
 確認 Docker + Aspire 環境 → 建置 → 執行 → **bounded 修正迴圈（最多 5 輪）**。Aspire 測試需啟動 AppHost + 多容器，環境複雜度高，故修正空間較 integration（3 輪）寬。
 
-- **Step 0 Docker 環境檢查（硬前置）**：`docker info`；`Cannot connect to the Docker daemon` / `command not found` 各自回報。**Aspire 無 InMemory 退路** — 不同於 integration 可純 InMemory 跳過，Aspire 容器由 AppHost 管理，Docker 為必要條件。
+- **Step 0 Docker 環境複查（硬前置）**：入口已檢查 Docker，建置前仍以 `docker info` 確認當時狀態；`Cannot connect to the Docker daemon` / `command not found` 各自回報。**Aspire 無 InMemory 退路** — 不同於 integration 可純 InMemory 跳過，Aspire 容器由 AppHost 管理，Docker 為必要條件。
 - **Step 0.5 Aspire workload 檢查（aspire 專屬）**：`dotnet workload list`；輸出無 `aspire` 時，**NuGet SDK 免 workload 例外** — 先讀 AppHost `.csproj`，若使用 `Aspire.AppHost.Sdk`（9.0.0+ 以 NuGet 套件提供）則 SDK 由 NuGet 解析，可跳過 workload 要求繼續執行；否則回報「請執行 `dotnet workload install aspire`」。
 - **建置**：`dotnet build <solution-path> -p:WarningLevel=0 /clp:ErrorsOnly --verbosity minimal`。
 - **執行（唯一允許方式）**：`dotnet test <solution-path> --no-build --verbosity minimal --blame-hang-timeout <10m|15m>`。`--blame-hang-timeout` **必須存在**：Aspire 8.x / 9.x 用 `10m`，13.x+ 用 `15m`。**絕不可** `dotnet run`、**絕不可**用無效的 `--timeout`（會導致 MSB1001）。
-- 常見修正：補 `using`、**add-only 補齊缺少套件**、`Projects.xxx` 型別（連字號轉底線）、`EnsureCreatedAsync()` 在 fixture、服務名稱一致性、`CreateHttpClient` 找不到服務。容器由 Aspire + `IAsyncLifetime.DisposeAsync` 自動清理，不需手動。**禁升降既有套件版本**修 build；**禁** restart / 拼湊·偽造 artifact / 假綠。
+- 常見修正：補 `using`、補齊缺少套件或修正本輪新增套件的相依衝突、`Projects.xxx` 型別（連字號轉底線）、`EnsureCreatedAsync()` 在 fixture、服務名稱一致性、`CreateHttpClient` 找不到服務。每次修改後重新建置，建置成功才測試；容器由 Aspire + `IAsyncLifetime.DisposeAsync` 自動清理，不需手動。**禁升降起點已有套件版本**修 build；**禁** restart / 拼湊·偽造 artifact / 假綠。
 - 結果：通過/失敗/略過數**必須來自實際 `dotnet test` 輸出**，禁編造。
 
-Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、build/test、case accounting、`executionMethod`、`blameHangTimeout`、Resource readiness、Aspire-native execution、fix history、零 production mutation truth 與 canonical telemetry；`validate-aspire-execution-contract.mjs` 作正式 gate。
+Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、build/test、case accounting、`executionMethod`、`blameHangTimeout`、Resource readiness、Aspire-native execution、fix history、零 production mutation truth 與 canonical telemetry；Docker 原始工具輸出直接內嵌既有 executor-result，不另寫 `.orchestrator` 日誌，保持 attempt isolation。`validate-aspire-execution-contract.mjs` 作正式 gate。
 
 ---
 
@@ -166,8 +168,6 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、bui
 
 **`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），含 `workflow: "aspire"` 與逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `produceSpanMs`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`、`contextForkPolicy=none`、`externalMemoryPolicy=forbid`、redispatch / restart / fix counters。formal roles 全部使用 `fork_turns: "none"`，並由 attempt-isolation 與 role-read-scope gates 驗證。正式 phase timing 必須讀實體檔計算，不得從對話敘述 / hook additionalContext / 人工推估 / token report 推導。
 
-> **Estimated Token Usage**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source，本 workflow 不回報正式 token usage。四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 `Estimated Token Usage` optional telemetry。此估算只供 visible-context 相對成本比較，不可用於 billing、runtime truth 或 correctness gate。
-
 ---
 
 ## 9. 多目標並行策略
@@ -186,7 +186,12 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、bui
 
 ## 10. Phase 0 / Phase 5 清理
 
-- **Phase 0**：啟動 Analyzer 前，`Glob({testProjectDir}/.orchestrator/**)` 檢查殘留；有殘留則委託 Executor `task: "cleanup"`，並初始化 `run-state.json`。
+- **Phase -2**：既有 `aspire-runtime/nuget-sandbox-preflight.mjs --workspace-root {workspaceRoot} --docker-only` 只檢查 Docker，15 秒內須取得 exit 0 與有效 daemon ServerVersion，才進行 NuGet。不可用時立即說明中斷階段與原始輸出，NuGet／四角色／測試皆未執行，不建立 run-state／observer／HTML。存取遭拒與 daemon 連線失敗分開分類；僅依工具政策允許一次原命令核准，不自動啟動 Docker 或改設定。
+- **Phase -1**：本次要求空白 tests 時，test project preflight 加 `--require-blank-start`，runtime 在 restore 前核對並輸出 startingPoint。ready 後的當次 `obj` 是還原產物，不當作前次殘留清理。
+- **Phase -1 執行權限**：正式 Orchestrator 依本次 session／工具明示的政策選擇第一次 preflight 的執行方式。一般環境使用現有權限；sandbox 限制 NuGet feed／所需預設快取且沒有可完成 restore 的離線證據時，若工具支援且政策允許，對原始完整命令提出單次 `require_escalated` 工具核准，working directory 固定為本次 workspace，省略 `prefix_rule`。使用者提示詞不需補寫權限操作。需要核准但遭拒、不支援或政策禁止時停止；不先執行失敗再換權限重試，不切換全域 Full Access、不改設定或加入 NuGet override，`NUGET_PACKAGES` 仍選用。只有該次 preflight 的 `ready` 可以進入下一步；保留原命令、核准結果與原始失敗，成功也不保證後續 sandbox 的套件可用。
+- **Phase 0**：啟動 Analyzer 前，只檢查前次 `.orchestrator` 殘留；有殘留且本次允許清理才委託 Executor `task: "cleanup"`。初始化 run-state 後，以 `preparationAssignments` 登記實際 cleanup 的角色、隔離設定與初始化前 dispatch／完成時間，供用量 runtime 精確對應本回合 thread；不計入四階段 timing 或代替正式 Executor。未登記或不合契約的子代理仍阻止完整用量判定。
+
+Executor 的套件 API XML 參考只由本 test project 的當次 `obj/project.assets.json` 所列 package ID／version／lib 或 ref 文件解析。唯讀 `--package-documentation` 產生 assets／XML SHA 與精確 readFiles，canonical Aspire Executor 的隔離 gate 會重新核對；不開放任意外部讀取或快取寫入，也不要求設定 NUGET_PACKAGES。原始 03 artifact 沒有此 provenance，仍維持拒絕，不能冒充通過。
 - **Phase 5**：四階段完成並呈現結果後，**不自動清理**本次 `.orchestrator/` artifacts（保留 analysis / writer-result / executor-result / reviewer-result / run-state 供驗收與 benchmark），於**下一次 run 的 Phase 0** 殘留清理時一併處理。
 - 生成測試碼 + `.orchestrator/` 皆為 byproduct，**不進版控**。
 
@@ -194,7 +199,11 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、bui
 
 ## 11. 結果整合與呈現
 
-收到四個 subagent 回傳後，Orchestrator 整合呈現給使用者。最終輸出固定包含下列 **9 項**；資料一律來自 artifact / run-state，缺欄填「未提供」，不得省略項目、不得改成散文摘要、不得回報正式 token usage（只允許 `Estimated Token Usage` optional telemetry）：
+Analyzer 的三種 catalog 使用非空 `evidence[]`，頂層 `scenarioCount` 等於有效情境數。正式 `run-state.mjs analysis-gate` 執行原 scenario validator，原始命令／stdout／stderr／exit code 與 analysis SHA 存於本次 validation 目錄；拒絕時不轉型 artifact，而由 runtime 完成 blocked closeout。其他 gate 使用 `fail-gate` 綁定原 evidence。`finalize` 推導已派發階段 timing／profiling，strict validation 後仍交付固定八項、HTML 與 receipt；未派發角色不補造 artifacts 或時間。
+
+四個開始標題在 dispatch 前固定輸出；phase completion 與 blocked 摘要由 Aspire `workflow-result.mjs phase` 投影，原樣交付。Unit／TUnit／Integration 專屬 runtime 不變，不能由名稱相同推論它們匯入中央版本。
+
+收到四個 subagent 回傳後，Orchestrator 整合呈現給使用者。最終輸出固定包含下列 **8 項**；資料一律來自 artifact / run-state，缺欄填「未提供」，不得省略項目、不得改成散文摘要：
 
 1. **測試檔案連結**：Writer 產出的所有測試檔與基礎設施檔路徑（AspireAppFixture、CollectionDefinition、IntegrationTestBase、DatabaseManager、GlobalUsings 等），不在 chat 嵌入完整測試碼。
 2. **執行結果摘要**：Executor 的 `dotnet test` 結果（通過 / 失敗 / 略過數、`executionMethod`、`--blame-hang-timeout` 值）。
@@ -204,7 +213,10 @@ Executor 寫 `{ControllerName}.executor-result.json`，含 Docker/workload、bui
 6. **使用的 Skills 組合**：Writer 載入的 skills，固定應含 `aspire-testing`，不得混入 unit / TUnit / 一般 integration skills。
 7. **Executor 修正紀錄**：`fixRounds`、`fixHistory`、`addedPackages` 與 production/AppHost mutation truth；正式結果預期為「無」，任何 production/AppHost 改動均為契約違反。
 8. **各階段耗時摘要 + Timing Evidence**：讀 `run-state.json`，輸出「### 各階段耗時」與「### Timing Evidence」兩張表。
-9. **Estimated Token Usage**：optional telemetry。四階段與 timing evidence 完成後執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，輸出「### Estimated Token Usage」表格；estimator 失敗 / run-state 缺失 / artifact 不足 / summary 為 `unavailable` 時改輸出 unavailable 表格，但不得讓 workflow 失敗，且不得作為 correctness gate。
+
+最終交付由 `aspire-runtime/workflow-result.mjs` 從本次四角色 canonical artifacts 與 run-state 投影。保留上述八項及兩張表，接續 `### Profiling Summary`，最後是 `### HTML token-usage report`；照錄完整 Markdown，不在 HTML 後追加內容。JSON／Markdown 位於 `.orchestrator/workflow-result/`，run-state `presentation` receipt 記錄 renderer、terminal、paths、時間及 SHA，最後以中央 `run-state.mjs validate --require-complete-timing --require-presentation` 核對。缺漏資料不補零，已存在輸出不覆寫。
+
+Aspire 擁有獨立的三個用量模組及鎖定完整 Lite HTML；逐 request 依前置 turn_context 歸屬，保留等待／unsupported／failure 狀態及選用 Standard credit 互動。收集完成不代表測試成功或帳戶實際扣抵。Windows Docker Desktop／MSSQL 例外只呈現原 gates 已 qualified 的結果，保留原始 passed／failed／skipped、assertions、resource evidence 與 Reviewer acceptance；不改寫 Executor truth。完整 HTML 與尾端交付已完成同一修正版本的 .NET 10／9／8 人工驗收；最後測試結果分別為 13／0／0、22／0／0、12／0／0（passed／failed／skipped）。.NET 8 Reviewer 為 A／98／pass_with_warnings；保留非阻斷警告及歷史失敗紀錄，使用者已確認本次修改完成。
 
 > **環境問題 vs 測試品質問題**：必須區分「環境問題（Docker daemon / Aspire workload / 容器啟動 / stale named volume / 網路）」與「測試品質問題」。Docker 未啟動、Aspire workload 缺失、容器健康檢查或啟動逾時、stale volume、網路問題，**不得**包裝成 Writer 品質缺陷。
 
@@ -221,6 +233,6 @@ App.GetConnectionStringAsync("resourceName")（Aspire 管理連線，非 IConfig
 Respawn（資料庫狀態重置）
 ```
 
-> 執行模型：xUnit `dotnet test` + `--blame-hang-timeout`（8.x/9.x=10m、13.x=15m）+ Docker + Aspire AppHost 宣告式容器；測試 `.csproj` 含 `Microsoft.NET.Test.Sdk` + `xunit` + `Aspire.Hosting.Testing`、**無** `<OutputType>Exe</OutputType>`。需 Docker（Executor Step 0 `docker info` 硬前置，無 InMemory 退路）+ Aspire workload（Step 0.5 `dotnet workload list`，含 `Aspire.AppHost.Sdk` NuGet 免 workload 例外）。
+> 執行模型：xUnit `dotnet test` + `--blame-hang-timeout`（8.x/9.x=10m、13.x=15m）+ Docker + Aspire AppHost 宣告式容器；測試 `.csproj` 含 `Microsoft.NET.Test.Sdk` + `xunit` + `Aspire.Hosting.Testing`、**無** `<OutputType>Exe</OutputType>`。需 Docker（入口 Phase -2 preflight 與 Executor Step 0 `docker info` 複查，無 InMemory 退路）+ Aspire workload（Step 0.5 `dotnet workload list`，含 `Aspire.AppHost.Sdk` NuGet 免 workload 例外）。
 >
 > 技術型 `dotnet-testing-*` Skills 由外部 repo [`dotnet-testing-agent-skills`](https://github.com/kevintsengtw/dotnet-testing-agent-skills) 提供，需由 standalone installer 以精確 Release tag 安裝到 `.agents/skills/`。

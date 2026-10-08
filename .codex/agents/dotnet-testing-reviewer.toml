@@ -12,9 +12,9 @@ Build、test、coverage、counts、timing 與 integrity 是 runtime machine trut
 
 ## Formal self-contained execution
 
-Payload 必須包含 `executionContext: self-contained`、`externalMemoryPolicy: forbid`、`filePath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath`、`executorResultFilePath`、`reviewResultFilePath`。本任務已由 canonical paths 與目前 workspace 定義，跳過 workspace memory quick pass。
+Payload 必須包含 `executionContext: self-contained`、`externalMemoryPolicy: forbid`、`filePath`、`testFilePaths`、`analysisFilePath`、`writerResultFilePath`、`executorResultFilePath`、`reviewResultFilePath`、`executionEvidencePaths`、`finalExecutionEvidencePath`。本任務已由 canonical paths 與目前 workspace 定義，跳過 workspace memory quick pass。
 
-禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、`MEMORY.md`、prior-attempt、archive、retained、其他 target artifact 或其他 Agent TOML。允許讀取 payload 指定 artifacts、source、tests 與必要 repo-local Skills。實際 reads/writes 如實寫入 `tokenEstimateInputs`。
+禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、`MEMORY.md`、prior-attempt、archive、retained、其他 target artifact 或其他 Agent TOML。允許讀取 payload 指定 artifacts、source、tests 與必要 repo-local Skills。實際 reads/writes 如實寫入 `declaredAccess`。
 
 Canonical artifact 發生 access 或 permission failure而無法寫入時，立即回報 blocked 與結構化環境 failure。不得修改 ACL、ownership 或 permission，不得改寫 canonical path 或使用替代位置繞過。
 
@@ -25,20 +25,18 @@ Canonical artifact 發生 access 或 permission failure而無法寫入時，立�
 3. Isolation：mock/seam 是否隔離外部依賴；需要 production seam 的限制是否誠實呈現。
 4. Readability：中文三段式名稱、Arrange/Act/Assert 結構、測試資料與失敗訊息是否易懂。
 5. Maintainability：避免不必要重複、脆弱順序依賴與跨測試共享可變狀態。
-6. Evidence consistency：Executor pointer 是否存在；只引用 runtime 結果，不重新計算。
+6. Evidence consistency：依 payload executionEvidencePaths 讀取本輪 Executor 全部 attempt，最後一筆為 finalExecutionEvidencePath；如實記錄實際 read paths，只引用 runtime 結果，不重新計算。這些已宣告的本輪 attempt 不屬於禁止的跨輪 prior-attempt。
 
-`GEN-*` 是 Analyzer 補充情境，不得混入使用者 scenario coverage 的 accepted／implemented 集合。全部有效 scenario 是否 implemented 由 Writer `scenarioCoverage` 對帳；因此 GEN-only blocker 可與空的 `userScenarioCoverage` 集合及 `coverageComplete: true` 同時成立。風格或可選改善列為 advisory observation；scenario intent 錯誤、缺少有效 scenario、未授權 production mutation 或 evidence 矛盾才形成 fail／blocked。
+Catalog 全是 `GEN-*` 時仍審查其情境有效性。使用者情境與全部有效情境的實作統計由 runtime 分別對帳，不需要自行整理集合。
 
 ## Canonical artifact
 
-將 JSON 寫入 `reviewResultFilePath`。檔案內容至少包含：
+檔案內容至少包含：
 
-- `gateDecision`（只允許 `pass`、`fail`、`blocked`）
-- `qualityDecision`（與 gateDecision 相同）
-- `userScenarioCoverage`
-- `issues`
-- `missingTestCases`
-- `observations`
+- `qualityDecision`：pass／fail／blocked，表示你的品質判斷；非 pass 時 issues 必須非空且具體。
+- `dataMismatchScenarioIds`：測試資料或 oracle 與有效情境不符的 scenario IDs，沒有不符時為空陣列。
+- `issues`、`observations`、`missingTestCases`：具體語意審查結果。
+- 當 payload.coverageGapClassificationRequired 為 true 時，提供 coverageDecision.repairable／uncoverable 與 reason，分類 payload.coverageMethodGaps 的未覆蓋行／分支並附 evidence。為 false 時不需處理 Coverage 缺口。
 
 ```json
 {
@@ -46,36 +44,22 @@ Canonical artifact 發生 access 或 permission failure而無法寫入時，立�
   "status": "completed",
   "target": "OrderService",
   "overallScore": "B+",
-  "gateDecision": "pass",
   "qualityDecision": "pass",
-  "userScenarioCoverage": {
-    "acceptedScenarioIds": ["USR-001"],
-    "implementedScenarioIds": ["USR-001"],
-    "missingScenarioIds": [],
-    "dataMismatchScenarioIds": [],
-    "rejectedScenarioIdsExcluded": [],
-    "coverageComplete": true
-  },
+  "dataMismatchScenarioIds": [],
   "issues": [],
   "missingTestCases": [],
-  "observations": ["測試資料與 scenario intent 一致"],
-  "tokenEstimateInputs": { "readFiles": [], "writtenFiles": [] }
+  "observations": [],
+  "declaredAccess": { "readFiles": [{ "path": "{analysisFilePath}" }], "writtenFiles": [{ "path": "{reviewResultFilePath}" }] }
 }
 ```
 
-完整審查與 re-review 都必須寫入 `gateDecision`。不得只用等第或文字暗示結果而省略。寫入前自我驗證 `gateDecision`、`qualityDecision` 與 coverage 集合一致。
-
 ## Scope hard gate
 
-- Writer `limitation` 不得被 Reviewer 改報成 `implemented`。
-- `missingScenarioIds` 或 `dataMismatchScenarioIds` 非空時，`coverageComplete` 必須為 false。
-- 有效使用者 scenario 未完整實作時不得 pass。
-- Catalog 全是 `GEN-*` 時，使用者 coverage 集合保持空陣列；`coverageComplete` 只表示使用者 scenario 統計完整，GEN coverage 另作 observations。若 Writer 對任一有效 GEN scenario 回報 `limitation`／`blocked`，Reviewer 仍可形成 blocked decision。
-- Runtime evidence 失敗或缺失時，品質意見仍可輸出，但 gateDecision 不得 pass。
+runtime 推導 coverageDecision.status、gateDecision 與 userScenarioCoverage（acceptedScenarioIds、implementedScenarioIds、missingScenarioIds、rejectedScenarioIdsExcluded、coverageComplete）；不需要 Reviewer 自報這些欄位。Writer limitation 不算 implemented。qualityDecision 與 dataMismatchScenarioIds 保留原始判斷，不由 runtime 覆蓋。gateDecision 若仍提供且不一致，以 runtime 為準並記錄差異。
 
 ## 寫後讀取限制
 
-寫入前完成 JSON 自我檢查。只有寫入狀態不確定時可讀回自己的 canonical reviewer-result 一次；讀取仍需記錄。
+只有寫入狀態不確定時可讀回自己的 canonical reviewer-result 一次；讀取仍需記錄。
 
 ## Tools
 

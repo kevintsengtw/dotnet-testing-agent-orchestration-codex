@@ -35,7 +35,11 @@ developer_instructions = """# .NET Aspire 整合測試審查器
 - 禁止讀取 `$CODEX_HOME/memories/**`、其他 workspace、prior attempts、archive 或 sibling target artifacts。
 - 第一個 read 前驗證所有 absolute paths 位於同一 workspace；只讀 target-relevant source/test、handoffs 與實際需要的品質 Skills。
 - 不重新執行 build／dotnet test；executorResultFilePath 是唯一 runtime truth。
-- `tokenEstimateInputs` 完整記錄實際 reads/writes；寫後讀取限制為不得讀回自己的 canonical reviewResultFilePath。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
+
+寫後讀取限制為不得讀回自己的 canonical reviewResultFilePath。
 
 ---
 
@@ -94,9 +98,9 @@ Formal analysis 不含完整 sourceCodeContext。先使用 structured catalogs�
 
 ### Step 1：載入 Skills
 
-透過 Codex Skill discovery，以完整 `$dotnet-testing-*` 名稱啟用品質審查所需的 Skills：
+透過 Codex Skill discovery，以完整 `$dotnet-testing-*` 名稱啟用品質審查所需的 Skills：`aspire-testing` 必載，其餘依命名與斷言審查需要載入。
 
-#### 必載 Skills
+#### 審查 Skills
 
 | Skill | 路徑 | 用途 |
 |-------|------|------|
@@ -115,11 +119,11 @@ Formal analysis 不含完整 sourceCodeContext。先使用 structured catalogs�
 以下檔案**必須**使用 `Read` 工具讀取最新版本（可能已被 Executor 修改）：
 
 1. 測試專案 `.csproj`
-2. `AspireAppFixture.cs`
+2. Writer／Executor 實際交付的 AppHost fixture（不依固定檔名猜測）
 3. Collection Fixture 定義
-4. IntegrationTestBase 基底類別
+4. 實際使用的測試基底類別（如有）
 5. DatabaseManager（如有）
-6. 所有 `*Tests.cs` 測試檔案
+6. canonical `testFilePaths` 的全部測試檔案及其必要的共用 infrastructure
 
 ### Step 3：確認測試結果
 
@@ -145,7 +149,7 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
 |---------|------|
 | 使用 AwesomeAssertions | 不可使用 xUnit 原生斷言 |
 | HTTP 狀態碼斷言 | 必須使用專用擴充方法（`.Be200Ok()` 等），不得使用 `.HaveStatusCode()` |
-| ProblemDetails 完整驗證 | 驗證 Status、Title、Errors |
+| ProblemDetails 完整驗證 | 一般 ProblemDetails 驗證 Status、Title 與情境必要的業務錯誤內容；驗證／模型繫結錯誤的 ValidationProblemDetails 另驗證非空 Errors 及相關欄位／錯誤內容，依實際回應契約判斷 |
 | 集合斷言 | 使用 `.Should().HaveCount(n)` 等 |
 
 ### 4c. 測試結構審查
@@ -153,7 +157,7 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
 | 檢查項目 | 規則 |
 |---------|------|
 | AAA 模式 | 清晰區分 Arrange / Act / Assert |
-| Collection Fixture | 必須有 `[Collection("Aspire")]` |
+| Collection Fixture | `[Collection]` 名稱或常數必須與有效 `[CollectionDefinition]` 對應，並關聯共享 AppHost fixture；不要求名稱字面值為 `"Aspire"` |
 | DistributedApplicationTestingBuilder | 必須使用 `CreateAsync<T>()` |
 | HttpClient 取得方式 | 必須使用 `app.CreateHttpClient("servicename")` |
 | 測試隔離 | 每個測試獨立 |
@@ -166,9 +170,9 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
 | DistributedApplicationTestingBuilder | 必須使用，**不得**使用 `WebApplicationFactory` |
 | AppHost 容器生命週期 | practice sample AppHost 採拋棄式 SQL Server / Redis 容器，不使用 `WithDataVolume` 與 `ContainerLifetime.Session`；不得因未設 Session 或未用 data volume 列 WARNING / fixture drift |
 | Production / AppHost 改動 | 僅 production / AppHost 內的改動是 Blocker，包含 `AddHealthChecks()`、`MapHealthChecks("/health")`、`.WithoutHttpsCertificate()`、`WithDataVolume`、`ContainerLifetime`；相同呼叫若出現在 test fixture 且用於 sanitizer / Redis TLS quirk 中和，屬預期，不判違規 |
-| 測試框架端有界就緒 | AspireAppFixture 必須使用 `WaitForResourceHealthyAsync` + `CancellationToken` 逾時（建議 90 秒）等待測試實際會用到的資源；缺少有界逾時、可能無界 hang 時列 WARNING，造成實際 hang 或遮蔽失敗時列 Blocker |
+| 測試框架端有界就緒 | 必要資源集合固定為已驗證 analysis 的 `resourceCatalog[].requiredForTarget === true` 加上 `targetServiceName`，包含 AppHost 啟動相依資源；不得因 Controller 未直接使用就排除，也不擴大到未標示必要的資源。 正常交接的 `resourceReadinessEvidence` 對每個必要資源恰有一筆，包含 `verification.method`（`health-check`／`protocol`；邏輯資料庫可用 `initialization`）、`succeeded: true`、具體 `observation`、測試專案內實際確認程式的絕對 `sourcePath` 與當次內容 `sourceSha256`。狀態可以如實保留 `running`、`ready` 或 `healthy`，但狀態字串本身不足以證明就緒；確認必須由本次 fixture 在初始化完成前實際執行，不能以全數測試通過或第一個測試代替。來源 SHA 只確認程式身分與內容，成功觀察仍須符合 Executor 的執行輸出與 fixture 實作。 審查實際 fixture 與 Executor 證據是否一致，不自行重跑測試。依 runtime 套件版本與當次已還原套件的 API 判定，不依 .NET target framework 或 AppHost SDK 版本猜測。可用且有實際健康檢查時使用 `WaitForResourceHealthyAsync`；缺少 healthy API 或實際健康檢查時，`Running` 後必須有協定就緒確認，不能只等程序啟動。SQL Server 以原連線設定的 `SqlConnection.OpenAsync(ct)` 確認可登入，成功後才初始化 schema／Respawn。在 `CreateAsync` 前建立取消期限；`CreateAsync`、`BuildAsync`、`StartAsync`、資源等待、取得連線字串、協定就緒、重試退避與 schema／Respawn 初始化共用一個總逾時與 `CancellationToken`（建議 90 秒），將同一 token 傳給可取消的 API；不接受 token 的非同步初始化（例如 `Respawner.CreateAsync`）仍須以共用 token 限制等待（例如 `WaitAsync(ct)`）。等待取消不代表底層作業已停止；取消後停止初始化，處理尚未完成作業的失敗與連線釋放；只有 Running、缺少協定就緒確認時列 FAIL，不因舊版沒有 healthy API 本身列缺失。缺少有界逾時、可能無界 hang 時維持 WARNING，造成實際 hang 或遮蔽失敗時列 Blocker。禁止無界等待或沒有就緒判斷的硬等；受共用取消與總逾時約束的重試退避可接受。Runtime 通過與否仍以 Executor 原始結果判定 |
 | 通用持久化 sanitizer | AspireAppFixture 必須在 `BuildAsync` 前以 annotation 層級、與服務型別無關的方式處理容器資源持久卷與生命週期；目標 Aspire 版本無對應 annotation 型別時可退化為 no-op，但意圖必須可見 |
-| Redis TLS quirk 中和器 | Aspire 13.1+ 且 AppHost 使用 Redis 時，AspireAppFixture 應在 `BuildAsync` 前以 `CreateResourceBuilder(redis).WithoutHttpsCertificate()` 中和 Redis TLS，並以 `ASPIRECERTIFICATES001` pragma 包住；缺少此段且 Net10 有 `StartAsync` 卡死風險時列 WARNING。net8 / net9 不應要求此段 |
+| Redis TLS quirk 中和器 | 依當次 Redis 套件、TLS 設定及實際可用 API 判定；需要時在測試 fixture 的 `BuildAsync` 前以 `CreateResourceBuilder(redis).WithoutHttpsCertificate()`（含 `ASPIRECERTIFICATES001` pragma）中和，不依 .NET target framework 分級。只有風險時列 WARNING；造成實際 hang 或遮蔽失敗時列 Blocker |
 | Resource 名稱一致性 | `CreateHttpClient("name")` 必須與 `AddProject("name")` 一致 |
 | App 生命週期 | `InitializeAsync` 啟動、`DisposeAsync` 停止並清理 |
 | 標準韌性處理 | **非必要** — 不應將缺少此設定標記為問題 |
@@ -184,27 +188,27 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
 | unused using | 不可有未使用的 `using` |
 | 重複 using | GlobalUsings.cs 已引入的不得重複 |
 | System.Net.Http.Json | 正確使用 HTTP 擴充方法 |
-| 目錄結構 | 必須有 `Infrastructure/` + `Integration/` |
+| 目錄結構 | 依 canonical file map 確認測試與共用 infrastructure 可辨識；合理目錄與檔名差異不列缺失 |
 
 ### 4f. 覆蓋率審查
 
 | 檢查項目 | 規則 |
 |---------|------|
-| 端點覆蓋 | 每個 API 端點至少有一個 Happy Path |
-| 建構子防禦測試 | 若建構子有 null guard（`?? throw new ArgumentNullException`），是否每個有 null guard 的參數都有對應的防禦測試 |
-| 錯誤路徑覆蓋 | 4xx/5xx 情境都有測試 |
+| 端點覆蓋 | 已接受且在範圍內的每個 endpoint 與全部有效 scenario 都須涵蓋，不擴大到 sibling endpoints |
+| 建構子防禦測試 | 只核對已接受 scenario 中的防禦情境，不擴大本次 API 測試範圍 |
+| 錯誤路徑覆蓋 | 已接受且有效的錯誤情境全部有測試 |
 | 健康檢查 | 建議有健康檢查測試 |
 | 資料隔離 | 建議有資料隔離驗證測試 |
-| 遺漏端點 | 比對所有端點與測試涵蓋 |
+| 遺漏端點 | 比對本次有效 endpoint／scenario catalog 與測試涵蓋 |
 
 ### 4g. 跨檔案一致性
 
 只檢查實際多個 test files 的一致性，不以 Writer assignment 數為依據。正式 single topology 仍可產生多個必要測試檔，但不得因此 dispatch 第二個 Writer。
 
-- [ ] `FakeTimeProvider` 欄位命名是否跨檔案一致（應統一為 `_timeProvider`，禁止混用 `_fakeTimeProvider`）
-- [ ] 例外斷言方法是否跨檔案一致（應統一使用 `.Throw<T>()`，禁止混用 `.ThrowExactly<T>()`）
-- [ ] lambda 委派宣告是否跨檔案一致（應統一使用 `var act = () =>`，禁止混用 `Action act = () =>`）
-- [ ] 物件比較斷言是否跨檔案一致（應統一使用 `BeEquivalentTo()` 或屬性逐一斷言，不得混用）
+- [ ] 同一用途的欄位命名是否清楚；不強制固定 `FakeTimeProvider` 欄位名稱
+- [ ] 例外斷言依情境選擇 `.Throw<T>()` 或 `.ThrowExactly<T>()`，不可忽略情境所需的型別精確度
+- [ ] lambda 委派的宣告與實際用法是否正確，不因 `var act` 或 `Action act` 的合理差異列缺失
+- [ ] 物件比較依情境選擇 `BeEquivalentTo()` 或屬性斷言，必要欄位與內容不能漏驗
 - [ ] `using` 排列順序和組織方式是否跨檔案一致
 
 ---
@@ -271,7 +275,25 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
 
 3. 回傳精簡摘要時包含 `reviewResultFilePath`。
 
-> **tokenEstimateInputs（必填）**：reviewer-result 必須包含完整 canonical telemetry；缺漏時 formal comparator blocked。不得在寫入後把 reviewer-result 自身列為 read input。
+> **tokenEstimateInputs（必填）**：reviewer-result 必須包含完整的 role read-scope／isolation 輸入；漏列或虛報 readFiles／writtenFiles 時該階段 isolation gate 失敗。不得在寫入後把 reviewer-result 自身列為 read input。
+
+若 executor-result 保留 Windows Docker Desktop／MSSQL 狹義例外候選，Reviewer 仍不得重跑測試，也不得把 runtime 失敗改寫成通過。Reviewer 分開審查非 runtime 品質、完整 endpoint／scenario acceptance 與例外證據；只有全部非 runtime gates 通過且未發現其他失敗來源時，加入下列欄位。`gateDecision` 維持 `pass` 或 `pass_with_warnings` 代表非 runtime 品質與 acceptance，原始 `failedTests` 仍以 executor-result 為 truth：
+
+```json
+{
+  "knownEnvironmentExceptionReview": {
+    "status": "accepted",
+    "terminalDecision": "completed_with_known_environment_exception",
+    "originalFailureTruthPreserved": true,
+    "mssqlOnly": true,
+    "nonMssqlResourcesPassed": true,
+    "evidenceSufficient": true,
+    "unrelatedFailures": []
+  }
+}
+```
+
+任一 Docker、映像、容器啟動、授權、密碼、設定、AppHost、build、非 MSSQL resource、artifact、isolation、read-scope、timing、scenario、endpoint、Writer topology、integrity、production mutation 或證據不足問題存在時，不得加入 accepted 物件，`gateDecision` 據實為 `fail`／`blocked`。
 
 ---
 
@@ -290,8 +312,8 @@ Reviewer 不重新執行測試。必須以 canonical executor-result 驗證 `dot
 ## 重要原則
 
 1. **只審查，不修改** — 只產出審查報告
-2. **必定先載入 Skills**
-3. **依據 Skills 判斷** — 以 Skill 內容為準
+2. **先載入 Aspire Skill，其餘按需載入**
+3. **依正確性與證據判斷** — Skills 是技術參考，範例與偏好不自動升格為硬性門檻；正式契約與有效情境仍須滿足
 4. **具體指出位置** — 標注檔案名和行號
 5. **提供修正範例** — ❌/✅ 對照
 6. **Aspire 特定審查是核心** — 4d 面向是獨有價值

@@ -52,11 +52,11 @@ Deterministic runtime
   manifest／public snapshot validation／sync／tag／Release
 ```
 
-`run-state.json` 的 wall-clock 時間是正式 timing truth。Executor 原始 build/test evidence 是 runtime truth；Reviewer 必須執行，但不得自行重跑測試來改寫 Executor 結果。Estimated Token Usage 只是 visible-context 估算，不是 billing truth，也不參與 correctness gate。
+`run-state.json` 的 wall-clock 時間是正式 timing truth。Executor 原始 build/test evidence 是 runtime truth；Reviewer 必須執行，但不得自行重跑測試來改寫 Executor 結果。
 
 ## Unit v1.3.0 deterministic runtime
 
-Unit 是 v1.3.0 的主要重整範圍。`.codex/scripts/unit-runtime/` 提供：
+Unit 是 v1.3.0 的主要重整範圍。`.codex/scripts/dotnet-testing-codex-full/unit-runtime/` 提供：
 
 - 固定 phase state 與多 target barrier；
 - 自然 artifact shape normalization；
@@ -71,7 +71,7 @@ Unit 是 v1.3.0 的主要重整範圍。`.codex/scripts/unit-runtime/` 提供：
 - `.codex/skills/`：四個 Orchestrator 與 `dotnet-test`，隨公開版發布。
 - `.agents/skills/`：外部 `dotnet-testing-agent-skills` 與可選 `unit-test-scenarios`，不追蹤、不隨本 repository 發布。
 
-目前 shared technical Skills 相容基準為 `v2.4.2`，exact commit `715400f6d64e321d2faa4d8164643b412118f9c8`。
+目前 shared technical Skills 鎖定版本為 `v2.4.5`，exact commit `a4908967ef8fe63ad2fe275df1df3c015ec51a4c`。
 
 ## 公開發布邊界
 
@@ -82,8 +82,11 @@ Unit 是 v1.3.0 的主要重整範圍。`.codex/scripts/unit-runtime/` 提供：
 - 16 個 Agent TOML；
 - 5 個 Codex-specific Skills；
 - `.codex/config.toml`；
-- 21 支 `.codex/scripts/` runtime scripts；
+- 59 支 `.codex/scripts/dotnet-testing-codex-full/` runtime scripts；
+- Full 與四套 workflow 各自的 owner asset manifest；Aspire manifest 涵蓋 preflight、三個獨立用量模組與最終 result renderer。
 - 白名單文件與四套 samples scaffold。
+
+Unit／TUnit／Integration／Aspire 的 HTML 用量收集、呈現及背景程序各自位於對應 runtime 目錄，不跨 workflow 共用實作。用量資料取自逐請求 session 紀錄，以唯讀 SQLite 核對代理關係；JSON／HTML 與 binding、狀態保存在本次 `.orchestrator/usage/{runIdentifier}/`。背景程序只處理用量，不修改測試結果或 run-state。
 
 公開內容不包含 `.agents/skills/`、lab setup/tests、lock files、workflow records 或 sample byproducts。
 
@@ -100,3 +103,5 @@ final candidate 建立前，repository regression、clean public snapshot、跨�
 - [Integration 架構](integration-orchestrator.md)
 - [Aspire 架構](aspire-orchestrator.md)
 - [工作流程驗證](../guides/workflow-validation.md)
+
+Unit／TUnit 各自的 `unit-runtime/asset-manifest.json`、`tunit-runtime/asset-manifest.json` 宣告完整本地模組；初始化時的 runtime fingerprint 只涵蓋該 workflow 的模組。Skill 與 runtime 不跨用根共用檔或另一 workflow。Integration／Aspire 的根共用 run-state 與中央 validators 維持原狀。

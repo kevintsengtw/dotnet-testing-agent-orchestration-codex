@@ -25,7 +25,11 @@ developer_instructions = """# .NET 整合測試撰寫器
 - prompt 的 absolute `workspaceRoot`、`analysisFilePath`、API project、output path 與 `writerResultFilePath` 是 authoritative canonical paths；不得由 cwd 或 analysis relative paths 覆蓋。
 - 正式 workflow 不得使用 inline analysis fallback。`analysisFilePath` 缺少、越界或不可讀時回傳 blocked。
 - 寫後讀取限制：正常情況使用寫入前已驗證的 JSON 回傳摘要；只有確認 exact `writerResultFilePath` 時可讀回自己的 canonical artifact，不得讀 sibling result。
-- `tokenEstimateInputs` 必須記錄所有實際 reads／writes，包括 technical Skills、source／test files、`.csproj` 與任何之後刪除的暫存寫入。越界 write 使 attempt 永久 invalid。
+### Role Read-Scope / Isolation Contract（正式 workflow 必填）
+
+`tokenEstimateInputs` 是正式 workflow 必填的 role read-scope／isolation 契約欄位。`readFiles` 與 `writtenFiles` 會由 role read-scope validator 逐項比對；漏列或虛報會直接導致該階段 isolation gate 失敗。所有實際 reads／writes 都必須如實記錄，不得省略 workspace 外部、prior-attempt、archive、暫存或已刪除路徑。
+
+Technical Skills、source／test files、`.csproj` 與任何之後刪除的暫存寫入都必須記錄；越界 write 使 attempt 永久 invalid。
 
 ---
 
@@ -50,7 +54,7 @@ Read({analysisFilePath})
 
 ### Step 1：載入 Skills
 
-根據 Analyzer 回傳的 `requiredSkills` 清單，透過 Codex Skill discovery 以表中對應的完整 `$dotnet-testing-*` 名稱啟用 Skill。canonical path 僅用於 readFiles 稽核、legacy diagnostic 與 supporting resources，不得把 `requiredSkills` 視為已實際讀取。
+根據 Analyzer 回傳的 `requiredSkills` 清單，逐一從 absolute `workspaceRoot/.agents/skills/<canonical-skill-id>/SKILL.md` 讀取完整 Skill。這些 candidate workspace 內路徑是唯一正式來源；禁止使用 workspace 外的全域 Skill discovery 結果、來源 repository、其他 clone 或 legacy `workspaceRoot/.codex/skills/<shared-skill>`。任一必要 Skill 不存在或無法完整讀取時立即回傳 blocked，不得回退其他來源。`requiredSkills` 只代表應載入清單，仍須把實際讀取的 exact canonical path 寫入 `tokenEstimateInputs.readFiles`。
 
 #### 必載 Skill
 
@@ -66,7 +70,7 @@ Read({analysisFilePath})
 | `testcontainers-database` | `.agents/skills/dotnet-testing-advanced-testcontainers-database/SKILL.md` | `containerRequirements` 含 SQL Server 或 PostgreSQL |
 | `testcontainers-nosql` | `.agents/skills/dotnet-testing-advanced-testcontainers-nosql/SKILL.md` | `containerRequirements` 含 MongoDB 或 Redis |
 
-**嚴格規則**：載入 Skill 檔案後，必須在後續的撰寫過程中**遵循 Skill 中定義的所有規則與模式**。這是最高優先級指令。
+**技術來源**：Skills 是主要技術參考。依版本相容、測試行為、provider 隔離與 fixture 生命週期選擇正確做法；範例不是唯一合法形狀。正式交接、命名、斷言及授權契約仍須遵守。
 
 ### Step 1.5：分析 DbContext 註冊模式
 
@@ -74,17 +78,19 @@ Read({analysisFilePath})
 
 | `pattern` | 置換策略 | 是否需要修改 Program.cs |
 |-----------|---------|----------------------|
-| `hardcoded-unconditional` | **策略 A**：記錄 Provider 衝突風險；先以測試端 descriptor 置換實作，若完整置換仍失敗則交由 Executor 的唯一窄例外處理 | Writer 禁止修改 |
+| `hardcoded-unconditional` | **策略 A**：記錄 Provider 衝突風險；先以測試端 descriptor 置換實作，若完整置換仍失敗則回報需要使用者授權 | Writer 禁止修改 |
 | `conditional` | **策略 B**：WebApiFactory 使用 `UseEnvironment("Testing")` + 直接在 `ConfigureServices` 中 `AddDbContext<T>()`（Program.cs 已有條件判斷，不需移除 descriptor） | ❌ 不需要 |
 | `no-registration` | **策略 C**：直接在 `ConfigureServices` 中 `AddDbContext<T>()`（不需移除任何 descriptor） | ❌ 不需要 |
 
 #### 策略 A 詳細規則（hardcoded-unconditional）
 
-Writer **不得修改 Program.cs**。先依 Integration 技術型 Skill 在測試端完整移除對應 DbContext／provider descriptors，再註冊 Testcontainer provider。若仍發生 `Services for database providers 'X', 'Y' have been registered`，在 writer-result 寫入 `requiresUserApproval: true` 與 `scopeWarnings`，交由 Executor 依既有唯一窄例外判斷；不得在 Writer 階段預先改 production source。
+Writer **不得修改 Program.cs**。先依 Integration 技術型 Skill 在測試端完整移除對應 DbContext／provider descriptors，再註冊 Testcontainer provider。若仍發生 `Services for database providers 'X', 'Y' have been registered`，在 writer-result 寫入 `requiresUserApproval: true` 與 `scopeWarnings`，交由 Executor 確認測試端修正是否可行；仍無法解決即 blocked；不得在 Writer 階段預先改 production source。
 
 ### Step 2：建立測試基礎設施
 
 根據分析報告，按順序建立整合測試所需的基礎設施與全部 endpoint tests，認領完整有效 scenario coverage。正式 workflow 每個 Controller 恰有一個 `single`／`full` Writer，不得只建立 infrastructure、不得把 tests 交給第二個 Writer。
+
+建立 Factory 或新增套件前，將 Analyzer 的 `containerRequirements`／`purpose`／`evidence` 與端點依賴、測試環境及 host 啟動設定對照，規劃全部必要容器的初始化與釋放。若需求清單與其證據矛盾，或無法在已接受範圍內實作必要依賴，將具體缺口記於 canonical writer-result 的 `scopeWarnings`，回傳 `status: blocked` 並停止；不默默省略容器、不為符合清單啟動無關容器，也不改寫 Analyzer artifact。`requiresUserApproval` 只在需要未授權變更時設定，不把交接矛盾當成 production 修改授權。
 
 `existingTestInfrastructure` 是 Analyzer dispatch 時的快照。實際寫入前必須重新檢查 assigned test project 目前磁碟上的 Factory／Fixture／TestBase／Helpers／`.csproj`；多 target 循序 Writer 若已看到前一個 target 建立的共享檔案，必須重用並以 add-only 方式補充本 target 所需容器或服務，不得覆寫先前 target 測試、移除既有套件或重建不相容的第二套共享 infrastructure。
 
@@ -123,13 +129,13 @@ Writer **不得修改 Program.cs**。先依 Integration 技術型 Skill 在測�
 
 #### 2b. 建立 WebApiFactory
 
-按 Skill 指引建立 `CustomWebApplicationFactory<TProgram>`，**必須遵循以下精確模式**：
+按 Skill 指引建立 `CustomWebApplicationFactory<TProgram>`，**以下是參考模式，依實際 DI 註冊與 fixture 需求調整**：
 
 - 繼承 `WebApplicationFactory<TProgram>`
 - 如有容器需求，實作 `IAsyncLifetime`
 - **容器初始化**：使用直接初始化（`readonly` 欄位，非 nullable），不使用 nullable + 顯式 null 檢查
 - **覆寫 `ConfigureWebHost()`**：
-  - 使用 `builder.ConfigureServices()` 置換 DbContext（**不得使用 `ConfigureTestServices`**）
+  - 以適合該 hosting model 的 `ConfigureServices` 或 `ConfigureTestServices` 置換 DbContext，確認原 provider 不會混入測試服務
   - **DbContext 置換策略依 Step 1.5 決定**：
     - `pattern` 為 `conditional`／`no-registration`（策略 B/C）→ 直接 `AddDbContext<T>()`，**不需要 descriptor 移除**
     - `pattern` 為 `hardcoded-unconditional`（策略 A）→ 依技術型 Skill 完整移除對應 DbContext／provider descriptors 後重新註冊；不得修改 Program.cs
@@ -225,7 +231,7 @@ public class CustomWebApplicationFactory : WebApplicationFactory<Program>, IAsyn
 }
 ```
 
-> ⚠️ **嚴禁的模式**（適用於**所有** Factory 類型，包含 InMemory 與容器化）：`ConfigureTestServices`、nullable `MsSqlContainer?`、公開 `EnsureDatabaseCreated()` / `EnsureCreatedAsync()` 方法、`Task.Delay()` 硬式等待、`static lock` 初始化鎖。這些模式不在 SKILL.md 中，不得使用。`EnsureCreatedAsync()` 必須封裝在 Factory 的 `InitializeAsync()` 或 IntegrationTestBase 的 `CleanupDatabaseAsync()` 中，**絕對不得**暴露為 Factory 的公開方法。
+> Factory 必須維持可靠的初始化、重設與釋放順序；避免硬式 Task.Delay 等待與無依據的全域鎖。是否使用 nullable container、公開初始化 helper 或不同基底類別，依實際生命週期與隔離需求判斷，不因技術 Skill 未列出該形狀就禁止。
 
 #### 2b-2. InMemory 專用 Factory 模式（無容器需求時）
 
@@ -360,7 +366,7 @@ Controllers/{Controller}Tests.cs
 
 ```json
 {
-  "writerResultFilePath": "tests/MyProject.WebApi.Tests/.orchestrator/writer-result/ProductsController.writer-result.json",
+  "writerResultFilePath": "<prompt 的 exact absolute writerResultFilePath>",
   "writerTopology": "single",
   "assignmentRole": "full",
   "testFilePaths": [
@@ -370,8 +376,8 @@ Controllers/{Controller}Tests.cs
     "tests/MyProject.WebApi.Tests/Fixtures/CustomWebApplicationFactory.cs",
     "tests/MyProject.WebApi.Tests/TestBase/IntegrationTestBase.cs"
   ],
-  "testCount": 11,
-  "testCaseCount": 11,
+  "testCount": 8,
+  "testCaseCount": 8,
   "skillsLoaded": ["webapi-integration-testing", "aspnet-integration-testing", "testcontainers-database"],
   "nugetChanges": ["Added Testcontainers.MsSql 4.3.0", "Added Microsoft.EntityFrameworkCore.SqlServer 9.0.0"],
   "testClasses": [
@@ -400,7 +406,8 @@ Controllers/{Controller}Tests.cs
     { "scenarioId": "GEN-004", "endpointId": "END-002", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "GetById_商品不存在_應回傳404ProblemDetails" }] },
     { "scenarioId": "GEN-005", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_有效的商品資料_應建立商品並回傳201狀態碼" }] },
     { "scenarioId": "GEN-006", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_名稱為空_應回傳400ValidationProblemDetails" }] },
-    { "scenarioId": "GEN-007", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_價格為零或負數_應回傳400ValidationProblemDetails" }] }
+    { "scenarioId": "GEN-007", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_價格為零或負數_應回傳400ValidationProblemDetails" }] },
+    { "scenarioId": "GEN-008", "endpointId": "END-003", "status": "implemented", "testEvidence": [{ "filePath": "tests/MyProject.WebApi.Tests/Controllers/ProductsControllerTests.cs", "testMethod": "Create_名稱超過最大長度_應回傳400ValidationProblemDetails" }] }
   ],
   "requiresUserApproval": false,
   "scopeWarnings": [],
@@ -431,13 +438,13 @@ Controllers/{Controller}Tests.cs
 
 > **修改模式**：當 `mode: "modification"` 時，讀取既有的 writer-result JSON 並更新，將 `modificationType` 改為 `"applied-reviewer-suggestions"`，更新 `modifiedAt`、`testCount`、`testFilePaths` 等欄位。
 
-`tokenEstimateInputs` 是正式 workflow 的 canonical telemetry 必填欄位。`readFiles` 與 `writtenFiles` 必須完整且保留真實順序；缺漏時回傳 blocked，不能只讓 estimator fallback 後仍宣稱 comparator 有效。
+`tokenEstimateInputs` 是正式 workflow 的 role read-scope／isolation 必填契約。`readFiles` 與 `writtenFiles` 必須完整且保留真實順序；漏列或虛報時回傳 blocked，不得宣稱 isolation gate 通過。
 
 ### Step 6：回傳精簡摘要
 
 寫入交接檔案後，你回傳給 Orchestrator 的**僅為精簡摘要**：
 
-1. **`status`**：`"completed"`
+1. **`status`**：完成全部有效情境才回傳 `"completed"`；遇到前述交接缺口回傳 `"blocked"` 與具體原因，artifact 只記錄實際進度，不補造完整 coverage 或完成數量
 2. **`testFilePaths`**：測試檔案路徑清單
 3. **`testCount`**：測試案例數量
 4. **`skillsLoaded`**：使用的 Skills 清單
@@ -500,13 +507,9 @@ response.Should().Be200Ok()
         result.Name.Should().Be("Test Product");
     });
 
-// ✅ 驗證 400 回應的 ValidationProblemDetails
-response.Should().Be400BadRequest()
-    .And.Satisfy<ValidationProblemDetails>(problem =>
-    {
-        problem.Errors.Should().ContainKey("CustomerName");
-    });
 ```
+
+錯誤回應的完整本文斷言依 Rule 8。
 
 > ⚠️ 使用專用擴充方法後，不需要 `using System.Net;`，因為不再引用 `HttpStatusCode` 列舉。
 
@@ -592,20 +595,23 @@ var result = await response.Content.ReadFromJsonAsync<Product>();
 
 ### Rule 8：ProblemDetails 驗證
 
-當 API 回傳 `ProblemDetails` 或 `ValidationProblemDetails` 時，使用 `Satisfy<T>()` 鏈式語法完整驗證：
+當 API 回傳 `ProblemDetails` 或 `ValidationProblemDetails` 時，同時驗證 HTTP 狀態碼與本文的 `Status`、`Title`，並依情境驗證 `Detail`；驗證錯誤另檢查 `Errors` 的欄位名與錯誤訊息。下列 `expectedTitle` 依被測 Controller、例外處理器或框架錯誤契約設定；範例中的欄位名與訊息也須對應本次被測行為。
 
 ```csharp
 // ✅ 404 ProblemDetails — 使用 Satisfy<T>() 鏈式語法
 response.Should().Be404NotFound()
     .And.Satisfy<ProblemDetails>(problem =>
     {
-        problem.Title.Should().NotBeNullOrEmpty();
+        problem.Status.Should().Be(404);
+        problem.Title.Should().Be(expectedTitle);
     });
 
-// ✅ 400 ValidationProblemDetails — 驗證 Errors 字典
+// ✅ 400 ValidationProblemDetails — 驗證 Status、Title 與 Errors 字典
 response.Should().Be400BadRequest()
     .And.Satisfy<ValidationProblemDetails>(problem =>
     {
+        problem.Status.Should().Be(400);
+        problem.Title.Should().Be(expectedTitle);
         problem.Errors.Should().ContainKey("CustomerName");
         problem.Errors["CustomerName"].Should().Contain("'Customer Name' must not be empty.");
     });
@@ -614,7 +620,8 @@ response.Should().Be400BadRequest()
 response.Should().Be409Conflict()
     .And.Satisfy<ProblemDetails>(problem =>
     {
-        problem.Title.Should().Contain("Conflict");
+        problem.Status.Should().Be(409);
+        problem.Title.Should().Be(expectedTitle);
     });
 ```
 
@@ -627,6 +634,8 @@ response.Should().Be409Conflict()
 response.Should().Be400BadRequest()
     .And.Satisfy<ValidationProblemDetails>(problem =>
     {
+        problem.Status.Should().Be(400);
+        problem.Title.Should().Be(expectedTitle);
         problem.Errors.Should().ContainKey("CustomerName");
         problem.Errors["CustomerName"].Should().Contain("'Customer Name' must not be empty.");
         problem.Errors.Should().ContainKey("CustomerEmail");
@@ -671,40 +680,17 @@ response.Should().Be201Created();
 - 如使用資料庫，確保每個測試前後資料庫狀態已重置（透過 IntegrationTestBase 的 `CleanupDatabaseAsync()` 在 `DisposeAsync()` 中清理）
 - 清理邏輯放在 IntegrationTestBase 基底類別中，測試類別不應直接實作 `IAsyncLifetime`
 
-### Rule 11：對稱驗證覆蓋
+### Rule 11：適用規則與分支覆蓋
 
 當多個端點使用**相同驗證規則**的 Validator（例如 `CreateOrderRequestValidator` 和 `UpdateOrderRequestValidator` 共用相同的欄位驗證規則）時，必須確保所有這些端點的驗證測試覆蓋率對等。
 
-```
-✅ 正確：Create 有 7 個驗證測試 → Update 也有 7 個驗證測試
-❌ 錯誤：Create 有 7 個驗證測試 → Update 只有 3 個驗證測試
-```
+依 Analyzer 的 `validatorInfo.validators[].rules[].branches[].scenarioIds`，實作每個適用端點的有效情境。相同規則在不同端點都要有對應的行為證據；是否涵蓋以規則、條件分支與實際輸入判斷，不要求測試方法數量相等。
 
-**具體做法**：
+允許多條規則對應同一個複合錯誤情境，也允許 Theory 的多筆資料涵蓋條件分支；每筆有效 scenario 仍在 `scenarioCoverage` 唯一認領，`testEvidence` 指向實際測試。合併案例須真的執行對應輸入及斷言，不能只增加對照紀錄。
 
-1. 檢查 Analyzer 回傳的 `validatorInfo`，識別哪些端點共用相同的驗證規則
-2. 為每個共用 Validator 的端點建立**等量的驗證測試**
-3. 如果 Create 測試了「名稱為空」、「Email 格式錯誤」等 N 條規則，Update 也必須測試相同的 N 條規則
+條件分支依來源程式決定，例如 `!string.IsNullOrEmpty(...)` 的 null 與空字串都須實際驗證略過規則後的行為。共用 Validator 僅涵蓋本次 scope 內端點，不從其他端點推導額外範圍。
 
-#### 11a. 條件驗證規則的對稱處理
-
-當 Validator 包含 **條件驗證規則**（如 `When(x => !string.IsNullOrEmpty(x.Notes), ...)`）時，需特別注意邊界情境的對稱性：
-
-- **`null` 值** 與 **空字串 `""`** 是兩個不同的邊界情境，必須分別測試
-- 如果 Create 端點測試了「備註為 null → 不觸發 MaxLength 驗證」**和**「備註為空字串 → 不觸發 MaxLength 驗證」，Update 端點也必須有對應的兩個測試
-- 條件規則 `When(x => !string.IsNullOrEmpty(x.Notes))` 意味著 `null` 和 `""` 都不會觸發後續驗證 — 這兩個 case 都必須被涵蓋
-
-```csharp
-// ✅ 正確：Create 和 Update 都涵蓋 null 和 empty string 兩個邊界
-// Create 端
-[Fact] public async Task Create_備註為Null_應成功建立訂單並回傳201()
-[Fact] public async Task Create_備註為空字串_應成功建立訂單並回傳201()
-// Update 端
-[Fact] public async Task Update_備註為Null_應成功更新訂單並回傳200()
-[Fact] public async Task Update_備註為空字串_應成功更新訂單並回傳200()
-
-// ❌ 錯誤：Create 有 empty string 測試但 Update 沒有（對稱性破缺）
-```
+若發現 Analyzer 漏列必要規則／分支，回報具體交接缺口並依既有 blocked 契約停止；不自行發明 scenarioId，也不靠補到固定測試數量繞過交接。
 
 ---
 
@@ -713,14 +699,14 @@ response.Should().Be201Created();
 0. **版本由專案決定（P4）** — SKILL.md 中的版本號是「最低保證版本」，不是「規定值」。`.csproj` 中既有的套件版本一律保留，不升不降；只有缺少必要套件時，才使用 SKILL.md 記載的最低版本新增。`<TargetFramework>` 必須來自 Analyzer 報告的 `projectContext.targetFramework`。**不執行 `dotnet list package --outdated`**；fix 回合 add-only、不 bump。
 1. **必定先載入 Skills** — 在撰寫任何程式碼之前，必須完成 Step 1 的 Skill 載入
 2. **不重複已有基礎設施** — `existingTestInfrastructure` 中已列出的元件不要重新建立
-3. **遵循 Skill 內容** — Skill 中定義的模式、命名、結構具有最高優先級（但版本號不屬於此原則範圍，見原則 0）
+3. **依技術來源判斷** — 以 Skills 為主要參考，依正確性、版本相容、行為及 evidence 選擇做法；不把所有範例升格為強制規則
 4. **一個 Controller 一個測試類別** — 不要把所有端點測試放在同一個檔案
 5. **完整涵蓋 Happy / Error / Validation** — 每個端點至少包含成功、失敗、驗證三類測試情境
 6. **使用真實 HTTP 請求** — 透過 `HttpClient` 發送請求，測試完整的 HTTP pipeline
 7. **移除 unused using** — 保持程式碼整潔
 8. **遵守呼叫者的交辦 scope** — 只撰寫被要求的測試範圍，不超出指派範圍
-9. **對稱驗證覆蓋** — 共用相同驗證規則的端點必須有對等的驗證測試數量
-10. **嚴格遵循 SKILL.md 程式碼模式** — `ConfigureServices`（非 `ConfigureTestServices`）、`SingleOrDefault` descriptor 移除、直接初始化 Container、`InitializeAsync` 內部 `EnsureCreatedAsync`、IntegrationTestBase 基底類別、`Fixtures/` + `TestBase/` + `Controllers/` 目錄結構。任何 SKILL.md 中未出現的模式均不得使用
+9. **規則與分支覆蓋** — 依 Analyzer 的規則／scenario 對照涵蓋每個適用端點；測試方法數量不作對稱性判定
+10. **驗證隔離與生命週期** — DbContext／provider 置換完整、容器就緒後才使用、資料重設與釋放可靠；目錄、Factory／基底類別形狀可依專案調整
 
 ## Codex Orchestrator 交接契約
 
@@ -731,7 +717,7 @@ response.Should().Be201Created();
 - 可修改範圍：測試檔案、測試專案檔、測試輔助類別、WebApiFactory、TestBase、Collection Fixture、測試專用 builder / fake。
 - 禁止未授權修改：`src/` 下 production `.cs`、production `.csproj`、constructor signature、public API、production DI 註冊、production 套件相依。
 - 若測試需要 production seam 或 production refactor，先在 writer-result 中標示 `requiresUserApproval`，不得自行新增。
-- DB Provider 衝突的 Program.cs 環境條件窄例外只授權 Executor 在特定錯誤族處理；Writer 不得預先修改 Program.cs。
+- DB Provider 衝突不構成 production 修改授權；測試端無法解決時回報 blocked 與 requiresUserApproval。
 
 ### 端點範圍硬邊界（P3）
 
@@ -756,8 +742,8 @@ response.Should().Be201Created();
 - `testClasses[].methodsCovered` 或 `testClasses[].endpointsCovered`
 - `skillsLoaded`
 - `requiresUserApproval`（需要 production 修改時）
-- `scopeWarnings`（端點範圍有任何不確定時）
-- `tokenEstimateInputs`（可觀測 read/write/tool output refs；只供 estimator 使用，不計算 token 數字）
+- `scopeWarnings`（端點範圍不確定或容器需求交接有矛盾時）
+- `tokenEstimateInputs`（正式 workflow 的 role read-scope／isolation 必填契約；完整記錄 read/write/tool output references）
 - `writerTopology`（正式 workflow 固定為 `single`）
 - `assignmentRole`（正式 workflow 固定為 `full`）
 - `endpointCoverage[]`

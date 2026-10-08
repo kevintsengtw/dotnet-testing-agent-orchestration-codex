@@ -66,6 +66,8 @@ Orchestrator 收摘要後**驗證交接檔案確實存在**，才 SpawnAgent Wri
 
 Writer 在 Step 0 讀 analysis.json，按 `requiredSkills` 載入 Agent Skills，撰寫整合測試。
 
+正式 isolated run 只從該次 absolute `workspaceRoot/.agents/skills/<canonical-skill-id>/SKILL.md` 載入技術 Skills。不得回退全域 discovery、來源 repository、其他 clone 或 legacy `.codex/skills/<shared-skill>`；缺少 canonical Skill 時 fail closed。
+
 **測試命名**：中文三段式 `端點操作_情境_預期`（如 `Create_名稱為空_應回傳400ValidationProblemDetails`）。
 **斷言**：HTTP 狀態碼用 AwesomeAssertions.Web 專用擴充（`Be200Ok` / `Be201Created` / `Be400BadRequest` / `Be404NotFound` / `Be409Conflict` / `Be204NoContent`，**禁** 不存在的 `.HaveStatusCode()`）；`ProblemDetails` / `ValidationProblemDetails` 用 `.And.Satisfy<T>()` 驗證 body。
 **基礎設施**：`WebApplicationFactory<Program>`（容器需求時實作 `IAsyncLifetime`）、`[CollectionDefinition]` + `ICollectionFixture<T>` 共享容器、`IntegrationTestBase`（`IAsyncLifetime` + `HttpClient` + Seed/Cleanup）、Respawn 或 `ExecuteSqlRaw` 資料清理；目錄結構 `Fixtures/` + `TestBase/` + `Controllers/`（或 `Endpoints/`）。
@@ -75,7 +77,7 @@ Writer 在 Step 0 讀 analysis.json，按 `requiredSkills` 載入 Agent Skills�
 
 | pattern | 策略 | 是否改 Program.cs |
 |---|---|---|
-| `hardcoded-unconditional` | **策略 A**：先在 Program.cs `AddDbContext` 外層加 `if(!builder.Environment.IsEnvironment("Testing"))` → Factory 用 `UseEnvironment("Testing")` + 直接 `AddDbContext`（不需 descriptor 移除） | ✅ 需要 |
+| `hardcoded-unconditional` | **策略 A**：Writer 先在測試端完整移除對應 DbContext／provider descriptors 後重新註冊；不得預先修改 Program.cs。只有 Executor 實際確認 Provider 衝突且 descriptor 置換無法解決時，才可用既有 Program.cs 窄例外 | ❌ Writer 不修改 |
 | `conditional` | **策略 B**：Factory 用 `UseEnvironment("Testing")` + 直接 `AddDbContext` | ❌ 不需要 |
 | `no-registration` | **策略 C**：直接 `AddDbContext` | ❌ 不需要 |
 | 不明 | 安全預設：`SingleOrDefault` 精確移除 `DbContextOptions<T>` descriptor 後重註冊 | ❌ |
@@ -85,6 +87,8 @@ Writer 在 Step 0 讀 analysis.json，按 `requiredSkills` 載入 Agent Skills�
 ### 4.2 每 Target 單一 Writer
 
 每個 Controller／endpoint slice 固定只 dispatch 一個 `single`／`full` Writer，不受 endpoint 數、`scenarioCount`、容器種類或預估輸出大小影響。該 Writer 同時負責必要基礎設施與完整 endpoint tests；Analyzer 的合理 scenarios 不限數量，也不得為了降低 token 而刪減。若單一 Writer 遇到 context／output limit，attempt fail closed，不得恢復 split。
+
+正式 artifact identity 以 prompt 指定的 absolute canonical path 為準：analysis、writer、executor、reviewer artifact 內對應 path 欄位必須逐字相符；Analyzer 的 `endpointCount` 必須等於 `endpointCatalog`。歷史 split replay 仍可由 validator 相容模式讀取，正式 gate 必須使用 `--require-single-writer`。
 
 多個 Controllers 共用同一測試專案時，Writers 依 target 順序循序執行：第一個建立所需共享 infrastructure，後續 Writer 重新檢查磁碟現況並以 add-only 方式重用／補充 Factory、Fixture、TestBase 與 `.csproj`。共享 Factory 可能在單一 target filtered run 一併啟動其他 target 的容器；execution gate 仍要求本 target required kinds 全部啟動，額外 kind 則必須逐一符合本次其他 Analyzer requirements 的明示白名單。最後一個 Executor 執行完整 test-project regression，驗證後續共享修改沒有破壞先前 target。
 
@@ -113,6 +117,8 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 - 結果：通過/失敗/略過數**必須來自實際 `dotnet test` 輸出**，禁編造。
 
 > **Integration Executor 驗收 Gate**：Orchestrator 讀 `executorResultFilePath`，確認 `executionMethod === "dotnet test"`、`dockerStatus` 存在、通過/失敗/略過來自 xUnit 輸出、`fixRounds` 落入 run-state。若顯示用 `dotnet run`，該 phase 判 blocker。
+
+多 target 共用測試專案時，最後一個 Executor assignment 額外執行未過濾的完整 test-project `dotnet test`，寫入 `regressionScope: "test-project"` 的獨立 canonical artifact。validator 以 `--project-regression` 加上每份 `--project-writer` 驗證 all-target Writer/test file union 與 case accounting；不得以各 target 局部結果加總代替。
 
 ---
 
@@ -151,8 +157,6 @@ Writer 全部收斂且 gate 通過後、dispatch Executor 前，Orchestrator **�
 | `run-state.json` | Orchestrator | `.orchestrator/` |
 
 **`run-state.json` 是官方耗時的唯一真實來源**（wall-clock，不依賴 narration），含 `workflow: "integration"` 與逐 assignment 的 `dispatchIssuedAt` / `dispatchAcceptedAt` / `artifactReadyAt` / `completedAt` / `produceSpanMs`、`agentDefinitionPath`、`spawnPayloadShape`、`expectedArtifactPath`、`phaseDurations`、`redispatchEvents[]` / `boundedRedispatchCount` / `restartCount` / `executorFixRounds`。正式 phase timing 必須讀實體檔計算，不得從對話敘述 / hook / 人工推估 / token report 推導。
-
-> **Estimated Token Usage**：Codex native SpawnAgent subagent 的全流程 token 無可靠 truth source，本 workflow 不回報正式 token usage。四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project {testProjectDir}` 產生 `.orchestrator/token-usage-estimate.json`，並在 final report 輸出 `Estimated Token Usage` optional telemetry。此估算只供 visible-context 相對成本比較，不可用於 billing、runtime truth 或 correctness gate。
 
 ---
 

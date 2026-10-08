@@ -7,6 +7,7 @@
 | 文件         | 說明                             | 連結                                                 |
 | ------------ | -------------------------------- | ---------------------------------------------------- |
 | 安裝與環境設定 | 完整安裝步驟、系統需求、常見問題 | [SETUP.md](SETUP.md)                                 |
+| v1.3.1 更新細節 | 實際用量 HTML、credit、NuGet、流程修正與升級 | [guides/v1.3.1-release-notes.md](guides/v1.3.1-release-notes.md) |
 | 架構總覽     | 四套 1 + 4 架構、truth 分層與發布邊界 | [architecture/overview.md](architecture/overview.md) |
 | 單元測試指南 | 指令範例、練習專案、工作流程細節 | [guides/unit-testing.md](guides/unit-testing.md)     |
 | 工作流程驗證 | Single Writer、artifact、isolation 與 runtime gates | [guides/workflow-validation.md](guides/workflow-validation.md) |
@@ -33,7 +34,7 @@
 | [tunit-testing.md](guides/tunit-testing.md)             | `$dotnet-testing-orchestrator-tunit`         | .NET SDK          |
 | [integration-testing.md](guides/integration-testing.md) | `$dotnet-testing-orchestrator-integration`   | .NET SDK + Docker |
 | [aspire-testing.md](guides/aspire-testing.md)           | `$dotnet-testing-orchestrator-aspire`        | .NET SDK + Docker |
-| [token-usage-estimation.md](guides/token-usage-estimation.md) | （四工作流程共用）Estimated Token Usage 估算 | Node.js（選用）   |
+| [token-usage-estimation.md](guides/token-usage-estimation.md) | 實際用量、Standard credit 與歷史估算說明 | Node.js；SQLite 讀取需求見指南 |
 | [workflow-validation.md](guides/workflow-validation.md) | （四工作流程共用）正式 correctness 與隔離檢查 | Node.js |
 
 ## 從哪裡開始？

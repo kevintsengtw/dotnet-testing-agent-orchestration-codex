@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "owner": "dotnet-testing-orchestrator-aspire",
+  "runtimeRoot": ".codex/scripts/dotnet-testing-codex-full/aspire-runtime",
+  "runtimeScripts": [
+    "nuget-sandbox-preflight.mjs",
+    "usage-observer.mjs",
+    "usage-report.mjs",
+    "usage-session.mjs",
+    "workflow-result.mjs"
+  ]
+}

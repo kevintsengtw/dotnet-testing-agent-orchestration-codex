@@ -4,6 +4,37 @@
 
 > 版本規則：四種測試工作流程（unit / integration / aspire / tunit）全部完成才升至 `v1.0.0`；在此之前為 `v0.0.x` 預覽版。文件類修改不更新版本號，僅測試工作流程的變更才升版。
 
+## [v1.3.1] - 2026-10-08
+
+### 四套實際 token 用量 HTML 與 credit 換算
+
+- 移除 codex-full token 估算器與相關估算資產。Unit、TUnit、Integration、Aspire 各自提供 `usage-session.mjs`、`usage-report.mjs`、`usage-observer.mjs`，不跨 workflow import；收集本次主代理與子代理的逐請求 runtime 用量，依 root turn、SQLite 唯讀代理關係及 response ID 歸屬與去重，保留必要修正回合。
+- 四套皆產生完整離線 HTML，列出未快取輸入、快取輸入、輸出、含快取總量、請求數與收集狀態。主代理回合結束且三次快照一致後自動更新；推理已包含在輸出，不重複加總。資料缺漏、不支援、中止與逾時保留原狀態及診斷，不補零或改寫測試結果。
+- 最終回覆尾端交付可點擊的 HTML 絕對路徑、可複製的原生絕對路徑與 file URL；保留 Unit／TUnit／Integration 七區塊、Aspire 八項回報、presentation receipt、原始測試數字與 run-state 計時契約。
+- HTML 新增 `gpt-6.1-sol` Standard credit 換算，保留既有 `gpt-6-sol`、`gpt-6-luna`、`gpt-6-astra` 與其他受支援模型。GPT-6.1 Sol 的本版費率快照為每百萬未快取輸入／快取輸入／輸出 50／2.5／250 credits，查核日期 2026-10-07；不是帳戶實際扣抵，也不是 API key 計費。服務模式缺漏時標示 Standard 前提試算；未知模型、非 Standard 模式或缺漏用量不提供合計。
+- SQLite 優先使用 Node 內建唯讀介面，現有 Python 3 為備援；不自行安裝依賴，保留底層錯誤。`unsupported` 表示沒有啟動背景程序，重新整理不會恢復收集。完整使用說明見 [v1.3.1 更新細節](docs/guides/v1.3.1-release-notes.md)。
+
+### 各工作流程修正
+
+- Unit／TUnit 的 run-state 與 validators 改由各自 runtime 提供；Integration 完成 runtime 隔離與執行證據、耗時、情境交接及顯示契約修正。codex-full 共 59 支 runtime scripts，Full 與四套 owner 各自具備 asset manifest，正式 runtime 位於 `.codex/scripts/dotnet-testing-codex-full/`。
+- Unit 使用 `declaredAccess` 宣告讀寫；隔離檢查針對已宣告且可解析的禁止路徑，不要求讀取清單完整。修正 Coverage 簡名與唯一完整型別名稱比對，保留多載歧義拒絕、既定 Coverage 門檻及後續 blocked 終態下已完成 Writer 的產物與測試事實。封存避免搬移仍由背景程序寫入的 usage。
+- TUnit optional-parameter gate 拒絕後，由 runtime 完成 deterministic closeout、canonical renderer 與 presentation receipt；從 phase boundaries 與 Reviewer artifact 推導 terminal／timing truth。Analyzer 與後續交接使用一致的 methodIdentifier，保留原使用者 selector、全部有效情境與 TUnit 自有 build／run 模型。
+- Aspire 完成完整 HTML、canonical renderer、Docker daemon／NuGet 前置檢查及四角色交接、證據契約修正；四階段固定依序執行，保留全部有效情境、gates、原始測試數字與既定環境例外。
+
+### 安裝、NuGet 與相容性
+
+- installer 預設只安裝至目前專案的 `.codex/`，以 fail-closed 合併保留既有設定；不再無條件覆寫 `~/.codex/config.toml`，不加入或覆寫選用的 `NUGET_PACKAGES`。
+- 四套各自具有 NuGet sandbox preflight，Analyzer 前以實際 restore 判定環境。未設定 `NUGET_PACKAGES` 時沿用 NuGet 設定與預設快取；已指定時驗證快取可讀性。環境不可用時停止並保留診斷，不要求使用者手改設定或提供 CLI NuGet override。
+- Unit／TUnit 整合依工具政策處理必要單次核准的契約；Executor 仍使用各自正式 runner、attempt、證據與既定重試上限，不以核准流程擴大修正額度或覆寫原失敗。
+- 外部技術型 Skills 鎖定 `dotnet-testing-agent-skills v2.4.5`、commit `a4908967ef8fe63ad2fe275df1df3c015ec51a4c`；29 個 Skill 名稱與數量不變，仍由消費端安裝到 `.agents/skills/`，不內含於公開資產。
+- 保留四套 Orchestrator 名稱、每 target 單一 Writer、固定階段與最終輸出。正式 profiles 維持 `gpt-5.6-sol／medium`；HTML 支援 GPT-6.1 Sol 換算不代表工作流程改用該模型。
+
+### 驗收與保留限制
+
+- Unit 06、TUnit 02 與 Integration 歷史流程驗收保留；Aspire 35／36／37 已完成同一修正版本的 .NET 10／9／8 人工驗收，最後結果依序為 13／0／0、22／0／0、12／0／0（passed／failed／skipped）。.NET 8 Reviewer A／98／pass_with_warnings 的未使用 using 警告經使用者接受，非本版阻斷項目。
+- 新增模型換算與絕對路徑功能另依序完成人工驗收：Unit 04、TUnit 03、Integration 01、Aspire 01 均 accepted；核對四階段完成、最終結果如實呈現、實際 HTML 換算與絕對路徑交付。正式執行仍使用既定 profiles；GPT-6.1 Sol 三欄各一百萬 tokens 的合成核對為 302.5 credits。
+- 自動化前置檢查與人工 workflow 驗收分開記錄；原始失敗、警告、環境例外與歷史 seals 保留。生成測試、測試專案修改、`.orchestrator/`、`bin/`、`obj/` 與 `TestResults/` 不納入公開發布；不宣稱跨平台全面驗證、實際帳戶扣抵或 token 節省。
+
 ## [v1.3.0] - 2026-09-05
 
 本版保留 Unit、TUnit、Integration、Aspire 四套各自獨立的 1 Orchestrator Skill + 4 Agent TOML 架構，重點調整 Unit 工作流程的模型與 deterministic runtime 責任邊界，並將 shared technical Skills 相容基準更新到 `dotnet-testing-agent-skills v2.4.2`。
@@ -12,19 +43,22 @@
 
 - **Unit model responsibility reset**：Analyzer、Writer、Executor、Reviewer 回到行為分析、測試實作、失敗診斷與語意品質判斷；移除由提示內容模擬 machine truth 的重複規則
 - **Unit deterministic runtime**：新增 phase state、multi-target barrier、natural artifact normalization、build-first execution evidence、project integrity 與 JSON／Markdown final projection
+- **Unit 多 target 完整契約**：Analyzer／Reviewer 可同批派遣，一般與 Coverage repair 的 Writer／Executor 依 target 循序；phase timing 以所有 targets 的最晚完成時間關閉，最終依宣告順序產生單一 JSON／Markdown 報告
+- **Unit blocked 與修正證據**：無法解析的 method selector 依序完成 Analyzer、Writer、attempt-0 Executor、Reviewer blocked chain；final report 只投影 sealed Executor／repair Executor 的 `repairHistory`
 - **上游 v2.4.2 相容**：鎖定 commit `715400f6d64e321d2faa4d8164643b412118f9c8`，同步 TUnit Writer 的 AwesomeAssertions API 名稱，並補上 API regression
 - **跨平台 setup 修正**：shared Skill checksum 以 LF canonical text 計算，避免 Windows CRLF checkout 造成鎖定檔誤判
 - **Agent TOML loader schema**：16份Agent TOML統一使用Codex正式欄位`model_reasoning_effort = "medium"`，並以loader regression防止舊欄位回退
-- **公開資產單一白名單**：`public-release-manifest.json` 成為兩條公開同步 workflow 與 strict snapshot validator 的共同來源；公開 runtime inventory 由 13 支更新為 21 支
+- **公開資產單一白名單**：`public-release-manifest.json` 成為兩條公開同步 workflow 與 strict snapshot validator 的共同來源；公開 runtime inventory 由 13 支更新為 22 支
+- **Full runtime 命名空間**：22 支正式腳本集中於 `.codex/scripts/dotnet-testing-codex-full/`，並以 `asset-manifest.json` 宣告所有權；安裝與公開同步只替換該命名空間，保留其他外掛的 scripts
 - **公開文件語意檢查**：strict public validator 對 v1.3.0 版本日期、runtime 計數、Unit module 計數、必要 validator 與 Agent TOML 正式欄位執行 deterministic validation
 - **Release 覆寫防護**：一般 PR merge 不會刪除既有同版 Release；只有手動執行並明確設定 `replace_existing=true` 才能重建
 
 ### 驗證狀態
 
-- Packet 36 frozen candidate `38479f09caa7c00a45b2c0af60e7b76fa33eeb5a` 已完成 structured Reviewer live validation並接受
-- Packet 38 驗證紀錄：Windows 完整 Node regression 為 315/315 通過；Linux Node 22 同套件為 312 通過、0 失敗、3 個平台相依 skip，exit 0
-- v2.4.2 locked setup、四工作流程靜態相容、fresh strict public snapshot、16份Agent TOML parse與71支tracked `.mjs` syntax均通過
-- Protected Skills與samples tracked diff為0，sample byproducts已清除；Packet 37 PR-range whitespace hygiene通過
+- 歷史 Packet 36 frozen candidate `38479f09caa7c00a45b2c0af60e7b76fa33eeb5a` 已完成 structured Reviewer live validation；後續 Unit restart 的單方法、多方法、全類別、retry isolation 與 Reviewer history 證據另行封存
+- 2026-09-10 Phase 4 Windows 完整 Node regression 為 398/398 通過；75 支目前 runtime／開發層 MJS syntax、4 份 Unit Agent TOML 與 5 份關鍵 JSON 均有效
+- `verify-lab-workflow.mjs` 的 Unit、TUnit、Integration、Aspire、依賴、estimator 與 scenario checks 全部通過；public release validator 確認 16 Agents、5 Codex Skills、22 runtime scripts、9 Unit modules，errors 0
+- Phase 4 沒有執行新的 Agent live 或 Linux regression；目前 A 方案多 target 與 selector blocked 分支以 deterministic 正反向測試驗證，提交與發布仍未授權
 
 ## [v1.2.1] - 2026-08-14
 

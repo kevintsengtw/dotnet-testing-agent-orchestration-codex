@@ -6,21 +6,25 @@ Unit 工作流程用一個 Orchestrator Skill 調度 Analyzer、Writer、Executo
 
 - Codex 支援原生 SpawnAgent 與 workspace agents。
 - 已安裝目標專案需要的 .NET SDK。
-- Node.js 可執行 `.codex/scripts/` 的零相依 runtime。
-- `dotnet-testing-agent-skills@v2.4.2` 已安裝到 `.agents/skills/`。
-- workspace 包含 `.codex/agents/`、`.codex/skills/`、`.codex/scripts/` 與 `.codex/config.toml`。
+- Node.js 可執行 `.codex/scripts/dotnet-testing-codex-full/` 的零相依 runtime。
+- `dotnet-testing-agent-skills@v2.4.5` 已安裝到 `.agents/skills/`。
+- workspace 包含 `.codex/agents/`、`.codex/skills/`、`.codex/scripts/dotnet-testing-codex-full/` 與 `.codex/config.toml`。
 
-技術型 Skills 不隨本 repository 發布。consumer 必須從鎖定的上游 Release 安裝；目前相容基準 commit 為 `715400f6d64e321d2faa4d8164643b412118f9c8`。
+技術型 Skills 不隨本 repository 發布。consumer 必須從鎖定的上游 Release 安裝；目前相容基準 commit 為 `a4908967ef8fe63ad2fe275df1df3c015ec51a4c`。
 
 ## 啟動方式
 
-在 workspace root 啟動 Codex，指定 target 與 test project：
+在 workspace root 啟動 Codex，指定 source project、target 檔案、完整類別名稱、class／method scope 與既有 test project exact `.csproj`。Source project 可先給目錄或 `.csproj`；Orchestrator 會解析成唯一 `.csproj`，無法唯一解析時停止。Skill path 由 Orchestrator 從本次 workspace 解析，不是使用者輸入：
 
 ```text
 $dotnet-testing-orchestrator-unit
 
-Target：src/OrderService.cs
-Test project：tests/OrderService.Tests/OrderService.Tests.csproj
+Workspace root：<目前 repository 的絕對路徑>
+Source project：samples/unit/practice/src/Practice.Core.Net8/Practice.Core.Net8.csproj
+Target file：samples/unit/practice/src/Practice.Core.Net8/TemperatureConverter.cs
+Target class：Practice.Core.Net8.TemperatureConverter
+Scope：class（全部公開方法）
+Test project：samples/unit/practice/tests/Practice.Core.Net8.Tests/Practice.Core.Net8.Tests.csproj
 ```
 
 也可以附上 Markdown、文字、表格或 JSON 情境。Analyzer 會保留合理的使用者情境，逐項說明無法採用的內容，再補足目標行為所需的 scenarios。
@@ -44,6 +48,8 @@ Analyzer → Writer → Executor → Reviewer → final projection
 | Final | 使用者可讀報告 | JSON／Markdown 來自同一 machine truth |
 
 每個 target 固定一個 Writer。合理 scenario 數不設上限；若單一 Writer 無法在 context/output limit 內完成，本次 attempt 以 blocker 結束，不拆 Writer，也不刪減案例。
+
+一次指定多個 targets 時，Analyzer 與 Reviewer 可同批派遣；一般與 Coverage repair 的 Writer、Executor 都按 target 順序逐一執行。每個 phase 要等所有已派遣 targets 完成才進入下一階段，正式 phase timing 取該批最晚完成時間。若其中一個 target 提前 failed／blocked，runtime 先收回同批已派遣結果，再將未開始下游工作的 targets 標記為 `cancelled`。
 
 ## Artifact 形狀
 
@@ -70,6 +76,8 @@ runtime 接受自然的精簡或豐富 JSON。模型不必輸出固定句子，o
 
 artifact 若同時宣告互相矛盾的客觀事實，例如 `passed=true` 卻含失敗測試數，runtime 會拒絕。blocked 或 unavailable 不會被投影成零失敗或零 coverage。
 
+指定 method selector 確實不存在或無法解析時，Analyzer 以空方法、空有效 scenario 與結構化 failure 交付 blocked artifact；Writer 不建立測試，Executor 產生 attempt-0 not-run evidence，Reviewer 完成 blocked 審查。這條路徑保留四角色與原因，不會把無效 selector 擴成全類別。
+
 ## Build 與測試證據
 
 正式順序是 build-first：
@@ -94,13 +102,13 @@ Executor 摘要用於說明診斷，不是 runtime truth。Reviewer 也不能以
 執行前建立 inventory，執行後驗證差異：
 
 ```bash
-node .codex/scripts/unit-runtime/project-integrity.mjs capture \
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/project-integrity.mjs capture \
   --root <workspace> \
   --output <test-project>/.orchestrator/integrity-before.json
 ```
 
 ```bash
-node .codex/scripts/unit-runtime/project-integrity.mjs verify \
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/project-integrity.mjs verify \
   --root <workspace> \
   --baseline <test-project>/.orchestrator/integrity-before.json \
   --allow-add <approved-test-file> \
@@ -113,19 +121,18 @@ allowlist 必須是精確相對路徑。未核准的 production source 異動會
 
 最終輸出至少包含：
 
-- target 與 terminal state；
+- target 或 ordered targets 與各自的 terminal state；
 - scenario coverage 與 Reviewer 裁決；
 - build/test 數據與原始 evidence 路徑；
 - coverage 可用值或 unavailable 原因；
 - integrity 結果；
 - phase 與整體 timing；
 - Timing Evidence 與 Profiling Summary；
-- Estimated Token Usage（固定區塊；估算不可得時顯示 unavailable；非 billing、不得作 correctness gate）。
 
 `workflow-result.mjs` 可以從 bundled input 或四個 canonical artifacts 產生 JSON 與 Markdown：
 
 ```bash
-node .codex/scripts/unit-runtime/workflow-result.mjs \
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/workflow-result.mjs \
   --target <target> \
   --analysis <analysis.json> \
   --writer <writer-result.json> \
@@ -136,7 +143,19 @@ node .codex/scripts/unit-runtime/workflow-result.mjs \
   --markdown-output <workflow-result.md>
 ```
 
-`--test-project` 讓 runtime 自動讀取 `<test-project>/.orchestrator/run-state.json`、執行 token estimator，並將固定 final report 一次寫入 Markdown。Orchestrator 只呈現該檔內容，不自行改寫格式或重新計算數值。
+`--test-project` 讓 runtime 自動讀取 `<test-project>/.orchestrator/run-state.json`，並將固定 final report 一次寫入 Markdown。Orchestrator 只呈現該檔內容，不自行改寫格式或重新計算數值。
+
+多 target terminal 直接交給同一份 workflow state；省略 `--target` 時，runtime 依 workflow-state 順序產生一份 schema v3 JSON 與一份固定八區塊 Markdown：
+
+```bash
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/workflow-result.mjs \
+  --workflow-state <test-project>/.orchestrator/workflow-state.json \
+  --test-project <test-project> \
+  --json-output <workflow-result.json> \
+  --markdown-output <workflow-result.md>
+```
+
+報告中的 Executor 修正內容只從已 seal 的 Executor／repair Executor artifact 讀取 `repairHistory`；未 seal 的文字、外部檔案或 Git diff 不會成為正式修正證據。
 
 ## 驗收與清理
 

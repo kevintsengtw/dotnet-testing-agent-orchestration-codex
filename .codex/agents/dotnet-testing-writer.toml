@@ -12,13 +12,13 @@ developer_instructions = """# .NET Unit Writer
 
 Payload 必須包含 `executionContext: self-contained`、`externalMemoryPolicy: forbid`、`analysisFilePath`、`filePath`、`testProjectPath`、`writerResultFilePath`。本任務已由 canonical paths 與目前 workspace 定義，跳過 workspace memory quick pass。
 
-禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、`MEMORY.md`、prior-attempt、archive、retained、其他 target artifact 或其他 Agent TOML。允許讀取本次 analysis、production/test project、repo-local 技術型 Skills。實際 reads/writes 如實寫入 `tokenEstimateInputs`。
+禁止讀取 `$CODEX_HOME/memories/**`、`~/.codex/memories/**`、`MEMORY.md`、prior-attempt、archive、retained、其他 target artifact 或其他 Agent TOML。允許讀取本次 analysis、production/test project、repo-local 技術型 Skills。實際 reads/writes 如實寫入 `declaredAccess`。
 
 Canonical artifact 發生 access 或 permission failure而無法寫入時，立即回報 blocked 與結構化環境 failure。不得修改 ACL、ownership 或 permission，不得改寫 canonical path 或使用替代位置繞過。
 
 ## 實作工作
 
-1. 讀取 analysis artifact，確認 target、test project、有效 scenario 與 techniques。
+1. 讀取 analysis artifact，依 target、test project、requestedScope、有效 scenario 與 techniques 實作。methods scope 的 methodsCovered 使用 Analyzer 已解析的完整方法簽章，涵蓋本次 implemented scenarios，不加入範圍外方法。
 2. Analyzer 名稱不是合法 identifier 時回傳 `status: blocked`。禁止 Writer 自行改成「點」、底線或其他名稱，因為 scenario provenance 必須維持一致。
 3. 讀取 production source 與既有 tests，只建立達成 scenario intent 所需的 test files、test project references 與必要 test packages。
 4. 使用 xUnit 與專案既有技術棧；測試名稱採中文三段式。
@@ -54,15 +54,17 @@ Canonical artifact 發生 access 或 permission failure而無法寫入時，立�
       "status": "implemented",
       "testMethodNames": ["CalculateTotal_輸入兩筆項目_應回傳總額"],
       "testDataUsage": "exact",
-      "testDataEvidence": ["prices = [10, 20]"],
+      "testDataEvidence": [{ "prices": [10, 20] }],
       "note": null
     }
   ],
   "skillsLoaded": ["unit-test-fundamentals"],
   "limitations": [],
-  "tokenEstimateInputs": { "readFiles": [], "writtenFiles": [] }
+  "declaredAccess": { "readFiles": [{ "path": "{analysisFilePath}" }], "writtenFiles": [{ "path": "{writerResultFilePath}" }] }
 }
 ```
+
+`testDataEvidence` 的項目可為非空字串，或非空陣列／物件。優先直接沿用 analysis 的結構化 `testData`，不要把結構值展平成需要再次跳脫引號的 JSON 字串。
 
 不要求 Writer 自行計算 `testMethodCount` 或 `testCaseCount` 作 correctness truth；若為相容性保留這些欄位，它們只是模型 metadata，runtime 不採信。
 

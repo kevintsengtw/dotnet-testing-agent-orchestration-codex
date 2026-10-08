@@ -22,7 +22,7 @@ dotnet-testing Agent Orchestration for Codex。提供 **Codex 原生 Subagent** 
 - `.codex/skills/` — 4 個 Orchestrator Skill + `dotnet-test`
 - `.agents/skills/unit-test-scenarios/` — consumer setup 從公開 repo `kevintsengtw/unit-test-scenarios` 抓取的可選前置 Skill；本 repo 不內含
 - `.codex/config.toml` — Codex workspace 設定（啟用 `multi_agent`、設定 agent thread 上限與 runtime 上限）
-- `.codex/scripts/` — `run-state`、Unit deterministic runtime、Estimated Token Usage 與四工作流程 runtime validators（零相依、自含；需 Node.js）
+- `.codex/scripts/dotnet-testing-codex-full/` — 四套獨立 runtime、用量收集／HTML、NuGet preflight 與 validators，共 59 支零相依 scripts；需 Node.js，依 Full 與各 owner asset manifest 部署。
 
 ## Agent 預設模型
 
@@ -45,12 +45,31 @@ Orchestrator Skill 載入主對話後，透過 Codex 原生 **SpawnAgent** 依�
 - Executor artifact 是 build/test runtime truth；Reviewer 審查品質與跨 artifact 一致性，不自行重跑測試覆蓋 Executor evidence。
 - 正式流程不使用 RAG；canonical artifacts、isolation、read scope、scenario/endpoint acceptance、strict timing 與 production mutation 都是正式 gates。
 
+## 消費端 sample-contamination 不變式
+
+- 四套 Orchestrator `SKILL.md`、Agent TOML、runtime 與 validators 不得包含本 repository 真實 sample 的類別、方法、namespace、專案、solution、路徑、固定目錄結構或依 sample 慣例選路的捷徑。
+- 範例只能使用不屬於 `samples/**` 的中性識別字或明確 placeholder；正式選路與執行只能依使用者提供且已驗證的 canonical inputs，不得從 sample 命名、target framework、版本目錄、檔名或 fixture 結構猜測。
+- Lab-only tests 與驗證工具可引用 sample 作 deterministic regression；消費端例外必須由維護端精確登記並可失效，TUnit 消費端資產不得有真實 sample 例外。
+
 ## 測試專案邊界
 
-`samples/*/tests/` 是可重複使用的空白起點。工作流程產生的測試檔、fixtures、`.orchestrator/`、`bin/`、`obj/`、`TestResults/` 與 csproj 修改是 byproduct，不得 commit。驗證完成後應還原，再以 `git status` 確認乾淨。
+`samples/*/tests/` 提供可重複使用的練習專案，執行起點依各套 Orchestrator 契約。工作流程產生的測試檔、fixtures、`.orchestrator/`、`bin/`、`obj/`、`TestResults/` 與 csproj 修改是 byproduct，不得 commit；處理產物前依使用者授權，以 `git status` 核對提交邊界。
+
+Unit 可從既有測試、csproj、bin、obj 與 TestResults 開始，不以殘留產物阻擋正常啟動，也不為取得空白起點刪除既有測試。其他三套的驗證起點依所屬 Orchestrator 契約處理；產物是否保留或清理依使用者授權。
+
+## v1.3.1 用量與環境契約
+
+- 四套各自擁有 `usage-session.mjs`、`usage-report.mjs`、`usage-observer.mjs`，不得跨 workflow import。最終回覆尾端保留 HTML 絕對連結、可複製原生絕對路徑、file URL、收集狀態與說明；不省略既定最終報告欄位。
+- 用量取自本次 root turn 與核對後的代理關係。快取另列，推理已含於輸出；缺漏不補零，HTML 不改寫 Executor 測試數字或 run-state 計時。`unsupported` 沒有啟動背景程序，不宣稱重新整理會恢復收集。
+- Standard credit 依 HTML 註明日期的固定費率快照換算，支援 `gpt-6.1-sol` 及既有受支援模型；服務模式缺漏時明示試算前提，未知模型、非 Standard 模式或缺漏用量不提供合計。不以其他模型費率代替未知模型，不將試算描述為帳戶實際扣抵。
+- 四套在 Analyzer 前各自執行 NuGet sandbox preflight；Aspire 另核對 Docker daemon。`NUGET_PACKAGES` 選用，未指定時沿用原 NuGet 設定與預設快取，不要求使用者手改設定或提供 CLI NuGet override。
+- Unit／TUnit 的必要單次核准依本次工具政策與使用者授權處理；保留各自 runner、attempt、原始失敗與重試上限，不自行擴大核准範圍或更改全域設定。
+- TUnit 的 methodIdentifier 在 Analyzer 與後續交接欄位保持一致，保留原 selector。正式 profiles 仍為 `gpt-5.6-sol／medium`，HTML 模型換算支援不改變正式流程模型。
+
+更新細節見 [v1.3.1 更新說明](docs/guides/v1.3.1-release-notes.md) 與 [用量指南](docs/guides/token-usage-estimation.md)。
 
 ## 與 Claude 版的差異
 
-- **Token 用量：估算版（非 billing）** — Codex native SpawnAgent subagent 的全流程**真實** token 無可靠 truth source（實證確認），故不回報正式用量。改提供 optional **`Estimated Token Usage`**：四階段完成後可執行 `node .codex/scripts/estimate-token-usage.mjs --test-project <測試專案>`，以**零相依的內建 `chars-heuristic`** 對各 subagent 的 visible context 做估算，**僅供相對成本比較，明確排除 hidden framing / internal reasoning / cached input / provider billing，不可用於計費或任何 correctness gate**；estimator 缺檔/失敗時優雅降級為 unavailable，不阻塞工作流程。細節見 [docs/guides/token-usage-estimation.md](docs/guides/token-usage-estimation.md)。
+- **Token 用量** — v1.3.1 不提供估算器。四套皆完成完整離線 HTML、絕對路徑與選用 Standard credit 換算的人工功能驗收；收集逐請求 runtime 觀測值，缺漏保留狀態，不作帳務 truth 或測試 correctness gate。
 - **Dispatch 機制**：Codex 原生 SpawnAgent（非 Claude Agent tool）；額外產出 `run-state.json` 可稽核狀態檔。
 - **產出非決定性**：同一輸入下，Analyzer scenario 數、測試數、技術型 Skill 選擇與 wall-clock 可能有 run-to-run 波動；Writer topology 固定為每 target 一個，不屬於可波動項目。

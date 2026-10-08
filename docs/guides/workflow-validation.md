@@ -1,6 +1,6 @@
 # 四工作流程驗證指南
 
-本文件定義 Unit、TUnit、Integration、Aspire 的共同 correctness、artifact、isolation 與 runtime 驗證原則。Estimated Token Usage 只用於 visible-context 相對成本比較，不參與測試通過、Reviewer 評分或 billing。
+本文件定義 Unit、TUnit、Integration、Aspire 的共同 correctness、artifact、isolation 與 runtime 驗證原則。
 
 正式流程不使用 RAG。角色只讀 prompt 指定的 source/project、repo-local Skills，以及本次 run 核准的 canonical handoffs。
 
@@ -20,6 +20,8 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
 
 因此，現行 Unit 文件與 runtime 都只採用每 target 單一 Writer topology。
 
+Unit 多 target 允許 Analyzer／Reviewer 同批派遣，但一般與 Coverage repair 的 Writer／Executor 固定依 target 順序逐一派遣。每個 phase 以所有 targets 的最晚完成時間作為共同邊界；其中一個 target 提前終止時，已派遣的同批工作仍須完成，未開始下游工作的其他 targets 記為 `cancelled`。
+
 ## 公開 bundle 必要資產
 
 ```text
@@ -27,21 +29,23 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
 ├── agents/                                      # 16 個 TOML
 ├── config.toml
 ├── scripts/
-│   ├── run-state.mjs
-│   ├── estimate-token-usage.mjs
-│   ├── unit-runtime/                              # Unit machine truth（8 支）
-│   └── validators/
-│       ├── validate-skill-read-scope.mjs
-│       ├── validate-unit-attempt-isolation.mjs
-│       ├── validate-unit-scenario-contract.mjs
-│       ├── validate-tunit-role-read-scope.mjs
-│       ├── validate-tunit-execution-contract.mjs
-│       ├── validate-integration-scenario-contract.mjs
-│       ├── validate-integration-role-read-scope.mjs
-│       ├── validate-integration-execution-contract.mjs
-│       ├── validate-aspire-scenario-contract.mjs
-│       ├── validate-aspire-role-read-scope.mjs
-│       └── validate-aspire-execution-contract.mjs
+│   └── dotnet-testing-codex-full/
+│       ├── asset-manifest.json                   # Full runtime 所有權清單
+│       ├── run-state.mjs
+│       ├── tunit-runtime/                        # TUnit runtime（14 支）
+│       ├── unit-runtime/                         # Unit machine truth（16 支）；含 NuGet preflight
+│       └── validators/
+│           ├── validate-skill-read-scope.mjs
+│           ├── validate-unit-attempt-isolation.mjs
+│           ├── validate-unit-scenario-contract.mjs
+│           ├── validate-tunit-role-read-scope.mjs
+│           ├── validate-tunit-execution-contract.mjs
+│           ├── validate-integration-scenario-contract.mjs
+│           ├── validate-integration-role-read-scope.mjs
+│           ├── validate-integration-execution-contract.mjs
+│           ├── validate-aspire-scenario-contract.mjs
+│           ├── validate-aspire-role-read-scope.mjs
+│           └── validate-aspire-execution-contract.mjs
 └── skills/
     ├── dotnet-test/
     ├── dotnet-testing-orchestrator-unit/
@@ -71,11 +75,13 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
 - `suggestedTestScenarios`、scenario catalog 與 review summary 數量一致。
 - 使用者提供 scenarios/test data 時保留來源與逐項接受、正規化、合併、限制或拒絕理由。
 - `tokenEstimateInputs.readFiles`／`writtenFiles` 如實記錄；不得讀 prior attempt、外部 memory 或 unrelated orchestration definitions。
+- Unit 指定 selector 無法解析時，Analyzer 使用空方法／空有效 scenario blocked schema；後續唯一 Writer、attempt-0 Executor 與 Reviewer 必須保留同一結構化 failure。
 
 ### Writer
 
 - 每個 target 正好一個 `single`／`full` Writer assignment。
 - 一個 Writer 可以產生多個測試檔，但只產生一份 target canonical writer-result。
+- Unit 多 target 共用 test project 時一次只派遣一個 Writer，避免 `.csproj` 與共用 helper 同時寫入。
 - `testFilePaths`、test method/case counts、skills、methods/endpoints 與 scenario coverage 可追溯。
 - 所有有效 scenarios 都是 `implemented` 或有明確 blocker/limitation；不得靜默遺漏。
 - 使用者提供 test data 時，不能以 generated data 取代後仍宣稱完整實作。
@@ -109,18 +115,20 @@ Split／two-step topology 只保留在歷史實驗與 validator compatibility fi
 
 ## Runtime validator 命令
 
-Unit v1.3.0 的 phase state、artifact normalization、build/test evidence、project integrity 與 final projection 由 `.codex/scripts/unit-runtime/` 負責。舊的 Unit validators 保留相容性與既有 artifact 驗證，但不再要求模型輸出固定說明文字。
+Unit v1.3.0 的 phase state、artifact normalization、build/test evidence、project integrity 與 final projection 由 `.codex/scripts/dotnet-testing-codex-full/unit-runtime/` 負責。舊的 Unit validators 保留相容性與既有 artifact 驗證，但不再要求模型輸出固定說明文字。
 
 ```bash
-node .codex/scripts/unit-runtime/project-integrity.mjs capture --root <workspace> --output <baseline.json>
-node .codex/scripts/unit-runtime/run-unit-execution.mjs --help
-node .codex/scripts/unit-runtime/workflow-result.mjs --help
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/project-integrity.mjs capture --root <workspace> --output <baseline.json>
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/run-unit-execution.mjs --help
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/workflow-result.mjs --help
 ```
 
-Attempt isolation 由四工作流程共用：
+Attempt isolation 依 workflow 使用下列入口：
 
 ```bash
-node .codex/scripts/validators/validate-unit-attempt-isolation.mjs --workflow <unit|tunit|integration|aspire> --workspace-root <workspace> --test-project <test-project> --artifact <artifact> --allow-read <approved-handoff>
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/validate-attempt-isolation.mjs --workflow unit --workspace-root <workspace> --test-project <test-project> --artifact <artifact> --allow-read <approved-handoff>
+node .codex/scripts/dotnet-testing-codex-full/tunit-runtime/validate-attempt-isolation.mjs --workflow tunit --workspace-root <workspace> --test-project <test-project> --artifact <artifact> --allow-read <approved-handoff>
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-unit-attempt-isolation.mjs --workflow <integration|aspire> --workspace-root <workspace> --test-project <test-project> --artifact <artifact> --allow-read <approved-handoff>
 ```
 
 Unit Executor 同 assignment retry 只接受 canonical executor-result 以遞增 `executionEvidencePaths` 明確宣告的目前 target evidence；最後一筆必須等於 final pointer。未宣告 attempts、跨 run、其他 target、archive 與 retained artifacts仍拒絕。
@@ -128,44 +136,39 @@ Unit Executor 同 assignment retry 只接受 canonical executor-result 以遞增
 Unit/TUnit scenario acceptance：
 
 ```bash
-node .codex/scripts/validators/validate-unit-scenario-contract.mjs --workflow <unit|tunit> --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/validate-scenario-contract.mjs --workflow unit --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass
+node .codex/scripts/dotnet-testing-codex-full/tunit-runtime/validate-scenario-contract.mjs --workflow tunit --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass
 ```
 
 Integration gates：
 
 ```bash
-node .codex/scripts/validators/validate-integration-role-read-scope.mjs --role <analyzer|reviewer> --workspace-root <workspace> --artifact <artifact>
-node .codex/scripts/validators/validate-integration-scenario-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass
-node .codex/scripts/validators/validate-integration-execution-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --executor <executor-result.json> --require-pass --forbid-production-mutation
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-integration-role-read-scope.mjs --role <analyzer|reviewer> --workspace-root <workspace> --artifact <artifact>
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-integration-scenario-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-integration-execution-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --executor <executor-result.json> --require-pass --forbid-production-mutation
 ```
 
 Aspire gates：
 
 ```bash
-node .codex/scripts/validators/validate-aspire-role-read-scope.mjs --role <analyzer|reviewer> --workspace-root <workspace> --artifact <artifact>
-node .codex/scripts/validators/validate-aspire-scenario-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass --require-single-writer
-node .codex/scripts/validators/validate-aspire-execution-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --executor <executor-result.json> --require-pass --forbid-production-mutation --require-single-writer
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-aspire-role-read-scope.mjs --role <analyzer|reviewer> --workspace-root <workspace> --artifact <artifact>
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-aspire-scenario-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --reviewer <reviewer-result.json> --require-review-pass --require-single-writer
+node .codex/scripts/dotnet-testing-codex-full/validators/validate-aspire-execution-contract.mjs --analysis <analysis.json> --writer <writer-result.json> --executor <executor-result.json> --require-pass --forbid-production-mutation --require-single-writer
 ```
 
 Unit terminal 先從 workflow-state 做 deterministic closeout與 profiling finalize，再驗證 strict timing：
 
 ```bash
-node .codex/scripts/run-state.mjs closeout --path <test-project>/.orchestrator/run-state.json
-node .codex/scripts/run-state.mjs finalize --path <test-project>/.orchestrator/run-state.json
-node .codex/scripts/run-state.mjs validate --path <test-project>/.orchestrator/run-state.json --require-complete-timing
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/run-state.mjs closeout --path <test-project>/.orchestrator/run-state.json
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/run-state.mjs finalize --path <test-project>/.orchestrator/run-state.json
+node .codex/scripts/dotnet-testing-codex-full/unit-runtime/run-state.mjs validate --path <test-project>/.orchestrator/run-state.json --require-complete-timing
 ```
 
-Analyzer／Writer／Executor／Reviewer 任一 terminal 都走相同 closeout。Assignment `completedAt` 必須在角色完成當下記錄，closeout只驗證而不以 phase timestamp回填。Canonical artifact access／permission failure不得以 ACL、ownership、permission mutation或替代 path繞過，必須保留結構化 failure並停止下游 dispatch。
+Analyzer／Writer／Executor／Reviewer 任一 terminal 都走相同 closeout。Assignment `completedAt` 必須在角色完成當下記錄，closeout只驗證而不以 phase timestamp回填。Unit 多 target closeout 逐一驗證 workflow-state 的 ordered targets，phase timing 取該 phase 所有 assignments 的最早 dispatch 與所有 targets 的最晚完成邊界。Canonical artifact access／permission failure不得以 ACL、ownership、permission mutation或替代 path繞過，必須保留結構化 failure並停止下游 dispatch。
 
-TUnit、Integration 與 Aspire 最後產生 optional Estimated Token Usage：
+Unit 的 `workflow-result.mjs --test-project <test-project>` 會在 finalization 內固定輸出 timing、Timing Evidence 與 Profiling Summary；不再由 Orchestrator 分別組裝這些區塊。
 
-```bash
-node .codex/scripts/estimate-token-usage.mjs --test-project <test-project>
-```
-
-Estimator unavailable 不會讓 correctness workflow 失敗，但必須回報 unavailable 原因；不得補猜 token 或改稱 billing usage。
-
-Unit 的 `workflow-result.mjs --test-project <test-project>` 會在 finalization 內自動執行同一 estimator，並固定輸出 timing、Timing Evidence、Profiling Summary 與 Estimated Token Usage；不再由 Orchestrator 分別組裝這些區塊。
+Unit 多 target finalization 使用 `workflow-result.mjs --workflow-state <workflow-state.json> --test-project <test-project>` 且省略 `--target`，依 workflow-state 順序產生單一 schema v3 JSON 與固定八區塊 Markdown。各 target 的 completed／failed／blocked／cancelled 狀態、sealed Executor `repairHistory` 與共同 timing 都由同一份 machine truth 投影。
 
 ## 修改流程
 
@@ -182,4 +185,11 @@ Reviewer 提出建議後，只有使用者明確授權才執行 Writer modificat
 - Reviewer 把 limitation/blocked 偽報為 implemented，或隱藏 missing cases。
 - 未經獨立授權修改 production/AppHost code。
 - strict run-state gate 失敗卻宣稱 timing evidence 完整。
-- Estimated Token Usage 被用作 correctness、Reviewer 評分或 billing truth。
+
+Unit／TUnit 各自的 `unit-runtime/asset-manifest.json`、`tunit-runtime/asset-manifest.json` 宣告完整本地模組；初始化時的 runtime fingerprint 只涵蓋該 workflow 的模組。Skill 與 runtime 不跨用根共用檔或另一 workflow。Integration／Aspire 的根共用 run-state 與中央 validators 維持原狀。
+
+## TUnit 完整 HTML 驗證
+
+TUnit observer 在 init 成功後、Analyzer dispatch transaction 前啟動。正常 final、optional-parameter failure 與 interrupted recovery 的 renderer 使用同一 canonical workspace；七個區塊、耗時與 receipt 不變，HTML 連結、file URL、收集狀態及 note 位於 Profiling Summary 之後的回覆尾端。
+
+前置檢查包含合成 session／SQLite、鎖定完整模板、Standard credit 互動、collector 保護、真實 artifact regression、owner isolation 與公開資產檢查。人工驗證另外核對四角色 canonical artifacts、dotnet run／SourceGenerated 原始案例數、Reviewer、strict timing、presentation receipt，以及主代理回合完成後的 usage binding／快照／HTML；前置檢查不代表人工驗收已完成。用量完整不代表測試成功，缺少 binding 的歷史現場明列 unavailable，不重啟 collector。
